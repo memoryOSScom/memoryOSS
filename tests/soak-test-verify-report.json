@@ -1,0 +1,141 @@
+{
+  "runner": "tests/run_soak_test.py",
+  "generated_at": "2026-03-10T10:13:10Z",
+  "duration_hours": 0.26,
+  "cycles": 48,
+  "summary": {
+    "total_stored": 960,
+    "total_recalled": 480,
+    "signal_hit_rate": 1.0,
+    "noise_rejection": 1.0,
+    "errors": 0
+  },
+  "latency_ms": {
+    "min": 35.19,
+    "p50": 79.68,
+    "p95": 5919.99,
+    "p99": 40698.95,
+    "max": 54174.64
+  },
+  "stability": {
+    "rss_growth_mb": 20.6,
+    "latency_drift_pct": 36.9,
+    "final_rss_mb": 336.4,
+    "leak_detected": false,
+    "latency_degradation": false
+  },
+  "checkpoints": [
+    {
+      "time": "2026-03-10T09:59:44Z",
+      "elapsed_minutes": 2.2,
+      "cycle": 23,
+      "total_stored": 460,
+      "total_recalled": 230,
+      "signal_hit_rate": 1.0,
+      "noise_rejection": 1.0,
+      "p50_ms": 89.05,
+      "p95_ms": 4911.3,
+      "rss_mb": 315.7,
+      "indexer_lag": 0,
+      "errors_total": 0
+    },
+    {
+      "time": "2026-03-10T10:01:53Z",
+      "elapsed_minutes": 4.3,
+      "cycle": 30,
+      "total_stored": 600,
+      "total_recalled": 300,
+      "signal_hit_rate": 1.0,
+      "noise_rejection": 1.0,
+      "p50_ms": 78.28,
+      "p95_ms": 8439.41,
+      "rss_mb": 319.3,
+      "indexer_lag": 0,
+      "errors_total": 0
+    },
+    {
+      "time": "2026-03-10T10:04:10Z",
+      "elapsed_minutes": 6.6,
+      "cycle": 35,
+      "total_stored": 700,
+      "total_recalled": 350,
+      "signal_hit_rate": 1.0,
+      "noise_rejection": 1.0,
+      "p50_ms": 87.32,
+      "p95_ms": 11623.12,
+      "rss_mb": 319.7,
+      "indexer_lag": 0,
+      "errors_total": 0
+    },
+    {
+      "time": "2026-03-10T10:06:43Z",
+      "elapsed_minutes": 9.1,
+      "cycle": 40,
+      "total_stored": 800,
+      "total_recalled": 400,
+      "signal_hit_rate": 1.0,
+      "noise_rejection": 1.0,
+      "p50_ms": 91.12,
+      "p95_ms": 15833.3,
+      "rss_mb": 335.7,
+      "indexer_lag": 0,
+      "errors_total": 0
+    },
+    {
+      "time": "2026-03-10T10:08:50Z",
+      "elapsed_minutes": 11.3,
+      "cycle": 43,
+      "total_stored": 860,
+      "total_recalled": 430,
+      "signal_hit_rate": 1.0,
+      "noise_rejection": 1.0,
+      "p50_ms": 89.27,
+      "p95_ms": 17083.21,
+      "rss_mb": 335.8,
+      "indexer_lag": 0,
+      "errors_total": 0
+    },
+    {
+      "time": "2026-03-10T10:11:20Z",
+      "elapsed_minutes": 13.8,
+      "cycle": 46,
+      "total_stored": 920,
+      "total_recalled": 460,
+      "signal_hit_rate": 1.0,
+      "noise_rejection": 1.0,
+      "p50_ms": 89.14,
+      "p95_ms": 19540.19,
+      "rss_mb": 336.3,
+      "indexer_lag": 0,
+      "errors_total": 0
+    }
+  ],
+  "errors": [],
+  "items": [
+    {
+      "name": "Sustained 0.25h load test",
+      "status": "pass",
+      "note": "48 cycles, 960 stored, 480 recalled, 0 errors"
+    },
+    {
+      "name": "Signal hit rate stability",
+      "status": "pass",
+      "note": "100.0%"
+    },
+    {
+      "name": "Noise rejection stability",
+      "status": "pass",
+      "note": "100.0%"
+    },
+    {
+      "name": "Memory leak check",
+      "status": "pass",
+      "note": "RSS growth: 20.6MB"
+    },
+    {
+      "name": "Latency drift check",
+      "status": "pass",
+      "note": "p50 drift: 36.9%"
+    }
+  ]
+}

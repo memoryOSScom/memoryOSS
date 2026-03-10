@@ -1,0 +1,32 @@
+{
+  "name": "memoryoss",
+  "version": "0.1.0",
+  "description": "TypeScript SDK for memoryOSS — Memory for AI Agents",
+  "license": "AGPL-3.0-only",
+  "author": "memoryOSS Contributors <hello@memoryoss.com>",
+  "homepage": "https://memoryoss.com",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/memoryOSScom/memoryOSS.git"
+  },
+  "bugs": {
+    "url": "https://github.com/memoryOSScom/memoryOSS/issues"
+  },
+  "keywords": ["memory", "ai", "agents", "vector-search", "rag"],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "test": "node --test dist/test.js"
+  },
+  "devDependencies": {
+    "@types/node": "^25.3.5",
+    "typescript": "^5.4"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

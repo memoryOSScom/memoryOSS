@@ -1,0 +1,102 @@
+[package]
+name = "memoryoss"
+version = "0.1.0"
+edition = "2024"
+license = "AGPL-3.0-only"
+description = "Memory for AI Agents — store, recall, update, forget"
+repository = "https://github.com/memoryOSScom/memoryoss"
+homepage = "https://memoryoss.com"
+readme = "README.md"
+
+[dependencies]
+# Storage (Source of Truth)
+redb = "2"
+
+# Vector Index (async derived)
+usearch = "2"
+
+# Full-Text Search + BM25 (async derived)
+tantivy = "0.25"
+
+# HTTP Server
+axum = { version = "0.8", features = ["ws"] }
+axum-extra = { version = "0.10", features = ["typed-header"] }
+tower = "0.5"
+tower-http = { version = "0.6", features = ["cors", "set-header", "trace"] }
+
+# Async Runtime
+tokio = { version = "1", features = ["full"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+rmp-serde = "1"
+
+# Embeddings (local, zero-config)
+fastembed = "4"
+
+# MCP Server
+rmcp = { version = "0.1", features = ["server", "transport-io", "macros"] }
+schemars = "0.8"
+
+# TLS (no OpenSSL)
+rustls = { version = "0.23", features = ["ring"] }
+tokio-rustls = "0.26"
+rcgen = "0.13"
+
+# Config
+toml = "0.8"
+
+# Auth
+jsonwebtoken = "9"
+
+# Encryption
+aes-gcm = "0.10"
+rand = "0.8"
+zeroize = { version = "1", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["json", "env-filter"] }
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Unique IDs
+uuid = { version = "1", features = ["v7", "serde"] }
+
+# Hashing (audit log chain)
+sha2 = "0.10"
+hex = "0.4"
+
+# HTTP client (LLM API calls)
+reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], default-features = false }
+
+# Error handling
+thiserror = "2"
+anyhow = "1"
+
+# Async utilities / streaming
+tokio-util = "0.7"
+tokio-stream = "0.1"
+futures-util = "0.3"
+async-trait = "0.1"
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "http1", "http2", "service"] }
+hmac = "0.12"
+hkdf = "0.12"
+unicode-normalization = "0.1"
+urlencoding = "2"
+url = "2"
+tar = "0.4.44"
+zstd = "0.13.3"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true
+codegen-units = 1

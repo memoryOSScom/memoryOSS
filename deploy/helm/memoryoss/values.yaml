@@ -1,0 +1,59 @@
+replicaCount: 1
+
+image:
+  repository: memoryoss/memoryoss
+  tag: "0.1.0"
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8000
+
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: ""
+  accessMode: ReadWriteOnce
+
+resources:
+  requests:
+    cpu: 250m
+    memory: 512Mi
+  limits:
+    cpu: "2"
+    memory: 2Gi
+
+config:
+  serverHost: "0.0.0.0"
+  serverPort: 8000
+  dataDir: /data
+  tlsEnabled: false
+  tlsAutoGenerate: false
+  tlsCertPath: ""
+  tlsKeyPath: ""
+  tlsClientCaPath: ""
+
+auth:
+  apiKeys: []
+  # - key: "your-api-key"
+  #   role: "admin"
+  #   namespace: "default"
+
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  readOnlyRootFilesystem: true
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+      - ALL
+
+podSecurityContext:
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

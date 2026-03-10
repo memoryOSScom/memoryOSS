@@ -1,0 +1,12 @@
+# cargo-deny / rustsec audit configuration
+# Known advisories in transitive dependencies we cannot fix directly
+
+[advisories]
+ignore = [
+    # lru 0.12.5 unsoundness (via tantivy) — no direct exploit vector
+    "RUSTSEC-2025-0119",
+    # paste 1.0.15 unmaintained (via fastembed/rmcp)
+    "RUSTSEC-2024-0436",
+    # number_prefix 0.4.0 unmaintained (via indicatif)
+    "RUSTSEC-2026-0002",
+]

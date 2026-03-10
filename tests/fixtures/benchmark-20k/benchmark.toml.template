@@ -1,0 +1,38 @@
+[server]
+host = "127.0.0.1"
+port = 60901
+
+[tls]
+enabled = true
+auto_generate = true
+
+[storage]
+data_dir = "/tmp/memoryoss-bench-59nkd1ja/data"
+
+[auth]
+jwt_secret = "test-secret-that-is-at-least-32-characters-long"
+
+
+[[auth.api_keys]]
+key = "benchmark-admin-key"
+role = "admin"
+namespace = "bench"
+
+
+[logging]
+level = "warn"
+
+
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "https://api.openai.com/v1"
+default_memory_mode = "readonly"
+min_recall_score = 0.4
+extraction_enabled = false
+
+[limits]
+rate_limit_per_sec = 5000
+
+[trust]
+semantic_dedup_threshold = 0.9999

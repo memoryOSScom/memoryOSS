@@ -1,0 +1,21 @@
+{
+    "name": "memoryoss",
+    "description": "Persistent long-term memory for AI agents. Store, recall, update, and forget information across sessions. Your agent remembers everything — automatically.",
+    "version": "0.1.0",
+    "author": {
+        "name": "memoryOSS Contributors",
+        "url": "https://memoryoss.com"
+    },
+    "homepage": "https://memoryoss.com",
+    "repository": "https://github.com/memoryOSScom/memoryoss",
+    "license": "AGPL-3.0-only",
+    "keywords": [
+        "memory",
+        "agents",
+        "long-term-memory",
+        "rag",
+        "vector-search",
+        "mcp",
+        "persistent-context"
+    ]
+}

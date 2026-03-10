@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>memoryOSS — Persistent Memory for AI Agents</title>
+<meta name="description" content="Give your AI agents long-term memory. Drop-in proxy for Claude, GPT, and Codex. Zero code changes. Open source.">
+<link rel="icon" type="image/png" href="favicon-32.png?v=3" sizes="32x32">
+<link rel="icon" href="favicon.ico?v=3" sizes="any">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=3">
+<style>
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url(fonts/inter-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url(fonts/jetbrains-mono-latin.woff2) format('woff2');
+  unicode-range: U+0000-00FF, U+0131, U+0152-0153, U+02BB-02BC, U+02C6, U+02DA, U+02DC, U+0304, U+0308, U+0329, U+2000-206F, U+20AC, U+2122, U+2191, U+2193, U+2212, U+2215, U+FEFF, U+FFFD;
+}
+:root {
+  --white: #fff; --gray-50: #fafafa; --gray-100: #f5f5f7; --gray-200: #e8e8ed;
+  --gray-300: #d2d2d7; --gray-500: #86868b; --gray-600: #6e6e73; --gray-700: #48484a; --gray-900: #1d1d1f;
+  --blue: #0071e3; --blue-dark: #0077ed; --green: #30d158; --orange: #ff9f0a; --purple: #bf5af2; --teal: #64d2ff;
+  --r-sm: 10px; --r-md: 14px; --r-full: 980px; --max-w: 880px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: var(--white); color: var(--gray-900); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+code { font-family: 'JetBrains Mono', monospace; }
+a { text-decoration: none; }
+.w { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+
+/* Nav */
+nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; height: 44px; background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); border-bottom: 0.5px solid var(--gray-200); }
+.nav-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; height: 100%; display: flex; align-items: center; justify-content: space-between; }
+.nav-wm { font-size: 15px; font-weight: 700; color: var(--gray-900); display: flex; align-items: center; gap: 6px; }
+.nav-beta { font-size: 10px; font-weight: 600; color: var(--blue); background: rgba(0,113,227,0.08); padding: 2px 7px; border-radius: var(--r-full); letter-spacing: 0.04em; }
+.nav-links { display: flex; gap: 20px; align-items: center; }
+.nav-links a { font-size: 12px; color: var(--gray-500); }
+.nav-links a:hover { color: var(--gray-900); }
+.nav-cta { background: var(--blue); color: #fff !important; padding: 4px 12px; border-radius: var(--r-full); font-weight: 500; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; padding: 10px 24px; border-radius: var(--r-full); font-size: 14px; font-weight: 500; border: none; cursor: pointer; }
+.btn-p { background: var(--blue); color: #fff; }
+.btn-p:hover { background: var(--blue-dark); }
+.btn-g { background: transparent; color: var(--blue); }
+.btn-g:hover { background: var(--gray-100); }
+
+/* Hero */
+.hero { padding: 80px 0 28px; text-align: center; }
+.hero-logo { max-width: clamp(280px, 45vw, 400px); height: auto; margin-bottom: 20px; }
+.hero h1 { font-size: clamp(26px, 5vw, 36px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 16px; }
+.hero-sub { font-size: 18px; font-weight: 600; color: var(--gray-700); max-width: 520px; margin: 0 auto 20px; line-height: 1.7; letter-spacing: -0.01em; }
+.hero-pills { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 24px; }
+.hero-pill { padding: 6px 14px; font-size: 12px; font-weight: 500; border-radius: var(--r-full); background: var(--gray-50); border: 1px solid var(--gray-200); color: var(--gray-700); }
+.hero-pill b { font-weight: 700; color: var(--gray-900); }
+.hero-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+/* Section base */
+.sect { padding: 40px 0; }
+.sect-alt { background: var(--gray-50); }
+.sect-head { margin-bottom: 20px; }
+.sect-head .over { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--blue); margin-bottom: 4px; }
+.sect-head .over.brand-case { text-transform: none; letter-spacing: 0.04em; }
+.sect-head h2 { font-size: 24px; font-weight: 700; letter-spacing: -0.02em; margin-bottom: 4px; }
+.sect-head p { font-size: 14px; color: var(--gray-500); }
+
+/* Why — the killer section */
+.why-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.why-card { padding: 24px; border-radius: var(--r-md); border: 1px solid var(--gray-200); position: relative; }
+.why-card.hero-card { grid-column: 1 / -1; background: var(--gray-900); color: #fff; border: none; display: flex; gap: 32px; align-items: center; }
+.why-card.hero-card .why-text h3 { color: #fff; }
+.why-card.hero-card .why-text p { color: rgba(255,255,255,0.6); }
+.why-card.hero-card .why-visual {
+  flex-shrink: 0; width: 200px; text-align: center;
+  font-family: 'JetBrains Mono', monospace; font-size: 12px; color: rgba(255,255,255,0.4); line-height: 1.7;
+}
+.why-card.hero-card .why-visual .a1 { color: var(--orange); }
+.why-card.hero-card .why-visual .a2 { color: var(--teal); }
+.why-card.hero-card .why-visual .mem { color: var(--green); font-weight: 600; }
+.why-num { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 4px; }
+.why-card h3 { font-size: 16px; font-weight: 700; margin-bottom: 4px; }
+.why-card p { font-size: 13px; color: var(--gray-600); line-height: 1.5; }
+
+/* How — steps inline */
+.steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--gray-200); border-radius: var(--r-md); overflow: hidden; }
+.step { background: var(--white); padding: 18px 16px; }
+.step-n { display: inline-block; width: 22px; height: 22px; border-radius: 50%; background: var(--gray-100); font-size: 11px; font-weight: 600; color: var(--blue); text-align: center; line-height: 22px; margin-bottom: 6px; }
+.step h3 { font-size: 14px; font-weight: 600; margin-bottom: 3px; }
+.step p { font-size: 12px; color: var(--gray-600); margin-bottom: 6px; }
+.step code { display: block; padding: 5px 8px; background: var(--gray-50); border-radius: 6px; font-size: 11px; color: var(--gray-700); word-break: break-all; }
+
+/* Terminal */
+.terminal { max-width: 620px; margin: 16px auto 0; background: var(--gray-900); border-radius: var(--r-md); overflow: hidden; }
+.term-bar { height: 28px; display: flex; align-items: center; gap: 6px; padding: 0 10px; background: rgba(255,255,255,0.05); }
+.term-dot { width: 8px; height: 8px; border-radius: 50%; }
+.tr { background: #ff5f57; } .ty { background: #febc2e; } .tgr { background: #28c840; }
+.term-body { padding: 12px 14px; font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.9; color: #ccc; overflow-x: auto; }
+.tc { color: #555; } .tg { color: #30d158; } .tp { color: #bf5af2; } .tu { color: #64d2ff; } .to { color: #ff9f0a; }
+
+/* Under the hood — compact feature list */
+.hood-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.hood { padding: 14px; border-radius: var(--r-sm); border: 1px solid var(--gray-200); }
+.hood h3 { font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.hood p { font-size: 11px; color: var(--gray-600); line-height: 1.4; }
+
+/* Architecture */
+.arch { background: var(--gray-900); border-radius: var(--r-md); padding: 18px; overflow-x: auto; }
+.arch-label { font-size: 10px; font-weight: 500; color: rgba(255,255,255,0.25); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 10px; }
+.arch pre { font-family: 'JetBrains Mono', monospace; font-size: 11px; line-height: 1.7; margin: 0; color: rgba(255,255,255,0.3); }
+.arch .w2 { color: #e5e5ea; font-weight: 500; } .arch .cb { color: #64d2ff; } .arch .cg { color: #30d158; } .arch .co { color: #ff9f0a; } .arch .cp { color: #bf5af2; }
+
+/* Info 3-col grid */
+.info-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-top: 24px; }
+.info-col { padding: 18px; border: 1px solid var(--gray-200); border-radius: var(--r-md); }
+.info-col h3 { font-size: 13px; font-weight: 700; margin-bottom: 10px; }
+.info-col ul { list-style: none; padding: 0; margin: 0; }
+.info-col li { font-size: 13px; color: var(--gray-600); padding: 4px 0; border-top: 1px solid var(--gray-100); }
+.info-col li:first-child { border-top: none; }
+.info-col li b { font-weight: 600; color: var(--gray-900); }
+
+/* CTA */
+.cta { text-align: center; padding: 40px 0; }
+.cta h2 { font-size: 28px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 6px; }
+.cta p { font-size: 14px; color: var(--gray-500); }
+.cta-cmd { display: inline-block; background: var(--gray-900); color: #ccc; padding: 10px 28px; border-radius: var(--r-full); font-family: 'JetBrains Mono', monospace; font-size: 13px; margin: 14px 0 16px; }
+.cta-cmd span { color: var(--gray-500); }
+.cta-btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+
+/* Footer */
+footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--gray-500); }
+.foot-links { display: flex; gap: 14px; }
+.foot-links a { color: var(--gray-500); }
+.foot-links a:hover { color: var(--gray-900); }
+
+@media (max-width: 768px) {
+  .nav-links a:not(.nav-cta) { display: none; }
+  .why-grid, .hood-grid, .steps, .info-grid { grid-template-columns: 1fr; }
+  .why-card.hero-card { flex-direction: column; gap: 16px; }
+  .why-card.hero-card .why-visual { width: 100%; }
+  .hero-logo { max-width: 240px; }
+  footer { flex-direction: column; gap: 8px; text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<nav><div class="nav-inner">
+  <a href="/" class="nav-wm">memoryOSS <span class="nav-beta">beta</span></a>
+  <div class="nav-links">
+    <a href="#why">Why</a>
+    <a href="#how">Setup</a>
+    <a href="#arch">Architecture</a>
+    <a href="https://github.com/memoryOSScom/memoryoss" class="nav-cta">GitHub</a>
+  </div>
+</div></nav>
+
+<!-- ═══ HERO ═══ -->
+<div class="hero"><div class="w">
+  <img src="illustration.png?v=13" alt="memoryOSS" class="hero-logo">
+  <h1>Every session starts from zero. Same questions, same mistakes, same context lost.</h1>
+  <p class="hero-sub">
+    memoryOSS fixes that with a drop-in proxy.<br>
+    Relevant memory for any agent. Invisible. Instant. Local.
+  </p>
+  <div class="hero-pills">
+    <span class="hero-pill"><b>Claude Code</b></span>
+    <span class="hero-pill"><b>Codex CLI</b></span>
+    <span class="hero-pill"><b>Cursor</b></span>
+    <span class="hero-pill"><b>OpenAI-compatible clients</b></span>
+  </div>
+  <div class="hero-btns">
+    <a href="https://github.com/memoryOSScom/memoryoss" class="btn btn-p">Get Started</a>
+    <a href="whitepaper.html" class="btn btn-g">Why memoryOSS</a>
+  </div>
+</div></div>
+
+<!-- ═══ WHY — the killer arguments ═══ -->
+<div class="sect sect-alt" id="why"><div class="w">
+  <div class="sect-head">
+    <div class="over brand-case">Why memoryOSS</div>
+    <h2>Memory that stays useful.</h2>
+  </div>
+
+  <div class="why-grid">
+
+    <!-- Hero card 1: Persistent Memory -->
+    <div class="why-card hero-card">
+      <div class="why-text">
+        <h3>Persistent Memory Across Sessions</h3>
+        <p>Project conventions, decisions, fixes, and preferences survive sessions and restarts. memoryOSS brings back situational context, not generic facts the model already knows.</p>
+      </div>
+      <div class="why-visual">
+        <span class="a1">Session 10</span> ──┐<br>
+        <span class="a1">Session 20</span> ──┤<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="mem">Memory</span><br>
+        <span class="a1">Session 30</span> ──┤<br>
+        <span class="a1">Session 40</span> ──┘
+      </div>
+    </div>
+
+    <!-- Zero code changes -->
+    <div class="why-card">
+      <h3>0 Lines of Code to Change</h3>
+      <p>Run the wizard or point a compatible client at the proxy. Your agent, your SDK, and your workflow stay intact.</p>
+    </div>
+
+    <!-- Speed -->
+    <div class="why-card">
+      <h3>Hybrid Retrieval for Real Work</h3>
+      <p>Vector search, full-text search, exact match, and recency scoring work together — so agents find the right memory, not just a vaguely similar one.</p>
+    </div>
+
+    <!-- 100% local -->
+    <div class="why-card">
+      <h3>Local Memory, Your Machine</h3>
+      <p>The memory layer runs locally. Your memory store stays on your machine instead of a hosted memory service.</p>
+    </div>
+
+    <!-- One Binary -->
+    <div class="why-card">
+      <h3>One Binary</h3>
+      <p>No Docker, no database, no extra services. Install one binary and the memory layer is live.</p>
+    </div>
+
+    <!-- Hero card 2: Cross-provider -->
+    <div class="why-card hero-card">
+      <div class="why-text">
+        <h3>Shared Memory, Scoped by Namespace</h3>
+        <p>Claude and Codex can share memory when you want them to. Projects and namespaces stay separated to prevent bleed-through.</p>
+      </div>
+      <div class="why-visual">
+        <span class="a1">Claude</span> ──┐<br>
+        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;├── <span class="mem">Memory</span><br>
+        <span class="a2">Codex</span> ──┘<br>
+        <br>
+        <span style="color:rgba(255,255,255,0.2)">sessions × providers × projects</span>
+      </div>
+    </div>
+
+  </div>
+</div></div>
+
+<!-- ═══ HOW IT WORKS ═══ -->
+<div class="sect" id="how"><div class="w">
+  <div class="sect-head">
+    <div class="over">Setup</div>
+    <h2>Three commands. One minute.</h2>
+    <p>Install, run the wizard, start your agent as usual.</p>
+  </div>
+
+  <div class="steps">
+    <div class="step">
+      <div class="step-n">1</div>
+      <h3>Install</h3>
+      <p>Single binary. No deps.</p>
+      <code>cargo install --git https://github.com/memoryOSScom/memoryoss</code>
+    </div>
+    <div class="step">
+      <div class="step-n">2</div>
+      <h3>Setup</h3>
+      <p>Wizard detects your tools, writes config, and sets up memory.</p>
+      <code>memoryoss setup</code>
+    </div>
+    <div class="step">
+      <div class="step-n">3</div>
+      <h3>Use</h3>
+      <p>Start Claude or Codex as usual. Memory works automatically.</p>
+      <code>claude<br>codex<br>cursor</code>
+    </div>
+  </div>
+
+  <p style="margin:16px auto 0;max-width:620px;text-align:center;font-size:12px;color:#6e6e73">Manual proxy mode (optional) — use explicit <code>BASE_URL</code> exports if you want to point API-key clients at the proxy yourself. Codex OAuth stays MCP-first.</p>
+  <div class="terminal">
+    <div class="term-bar"><div class="term-dot tr"></div><div class="term-dot ty"></div><div class="term-dot tgr"></div></div>
+    <div class="term-body"><span class="tc"># Anthropic</span>
+<span class="tg">export</span> <span class="tp">ANTHROPIC_BASE_URL</span>=<span class="tu">http://127.0.0.1:8000/proxy/anthropic/v1</span>
+<span class="tc"># OpenAI</span>
+<span class="tg">export</span> <span class="tp">OPENAI_BASE_URL</span>=<span class="tu">http://127.0.0.1:8000/proxy/v1</span>
+<span class="tc"># API-key clients through the local proxy</span>
+<span class="tg">claude</span>
+<span class="tg">codex</span>
+<span class="tg">cursor</span></div>
+  </div>
+</div></div>
+
+<!-- ═══ UNDER THE HOOD ═══ -->
+<div class="sect sect-alt"><div class="w">
+  <div class="sect-head">
+    <div class="over">Under the Hood</div>
+    <h2>What keeps memory useful.</h2>
+  </div>
+
+  <div class="hood-grid">
+    <div class="hood"><h3>Relevant Recall</h3><p>Semantic, exact-match, full-text, and recency signals work together so useful context wins over vague similarity.</p></div>
+    <div class="hood"><h3>Thresholded Injection</h3><p>Memories must clear relevance and trust thresholds before they consume context window budget.</p></div>
+    <div class="hood"><h3>MCP Built-in</h3><p>4 tools: store, recall, update, forget. Works with any MCP client.</p></div>
+    <div class="hood"><h3>Quarantine Before Injection</h3><p>Auto-extracted facts start unverified. Only memories that pass confidence and trust checks are eligible for injection.</p></div>
+    <div class="hood"><h3>Decay and Dedup</h3><p>Duplicate memories are collapsed, stale facts lose influence, and old noise stops consuming context.</p></div>
+    <div class="hood"><h3>Namespace Isolation</h3><p>Projects and agents can be kept separate so memory stays scoped instead of leaking across workspaces.</p></div>
+  </div>
+</div></div>
+
+<!-- ═══ ARCHITECTURE ═══ -->
+<div class="sect" id="arch"><div class="w">
+  <div class="sect-head">
+    <div class="over">Architecture</div>
+    <h2>How context gets added.</h2>
+    <p>The model keeps its general knowledge. memoryOSS adds relevant project context.</p>
+  </div>
+
+  <div class="arch">
+    <div class="arch-label">Request Flow</div>
+    <pre><span class="w2">Agent</span> (Claude Code / Codex / Any Client)
+  ▼
+<span class="cp">memoryOSS</span> (:8000)
+  ├─ <span class="cb">Recall</span>    search relevant memories
+  ├─ <span class="cg">Inject</span>    enrich system prompt
+  ├─ <span class="co">Forward</span>   send to upstream LLM
+  ├─ <span class="cb">Extract</span>   pull facts from response
+  └─ <span class="cg">Store</span>     embed + score + persist
+  ▼
+<span class="w2">LLM API</span> (Anthropic / OpenAI / Local)</pre>
+  </div>
+
+  <div class="info-grid">
+    <div class="info-col">
+      <h3>Built With</h3>
+      <ul>
+        <li>Rust</li>
+        <li>redb</li>
+        <li>usearch</li>
+        <li>tantivy</li>
+        <li>fastembed</li>
+        <li>axum</li>
+        <li>rmcp</li>
+      </ul>
+    </div>
+    <div class="info-col">
+      <h3>Works With</h3>
+      <ul>
+        <li>Claude Code</li>
+        <li>Codex CLI</li>
+        <li>Claude Desktop</li>
+        <li>OpenAI SDK</li>
+        <li>Cursor</li>
+        <li>Aider</li>
+        <li>Continue</li>
+        <li>LangChain</li>
+      </ul>
+    </div>
+    <div class="info-col">
+      <h3>Security</h3>
+      <ul>
+        <li>API key auth</li>
+        <li>Injection filtering</li>
+        <li>Secret/key redaction</li>
+        <li>Rate limiting</li>
+        <li>GDPR export &amp; deletion</li>
+        <li>Backup / restore</li>
+      </ul>
+    </div>
+  </div>
+
+</div></div>
+
+<!-- ═══ CTA ═══ -->
+<div class="cta"><div class="w">
+  <h2>Do you remember? Yes.</h2>
+  <p>Open source. Self-hosted. One binary.</p>
+  <div class="cta-cmd"><span>$ </span>memoryoss setup</div>
+  <div class="cta-btns">
+    <a href="https://github.com/memoryOSScom/memoryoss" class="btn btn-p">View on GitHub</a>
+  </div>
+</div></div>
+
+<footer>
+  <span>memoryOSS — AGPL-3.0</span>
+  <div class="foot-links">
+    <a href="https://x.com/memoryOSS" aria-label="X / Twitter"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
+    <a href="https://github.com/memoryOSScom/memoryoss">GitHub</a>
+    <a href="tests.html">Tests</a>
+    <a href="roadmap.html">Roadmap</a>
+    <a href="whitepaper.html">Whitepaper</a>
+    <a href="impressum.html">Legal Notice</a>
+    <a href="datenschutz.html">Privacy Policy</a>
+  </div>
+</footer>
+<div style="max-width:880px;margin:0 auto;padding:0 24px 12px;font-size:10px;color:#aeaeb2;text-align:center">Claude is a trademark of Anthropic. Codex and GPT are trademarks of OpenAI. All other trademarks belong to their respective owners. memoryOSS is not affiliated with or endorsed by any of them.</div>
+
+</body>
+</html>

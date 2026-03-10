@@ -1,0 +1,647 @@
+{
+  "runner": "tests/run_all.sh",
+  "generated_at": "2026-03-09T20:53:51.468483+00:00",
+  "duration_seconds": 151,
+  "summary": {
+    "status": "pass",
+    "total_checks_passed": 101,
+    "sections": 17,
+    "rust_unit_tests": 26,
+    "rust_integration_tests": 21,
+    "typescript_tests": 5,
+    "wizard_assertions": 102,
+    "wizard_scenarios": 9,
+    "benchmark_memories": 1000,
+    "calibration_queries": 1000
+  },
+  "steps": [
+    {
+      "slug": "cargo_fmt",
+      "label": "cargo fmt --check",
+      "status": "pass",
+      "duration_seconds": 1,
+      "log_path": "tests/.last-run/cargo_fmt.log"
+    },
+    {
+      "slug": "cargo_clippy",
+      "label": "cargo clippy -- -D warnings",
+      "status": "pass",
+      "duration_seconds": 19,
+      "log_path": "tests/.last-run/cargo_clippy.log"
+    },
+    {
+      "slug": "cargo_test",
+      "label": "cargo test",
+      "status": "pass",
+      "duration_seconds": 24,
+      "log_path": "tests/.last-run/cargo_test.log"
+    },
+    {
+      "slug": "cargo_build",
+      "label": "cargo build",
+      "status": "pass",
+      "duration_seconds": 1,
+      "log_path": "tests/.last-run/cargo_build.log"
+    },
+    {
+      "slug": "wizard_smoke",
+      "label": "setup wizard smoke test",
+      "status": "pass",
+      "duration_seconds": 2,
+      "log_path": "tests/.last-run/wizard_smoke.log"
+    },
+    {
+      "slug": "wizard_matrix",
+      "label": "setup wizard matrix",
+      "status": "pass",
+      "duration_seconds": 27,
+      "log_path": "tests/.last-run/wizard_matrix.log"
+    },
+    {
+      "slug": "benchmark",
+      "label": "20k benchmark",
+      "status": "pass",
+      "duration_seconds": 16,
+      "log_path": "tests/.last-run/benchmark.log"
+    },
+    {
+      "slug": "calibration",
+      "label": "scoring calibration",
+      "status": "pass",
+      "duration_seconds": 33,
+      "log_path": "tests/.last-run/calibration.log"
+    },
+    {
+      "slug": "coverage_gaps",
+      "label": "coverage gaps",
+      "status": "pass",
+      "duration_seconds": 23,
+      "log_path": "tests/.last-run/coverage_gaps.log"
+    },
+    {
+      "slug": "typescript_sdk",
+      "label": "TypeScript SDK build/test",
+      "status": "pass",
+      "duration_seconds": 3,
+      "log_path": "tests/.last-run/typescript_sdk.log"
+    },
+    {
+      "slug": "cargo_audit",
+      "label": "cargo audit (offline if available)",
+      "status": "pass",
+      "duration_seconds": 2,
+      "log_path": "tests/.last-run/cargo_audit.log"
+    }
+  ],
+  "sections": [
+    {
+      "title": "Build Gates",
+      "count": 4,
+      "items": [
+        {
+          "name": "cargo fmt --check",
+          "status": "pass",
+          "note": "1s"
+        },
+        {
+          "name": "cargo clippy -- -D warnings",
+          "status": "pass",
+          "note": "19s"
+        },
+        {
+          "name": "cargo test",
+          "status": "pass",
+          "note": "24s"
+        },
+        {
+          "name": "cargo build",
+          "status": "pass",
+          "note": "1s"
+        }
+      ]
+    },
+    {
+      "title": "Rust Unit Tests",
+      "count": 26,
+      "items": [
+        {
+          "name": "Structural duplicate detection handles containment",
+          "status": "pass"
+        },
+        {
+          "name": "Content fusion preserves unique sentences",
+          "status": "pass"
+        },
+        {
+          "name": "Fusion explain collapse merges structural duplicates",
+          "status": "pass"
+        },
+        {
+          "name": "Fusion recall collapse merges structural duplicates",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache canonicalization handles stopword-only input",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache keeps meaningful query terms",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache canonicalization normalizes basic queries",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache sorts and deduplicates tokens",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache invalidation on writes",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache hit/miss behavior",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache session isolation",
+          "status": "pass"
+        },
+        {
+          "name": "Candidate memories promote from repeated signal",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache strips punctuation",
+          "status": "pass"
+        },
+        {
+          "name": "Prefetch query recording deduplicates repeated prompts",
+          "status": "pass"
+        },
+        {
+          "name": "Superseded stale memories do not revive automatically",
+          "status": "pass"
+        },
+        {
+          "name": "Prefetch ring buffer evicts oldest entries",
+          "status": "pass"
+        },
+        {
+          "name": "Prefetch session tracking avoids duplicate warmups",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_accepts_request_scoped_override",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_accepts_anthropic_key_for_claude_provider",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_requires_openai_credentials",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_request_falls_back_to_claude_for_claude_oauth",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_uses_mapping_key_as_openai_fallback",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::passthrough_local_only_allows_loopback_direct",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::passthrough_local_only_rejects_remote_forwarded_client",
+          "status": "pass"
+        },
+        {
+          "name": "tests::prefers_current_binary_when_not_in_target_tree",
+          "status": "pass"
+        },
+        {
+          "name": "tests::prefers_stable_candidate_over_target_build_output",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "title": "Core API & Lifecycle",
+      "count": 6,
+      "items": [
+        {
+          "name": "Unauthorized requests are rejected cleanly",
+          "status": "pass"
+        },
+        {
+          "name": "Feedback transitions memory lifecycle states",
+          "status": "pass"
+        },
+        {
+          "name": "Concurrent stores and recalls stay stable",
+          "status": "pass"
+        },
+        {
+          "name": "Lifecycle admin view filters and summarizes status",
+          "status": "pass"
+        },
+        {
+          "name": "Admin query explain exposes real score breakdown",
+          "status": "pass"
+        },
+        {
+          "name": "Store -> Recall -> Update -> Forget roundtrip",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "title": "Connection Paths",
+      "count": 6,
+      "items": [
+        {
+          "name": "GDPR export, access, and certified forget roundtrip",
+          "status": "pass"
+        },
+        {
+          "name": "Decay and migrate CLI commands work against real data",
+          "status": "pass"
+        },
+        {
+          "name": "Key rotation paths cover rotate, list, revoke, readability",
+          "status": "pass"
+        },
+        {
+          "name": "Proxy transport paths cover OpenAI and Anthropic connections",
+          "status": "pass"
+        },
+        {
+          "name": "Proxy handles upstream failure without panicking",
+          "status": "pass"
+        },
+        {
+          "name": "Sharing paths cover owner, grantee, grant, revoke, accessible",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "title": "MCP",
+      "count": 2,
+      "items": [
+        {
+          "name": "MCP unknown tool returns JSON-RPC error",
+          "status": "pass"
+        },
+        {
+          "name": "MCP stdio roundtrip: initialize, tools/list, store, recall, update, forget",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "title": "Other Integration Paths",
+      "count": 7,
+      "items": [
+        {
+          "name": "test_batch_store_handles_zero_knowledge_and_source_provenance",
+          "status": "pass"
+        },
+        {
+          "name": "test_hybrid_gateway_fallback_covers_four_auth_paths_and_reports_core_unavailable",
+          "status": "pass"
+        },
+        {
+          "name": "test_hybrid_serve_manages_core_and_exposes_gateway_health",
+          "status": "pass"
+        },
+        {
+          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_anthropic_oauth_passthrough_uses_bearer_and_preserves_headers",
+          "status": "pass"
+        },
+        {
+          "name": "test_server_can_run_plain_http_without_dev_mode",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_passthrough_is_local_only_by_default",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "title": "Wizard Smoke Test",
+      "count": 3,
+      "items": [
+        {
+          "name": "Setup wizard writes a config file",
+          "status": "pass",
+          "note": "2s"
+        },
+        {
+          "name": "Setup wizard persists `default_memory_mode = \"readonly\"`",
+          "status": "pass",
+          "note": "2s"
+        },
+        {
+          "name": "Setup wizard reaches the ready banner and serves `/health`",
+          "status": "pass",
+          "note": "2s"
+        }
+      ]
+    },
+    {
+      "title": "TypeScript SDK Tests",
+      "count": 5,
+      "items": [
+        {
+          "name": "constructs with defaults",
+          "status": "pass"
+        },
+        {
+          "name": "constructs with options",
+          "status": "pass"
+        },
+        {
+          "name": "throws MemoryOSSError on auth without key",
+          "status": "pass"
+        },
+        {
+          "name": "connect returns a client without apiKey",
+          "status": "pass"
+        },
+        {
+          "name": "formats message with status",
+          "status": "pass"
+        }
+      ]
+    },
+    {
+      "title": "Dependency Audit",
+      "count": 1,
+      "items": [
+        {
+          "name": "cargo audit (offline if available)",
+          "status": "pass",
+          "note": "2s"
+        }
+      ]
+    },
+    {
+      "title": "Wizard Scenario Matrix",
+      "count": 9,
+      "items": [
+        {
+          "name": "No tools at all",
+          "status": "pass",
+          "note": "claude=False, codex=False, openai_key=False, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Claude Code only",
+          "status": "pass",
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Codex CLI only",
+          "status": "pass",
+          "note": "claude=False, codex=True, openai_key=False, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Both without keys",
+          "status": "pass",
+          "note": "claude=True, codex=True, openai_key=False, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Claude + OpenAI key",
+          "status": "pass",
+          "note": "claude=True, codex=False, openai_key=True, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Claude + Anthropic key",
+          "status": "pass",
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=11"
+        },
+        {
+          "name": "Both + OpenAI key",
+          "status": "pass",
+          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Codex + OpenAI key",
+          "status": "pass",
+          "note": "claude=False, codex=True, openai_key=True, anthropic_key=False, assertions=11"
+        },
+        {
+          "name": "Idempotency double run",
+          "status": "pass",
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=14"
+        }
+      ]
+    },
+    {
+      "title": "20k Scaling Benchmark",
+      "count": 6,
+      "items": [
+        {
+          "name": "Stored 1,000 memories in batches of 200",
+          "status": "pass",
+          "note": "120.60 memories/sec with client-provided embeddings"
+        },
+        {
+          "name": "Indexer backpressure handling",
+          "status": "pass",
+          "note": "lag waits=0, retry waits=0"
+        },
+        {
+          "name": "Synthetic dedup guard",
+          "status": "pass",
+          "note": "semantic_dedup_threshold=0.9999 for the synthetic scale corpus"
+        },
+        {
+          "name": "Signal hit rate at current threshold",
+          "status": "pass",
+          "note": "100.0%"
+        },
+        {
+          "name": "Noise rejection at current threshold",
+          "status": "pass",
+          "note": "100.0%"
+        },
+        {
+          "name": "Recall latency p50 / p95 / p99",
+          "status": "pass",
+          "note": "63.92ms / 82.08ms / 93.74ms"
+        }
+      ]
+    },
+    {
+      "title": "Scoring Calibration",
+      "count": 6,
+      "items": [
+        {
+          "name": "Calibration corpus",
+          "status": "pass",
+          "note": "1,000 queries (17 exact, 21 related, 962 noise)"
+        },
+        {
+          "name": "Exact score distribution",
+          "status": "pass",
+          "note": "min 0.849, p5 0.850, p50 0.853, p95 0.858, max 0.858"
+        },
+        {
+          "name": "Related score distribution",
+          "status": "pass",
+          "note": "min 0.603, p5 0.607, p50 0.809, p95 0.827, max 0.828"
+        },
+        {
+          "name": "Noise score distribution",
+          "status": "pass",
+          "note": "min 0.384, p5 0.384, p50 0.384, p95 0.409, max 0.431"
+        },
+        {
+          "name": "Threshold 0.400",
+          "status": "pass",
+          "note": "noise rejected 93.6%, exact kept 100.0%, related kept 100.0%, F1 0.551"
+        },
+        {
+          "name": "Best scanned threshold 0.450",
+          "status": "pass",
+          "note": "F1 1.000"
+        }
+      ]
+    },
+    {
+      "title": "Proxy Stream Paths",
+      "count": 3,
+      "items": [
+        {
+          "name": "Proxy non-streaming passthrough",
+          "status": "pass"
+        },
+        {
+          "name": "Proxy SSE streaming response",
+          "status": "pass"
+        },
+        {
+          "name": "Stream content-type and termination",
+          "status": "pass",
+          "note": "text/event-stream + [DONE] marker verified"
+        }
+      ]
+    },
+    {
+      "title": "Sharing Webhooks",
+      "count": 3,
+      "items": [
+        {
+          "name": "Create shared namespace with webhook_url",
+          "status": "pass"
+        },
+        {
+          "name": "Webhook URL persisted in shared namespace",
+          "status": "pass",
+          "note": "webhook_url visible in listing"
+        },
+        {
+          "name": "Webhook fires on memory store",
+          "status": "pass",
+          "note": "1 webhook(s) received"
+        }
+      ]
+    },
+    {
+      "title": "Backup / Restore",
+      "count": 5,
+      "items": [
+        {
+          "name": "Pre-backup memory count",
+          "status": "pass",
+          "note": "5 memories stored"
+        },
+        {
+          "name": "Backup creates valid archive",
+          "status": "pass",
+          "note": "31893 bytes"
+        },
+        {
+          "name": "Restore from backup succeeds",
+          "status": "pass"
+        },
+        {
+          "name": "Memories survive backup\u2192restore cycle",
+          "status": "pass",
+          "note": "pre=5 post=5"
+        },
+        {
+          "name": "Restore refuses non-empty directory",
+          "status": "pass",
+          "note": "exit=1 as expected"
+        }
+      ]
+    },
+    {
+      "title": "Embedding Migration",
+      "count": 3,
+      "items": [
+        {
+          "name": "Embedding migration dry-run",
+          "status": "pass",
+          "note": "counts without writing"
+        },
+        {
+          "name": "Embedding migration execution",
+          "status": "pass",
+          "note": "all-minilm-l6-v2"
+        },
+        {
+          "name": "Post-migration recall works",
+          "status": "pass",
+          "note": "3 memories recalled after migration"
+        }
+      ]
+    },
+    {
+      "title": "Key Rotation Grace Expiry",
+      "count": 6,
+      "items": [
+        {
+          "name": "Pre-rotation recall works",
+          "status": "pass"
+        },
+        {
+          "name": "Key rotation succeeds",
+          "status": "pass",
+          "note": "status=200"
+        },
+        {
+          "name": "Recall works during grace period",
+          "status": "pass"
+        },
+        {
+          "name": "Retired keys listed during grace",
+          "status": "pass",
+          "note": "1 retired key(s)"
+        },
+        {
+          "name": "Store works after rotation with new key",
+          "status": "pass"
+        },
+        {
+          "name": "Revoke retired key succeeds",
+          "status": "pass",
+          "note": "status=200"
+        }
+      ]
+    }
+  ],
+  "coverage_gaps": []
+}

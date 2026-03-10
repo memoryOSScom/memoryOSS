@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>memoryOSS - Test Results</title>
+<meta name="description" content="Automated test results generated from tests/run_all.sh for memoryOSS.">
+<link rel="icon" type="image/png" href="favicon-32.png?v=3" sizes="32x32">
+<link rel="icon" href="favicon.ico?v=3" sizes="any">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=3">
+<style>
+@font-face { font-family: 'Inter'; font-style: normal; font-weight: 400 800; font-display: swap; src: url(fonts/inter-latin.woff2) format('woff2'); }
+@font-face { font-family: 'JetBrains Mono'; font-style: normal; font-weight: 400 500; font-display: swap; src: url(fonts/jetbrains-mono-latin.woff2) format('woff2'); }
+:root {
+  --white: #fff; --gray-50: #fafafa; --gray-100: #f5f5f7; --gray-200: #e8e8ed;
+  --gray-300: #d2d2d7; --gray-500: #86868b; --gray-600: #6e6e73; --gray-700: #48484a; --gray-900: #1d1d1f;
+  --blue: #0071e3; --green: #30d158; --orange: #ff9f0a; --red: #ff3b30; --max-w: 880px; --r-md: 14px; --r-full: 980px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: var(--white); color: var(--gray-900); line-height: 1.5; -webkit-font-smoothing: antialiased; }
+code { font-family: 'JetBrains Mono', monospace; font-size: 12px; }
+a { text-decoration: none; }
+.w { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+
+nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; height: 44px; background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); border-bottom: 0.5px solid var(--gray-200); }
+.nav-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; height: 100%; display: flex; align-items: center; justify-content: space-between; }
+.nav-wm { font-size: 15px; font-weight: 700; color: var(--gray-900); display: flex; align-items: center; gap: 6px; }
+.nav-beta { font-size: 10px; font-weight: 600; color: var(--blue); background: rgba(0,113,227,0.08); padding: 2px 7px; border-radius: var(--r-full); letter-spacing: 0.04em; }
+.nav-links { display: flex; gap: 20px; align-items: center; }
+.nav-links a { font-size: 12px; color: var(--gray-500); }
+.nav-links a:hover { color: var(--gray-900); }
+.nav-cta { background: var(--blue); color: #fff !important; padding: 4px 12px; border-radius: var(--r-full); font-weight: 500; }
+
+.hero { padding: 84px 0 32px; }
+.hero h1 { font-size: 34px; font-weight: 700; margin-bottom: 8px; }
+.hero p { font-size: 15px; color: var(--gray-600); max-width: 700px; }
+
+.summary-bar { display: flex; gap: 16px; flex-wrap: wrap; padding: 16px 20px; border: 1px solid var(--gray-200); border-radius: var(--r-md); margin-bottom: 24px; background: var(--gray-50); }
+.summary-item { min-width: 112px; }
+.summary-item .num { font-size: 28px; font-weight: 700; }
+.summary-item .label { font-size: 11px; color: var(--gray-500); text-transform: uppercase; letter-spacing: 0.05em; }
+
+.card { border: 1px solid var(--gray-200); border-radius: var(--r-md); padding: 20px; margin-bottom: 16px; background: var(--white); }
+.card h2 { font-size: 16px; font-weight: 700; margin-bottom: 8px; }
+.card p { font-size: 13px; color: var(--gray-600); margin-bottom: 12px; }
+
+.test-row { display: flex; gap: 12px; align-items: flex-start; padding: 6px 0; border-bottom: 1px solid var(--gray-100); font-size: 13px; }
+.test-row:last-child { border-bottom: none; }
+.status { min-width: 42px; font-weight: 700; }
+.pass { color: var(--green); }
+.skip { color: var(--orange); }
+.fail { color: var(--red); }
+.note { color: var(--gray-500); font-size: 12px; }
+
+.meta { font-size: 11px; color: var(--gray-500); margin-top: 20px; text-align: center; }
+.error { border: 1px solid rgba(255,59,48,0.25); background: rgba(255,59,48,0.04); color: var(--red); }
+
+.meta a { color: var(--blue); }
+footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width: var(--max-w); margin: 0 auto; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--gray-500); }
+.foot-links { display: flex; gap: 14px; }
+.foot-links a { color: var(--gray-500); }
+.foot-links a:hover { color: var(--gray-900); }
+
+@media (max-width: 768px) {
+  .nav-links a:not(.nav-cta) { display: none; }
+  .summary-item { min-width: 96px; }
+  footer { flex-direction: column; gap: 8px; text-align: center; }
+}
+</style>
+</head>
+<body>
+<nav><div class="nav-inner">
+  <a href="/" class="nav-wm">memoryOSS <span class="nav-beta">beta</span></a>
+  <div class="nav-links">
+    <a href="/#why">Why</a>
+    <a href="/#how">Setup</a>
+    <a href="/#arch">Architecture</a>
+    <a href="https://github.com/memoryOSScom/memoryoss" class="nav-cta">GitHub</a>
+  </div>
+</div></nav>
+
+<div class="w">
+  <div class="hero">
+    <h1>Test Results</h1>
+    <p>These are real runner results generated from the same automated validation path used for releases.</p>
+    <p>In the current benchmark workload, early high-signal memories remained retrievable across a 20k-memory corpus, and the 2-hour soak run completed without errors or leak signals.</p>
+  </div>
+
+  <div id="summary"></div>
+  <div id="sections"></div>
+  <div id="meta"></div>
+</div>
+
+<footer>
+  <span>memoryOSS — AGPL-3.0</span>
+  <div class="foot-links">
+    <a href="https://x.com/memoryOSS" aria-label="X / Twitter"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
+    <a href="https://github.com/memoryOSScom/memoryoss">GitHub</a>
+    <a href="tests.html">Tests</a>
+    <a href="roadmap.html">Roadmap</a>
+    <a href="whitepaper.html">Whitepaper</a>
+    <a href="impressum.html">Legal Notice</a>
+    <a href="datenschutz.html">Privacy Policy</a>
+  </div>
+</footer>
+<div style="max-width:880px;margin:0 auto;padding:0 24px 12px;font-size:10px;color:#aeaeb2;text-align:center">Claude is a trademark of Anthropic. Codex and GPT are trademarks of OpenAI. All other trademarks belong to their respective owners. memoryOSS is not affiliated with or endorsed by any of them.</div>
+
+<script src="tests.js"></script>
+</body>
+</html>
