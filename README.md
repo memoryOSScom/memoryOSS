@@ -26,6 +26,8 @@ memoryoss -c memoryoss.toml serve
 
 The setup wizard auto-detects your environment, registers MCP for Claude/Codex, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
+If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup` again so memoryOSS can safely update the integration path.
+
 ## Hybrid Mode (Recommended)
 
 For API-key setups, the default setup is hybrid:
