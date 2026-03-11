@@ -1,10 +1,10 @@
 {
   "runner": "tests/run_all.sh",
-  "generated_at": "2026-03-11T18:44:22.731032+00:00",
-  "duration_seconds": 771,
+  "generated_at": "2026-03-11T19:23:18.444076+00:00",
+  "duration_seconds": 0,
   "summary": {
     "status": "pass",
-    "total_checks_passed": 127,
+    "total_checks_passed": 138,
     "sections": 18,
     "rust_unit_tests": 40,
     "rust_integration_tests": 29,
@@ -13,7 +13,7 @@
     "wizard_scenarios": 13,
     "benchmark_memories": 20000,
     "calibration_queries": 20000,
-    "extraction_eval_cases": 0
+    "extraction_eval_cases": 16
   },
   "steps": [
     {
@@ -75,8 +75,8 @@
     {
       "slug": "extraction_eval",
       "label": "extraction quality evaluation",
-      "status": "skip",
-      "duration_seconds": 0,
+      "status": "pass",
+      "duration_seconds": 33,
       "log_path": "tests/.last-run/extraction_eval.log"
     },
     {
@@ -637,12 +637,62 @@
     },
     {
       "title": "Extraction Quality Evaluation",
-      "count": 1,
+      "count": 11,
       "items": [
         {
-          "name": "extraction quality evaluation",
-          "status": "skip",
-          "note": "0s \u2014 report artifact not available"
+          "name": "Dataset coverage",
+          "status": "pass",
+          "note": "16 cases (9 positive, 7 negative)"
+        },
+        {
+          "name": "Project-specific fact rate",
+          "status": "pass",
+          "note": "90.0%"
+        },
+        {
+          "name": "Duplicate fact rate",
+          "status": "pass",
+          "note": "0.0% raw, 0.0% kept"
+        },
+        {
+          "name": "Extraction yield",
+          "status": "pass",
+          "note": "1.00 kept facts per positive case"
+        },
+        {
+          "name": "False-positive case rate",
+          "status": "pass",
+          "note": "0.0%"
+        },
+        {
+          "name": "False-positive fact rate",
+          "status": "pass",
+          "note": "0.0%"
+        },
+        {
+          "name": "Positive-case recall",
+          "status": "pass",
+          "note": "77.8%"
+        },
+        {
+          "name": "Negative-case specificity",
+          "status": "pass",
+          "note": "100.0%"
+        },
+        {
+          "name": "Generic fact rate",
+          "status": "pass",
+          "note": "0.0%"
+        },
+        {
+          "name": "Average facts per case",
+          "status": "pass",
+          "note": "0.62"
+        },
+        {
+          "name": "claude / claude-sonnet-4-6",
+          "status": "pass",
+          "note": "mean 2061 ms, p95 3297 ms"
         }
       ]
     },
