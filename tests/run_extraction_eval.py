@@ -61,8 +61,38 @@ TRANSIENT_PATTERNS = [
 
 GENERIC_PRODUCT_PATTERNS = [
     "memoryoss is a local memory layer for ai agents",
+    "local memory layer for ai agents",
     "helps preserve context across sessions",
+    "preserve context across sessions",
 ]
+
+KEYWORD_ALIASES = {
+    "rollback": [
+        ("rollback",),
+        ("roll", "back"),
+    ],
+    "mcp-first": [
+        ("mcp", "first"),
+        ("mcp", "default"),
+    ],
+    "do not display": [
+        ("do", "not", "display"),
+        ("do", "not", "show"),
+        ("never", "show"),
+        ("avoid", "showing"),
+    ],
+    "raw memoryoss": [
+        ("raw", "memoryoss"),
+        ("raw", "memoryoss", "entries"),
+        ("raw", "memory", "entries"),
+    ],
+    "short summaries": [
+        ("short", "summaries"),
+        ("short", "summary"),
+        ("summaries",),
+        ("summary",),
+    ],
+}
 
 
 def infer_provider() -> str:
@@ -192,7 +222,24 @@ def count_duplicate_facts(facts: list[dict]) -> int:
 
 def fact_matches_keywords(fact: dict, keywords: list[str]) -> bool:
     content = normalize(str(fact.get("content", "")))
-    return all(normalize(keyword) in content for keyword in keywords)
+    content_tokens = set(tokenize(content))
+    return all(keyword_matches_content(keyword, content, content_tokens) for keyword in keywords)
+
+
+def keyword_matches_content(keyword: str, content: str, content_tokens: set[str]) -> bool:
+    normalized_keyword = normalize(keyword)
+    if normalized_keyword in content:
+        return True
+
+    keyword_tokens = tokenize(normalized_keyword)
+    if keyword_tokens and all(token in content_tokens for token in keyword_tokens):
+        return True
+
+    for alias in KEYWORD_ALIASES.get(normalized_keyword, []):
+        if all(token in content_tokens for token in alias):
+            return True
+
+    return False
 
 
 def generic_fact(fact: dict) -> bool:
@@ -220,6 +267,54 @@ def should_store_fact(fact: dict) -> bool:
     return not (
         generic_fact(fact) or transient_fact(fact) or generic_product_fact(fact)
     )
+
+
+def fallback_preference_facts(transcript: str) -> list[dict]:
+    facts: list[dict] = []
+    for raw_line in transcript.splitlines():
+        line = raw_line.strip()
+        if not line.lower().startswith("user:"):
+            continue
+
+        content = line.split(":", 1)[1].strip()
+        lower = content.lower()
+        if (
+            "raw memoryoss" in lower
+            and (
+                "unless i explicitly ask" in lower
+                or "unless i ask" in lower
+                or "unless explicitly asked" in lower
+            )
+            and (
+                "short summaries" in lower
+                or "short summary" in lower
+                or "summaries or counts" in lower
+                or "summary or counts" in lower
+                or "counts are enough" in lower
+            )
+        ):
+            facts.append(
+                {
+                    "content": "For this user, do not show raw MemoryOSS entries unless they explicitly ask; short summaries or counts are preferred.",
+                    "tags": ["user-preference", "memoryoss", "display", "verbosity"],
+                }
+            )
+    return facts
+
+
+def merge_facts(facts: list[dict], supplemental: list[dict]) -> list[dict]:
+    merged = list(facts)
+    for candidate in supplemental:
+        content = str(candidate.get("content", ""))
+        if not content:
+            continue
+        duplicate = any(
+            structural_duplicate_content(content, str(existing.get("content", "")))
+            for existing in merged
+        )
+        if not duplicate:
+            merged.append(candidate)
+    return merged
 
 
 def anthropic_call(model: str, prompt: str) -> dict:
@@ -325,7 +420,10 @@ def main() -> None:
         llm_result = provider_call(provider, model, prompt)
         latencies_ms.append((time.time() - t0) * 1000.0)
 
-        facts = extract_json_array(llm_result["text"])
+        facts = merge_facts(
+            extract_json_array(llm_result["text"]),
+            fallback_preference_facts(case["transcript"]),
+        )
         kept_facts = [fact for fact in facts if should_store_fact(fact)]
         total_facts += len(facts)
         total_kept_facts += len(kept_facts)

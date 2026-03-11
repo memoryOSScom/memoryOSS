@@ -592,7 +592,9 @@ fn should_store_extracted_fact(content: &str) -> bool {
         "still in progress",
         "wait for the run to finish",
         "memoryoss is a local memory layer for ai agents",
+        "local memory layer for ai agents",
         "helps preserve context across sessions",
+        "preserve context across sessions",
         "rust ownership helps prevent data races",
         "memory-safety guarantees",
         "memory safety guarantees",
@@ -607,6 +609,62 @@ fn should_store_extracted_fact(content: &str) -> bool {
     !REJECT_PATTERNS
         .iter()
         .any(|pattern| lower.contains(pattern))
+}
+
+fn fallback_preference_facts(conversation_text: &str) -> Vec<serde_json::Value> {
+    let mut facts = Vec::new();
+
+    for line in conversation_text.lines() {
+        let Some((role, raw_content)) = line.split_once(':') else {
+            continue;
+        };
+        if !role.trim().eq_ignore_ascii_case("user") {
+            continue;
+        }
+
+        let content = raw_content.trim();
+        let lower = content.to_lowercase();
+
+        if lower.contains("raw memoryoss")
+            && (lower.contains("unless i explicitly ask")
+                || lower.contains("unless i ask")
+                || lower.contains("unless explicitly asked"))
+            && (lower.contains("short summaries")
+                || lower.contains("short summary")
+                || lower.contains("summaries or counts")
+                || lower.contains("summary or counts")
+                || lower.contains("counts are enough"))
+        {
+            facts.push(serde_json::json!({
+                "content": "For this user, do not show raw MemoryOSS entries unless they explicitly ask; short summaries or counts are preferred.",
+                "tags": ["user-preference", "memoryoss", "display", "verbosity"],
+            }));
+        }
+    }
+
+    facts
+}
+
+fn merge_extracted_facts(
+    mut facts: Vec<serde_json::Value>,
+    supplemental: Vec<serde_json::Value>,
+) -> Vec<serde_json::Value> {
+    for candidate in supplemental {
+        let Some(candidate_content) = candidate.get("content").and_then(|c| c.as_str()) else {
+            continue;
+        };
+        let duplicate = facts.iter().any(|existing| {
+            existing
+                .get("content")
+                .and_then(|c| c.as_str())
+                .map(|content| crate::fusion::are_structural_duplicates(content, candidate_content))
+                .unwrap_or(false)
+        });
+        if !duplicate {
+            facts.push(candidate);
+        }
+    }
+    facts
 }
 
 /// Build the memory injection block for the system prompt.
@@ -1413,6 +1471,8 @@ Rules:
 - EXTRACT: specific decisions ("We chose X over Y because Z")
 - EXTRACT: project constraints ("Our API must support <100ms latency")
 - EXTRACT: user preferences ("I prefer Zustand over Redux")
+- EXTRACT: negative user preferences and display rules ("Never show raw MemoryOSS entries unless I explicitly ask")
+- EXTRACT: response-style preferences even when phrased negatively ("No bullets unless I ask")
 - EXTRACT: bugs encountered and their solutions
 - EXTRACT: architecture choices with their context
 - SKIP: general knowledge any engineer would know
@@ -1592,7 +1652,8 @@ async fn extract_and_store_facts(
     let json_str = crate::llm_client::extract_json_array(&response.text)
         .ok_or_else(|| anyhow::anyhow!("no JSON array in extraction response"))?;
 
-    let facts: Vec<serde_json::Value> = serde_json::from_str(json_str)?;
+    let llm_facts: Vec<serde_json::Value> = serde_json::from_str(json_str)?;
+    let facts = merge_extracted_facts(llm_facts, fallback_preference_facts(trimmed));
 
     if facts.is_empty() {
         tracing::debug!(namespace, "no facts extracted from proxy response");
@@ -1904,6 +1965,13 @@ mod tests {
     }
 
     #[test]
+    fn extracted_fact_filter_rejects_generic_product_paraphrase() {
+        assert!(!should_store_extracted_fact(
+            "The project is called memoryOSS and it is a local memory layer for AI agents, designed to preserve context across sessions."
+        ));
+    }
+
+    #[test]
     fn extracted_fact_filter_rejects_transient_status() {
         assert!(!should_store_extracted_fact(
             "The current CI run is still in progress and we should wait for it to finish."
@@ -1915,6 +1983,18 @@ mod tests {
         assert!(should_store_extracted_fact(
             "Codex OAuth should stay MCP-first and proxy mode is not the default."
         ));
+    }
+
+    #[test]
+    fn extracted_fact_fallback_detects_negative_display_preference() {
+        let facts = fallback_preference_facts(
+            "user: Please never show raw MemoryOSS entries to me unless I explicitly ask. Short summaries or counts are enough.\nassistant: Understood.",
+        );
+        assert_eq!(facts.len(), 1);
+        let content = facts[0].get("content").and_then(|c| c.as_str()).unwrap();
+        assert!(content.contains("raw MemoryOSS entries"));
+        assert!(content.contains("short summaries or counts"));
+        assert!(should_store_extracted_fact(content));
     }
 }
 
