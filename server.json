@@ -1,0 +1,28 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.memoryOSScom/memoryoss",
+  "title": "memoryOSS",
+  "description": "Persistent memory layer for AI agents — store, recall, update, forget. Local-first, hybrid search (vector + full-text + BM25), MCP native.",
+  "repository": {
+    "url": "https://github.com/memoryOSScom/memoryOSS",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "mcpb",
+      "identifier": "https://github.com/memoryOSScom/memoryOSS/releases/download/v0.1.0/memoryoss-linux-x86_64.tar.gz",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MEMORYOSS_CONFIG",
+          "description": "Path to memoryoss.toml config file",
+          "required": false
+        }
+      ]
+    }
+  ]
+}
