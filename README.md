@@ -2,7 +2,7 @@
 
 Persistent long-term memory for AI agents. memoryOSS runs as a local memory layer in front of the LLM API, with MCP always available for explicit memory tools.
 
-> **Public Beta (v0.1.0)** — memoryOSS is a public beta for evaluation and testing. Features, APIs, and configuration may change without notice. Do not use for critical or regulated workloads. Please keep your own backups. This notice does not limit any mandatory statutory rights.
+> **Public Beta (v0.1.1)** — memoryOSS is a public beta for evaluation and testing. Features, APIs, and configuration may change without notice. Do not use for critical or regulated workloads. Please keep your own backups. This notice does not limit any mandatory statutory rights.
 
 memoryOSS is for project context, preferences, prior fixes, and working history — not for replacing general world knowledge the model already has.
 

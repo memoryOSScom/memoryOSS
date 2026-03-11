@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "memoryoss"
-version = "0.1.0"
+version = "0.1.1"
 description = "Python SDK for memoryOSS — Memory for AI Agents"
 license = "AGPL-3.0-only"
 requires-python = ">=3.9"
