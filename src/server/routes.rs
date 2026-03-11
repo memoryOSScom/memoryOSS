@@ -27,6 +27,7 @@ use crate::memory::{
     ConsolidateRequest, ConsolidateResponse, ConsolidationGroup, FeedbackRequest, FeedbackResponse,
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction, MemoryStatus,
     RecallRequest, RecallResponse, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
+    memories_contradict,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -127,6 +128,38 @@ impl MetricsCounters {
 }
 
 pub type AppState = Arc<SharedState>;
+
+pub(crate) fn apply_contradiction_detection(
+    state: &AppState,
+    namespace: &str,
+    candidate: &mut Memory,
+    subject: &str,
+    skip_ids: &[uuid::Uuid],
+) -> anyhow::Result<usize> {
+    let mut updates = 0usize;
+    let conflicts: Vec<_> = state
+        .doc_engine
+        .list_all_including_archived(namespace)?
+        .into_iter()
+        .filter(|existing| {
+            existing.id != candidate.id
+                && !skip_ids.contains(&existing.id)
+                && memories_contradict(candidate, existing)
+        })
+        .collect();
+
+    for mut existing in conflicts {
+        if existing.mark_contradicted_by(candidate.id) {
+            existing.updated_at = chrono::Utc::now();
+            existing.version += 1;
+            state.doc_engine.replace(&existing, subject)?;
+            updates += 1;
+        }
+        candidate.mark_contradicted_by(existing.id);
+    }
+
+    Ok(updates)
+}
 
 pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
@@ -589,6 +622,16 @@ async fn store(
         ensure_no_semantic_duplicate(&state, &namespace, emb, &[])?;
     }
 
+    let contradiction_updates =
+        apply_contradiction_detection(&state, &namespace, &mut memory, &claims.sub, &[])?;
+    if contradiction_updates > 0 {
+        state.indexer_state.write_seq.fetch_add(
+            contradiction_updates as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        state.indexer_state.wake();
+    }
+
     // Update trust scorer centroid with new embedding
     if let Some(ref emb) = memory.embedding {
         state.trust_scorer.update_centroid(emb, &namespace);
@@ -698,6 +741,7 @@ async fn store_batch(
 
     let mut stored = Vec::with_capacity(items.len());
     let mut prepared_memories = Vec::with_capacity(items.len());
+    let mut contradiction_updates = 0usize;
 
     for (item, item_ns) in items {
         let mut memory = Memory::new(item.content);
@@ -729,6 +773,22 @@ async fn store_batch(
             ensure_no_semantic_duplicate(&state, &item_ns, emb, &prepared_memories)?;
         }
 
+        let skip_ids: Vec<_> = prepared_memories.iter().map(|memory| memory.id).collect();
+        contradiction_updates +=
+            apply_contradiction_detection(&state, &item_ns, &mut memory, &claims.sub, &skip_ids)?;
+        for prepared in prepared_memories
+            .iter_mut()
+            .filter(|prepared| prepared.namespace.as_deref() == Some(item_ns.as_str()))
+        {
+            if memories_contradict(&memory, prepared) {
+                if prepared.mark_contradicted_by(memory.id) {
+                    prepared.updated_at = chrono::Utc::now();
+                    prepared.version += 1;
+                }
+                memory.mark_contradicted_by(prepared.id);
+            }
+        }
+
         // Trust scoring (consistent with single store)
         if let Some(ref emb) = memory.embedding {
             state.trust_scorer.update_centroid(emb, &item_ns);
@@ -757,7 +817,7 @@ async fn store_batch(
         .collect();
     state.doc_engine.store_batch_tx(&batch_items)?;
     state.indexer_state.write_seq.fetch_add(
-        batch_items.len() as u64,
+        (batch_items.len() + contradiction_updates) as u64,
         std::sync::atomic::Ordering::Relaxed,
     );
 
@@ -1382,6 +1442,7 @@ fn apply_feedback_to_memory(
             memory.evidence_count = memory.evidence_count.saturating_add(1);
             memory.last_verified_at = Some(now);
             memory.superseded_by = None;
+            memory.clear_contradictions();
             if let Some(conf) = memory.confidence {
                 memory.confidence = Some((conf + 0.25).min(1.0));
             }
@@ -1394,6 +1455,7 @@ fn apply_feedback_to_memory(
         MemoryFeedbackAction::Supersede => {
             memory.status = MemoryStatus::Stale;
             memory.superseded_by = superseded_by;
+            memory.clear_contradictions();
         }
     }
 }
@@ -1467,6 +1529,7 @@ async fn feedback(
         evidence_count: memory.evidence_count,
         last_verified_at: memory.last_verified_at,
         superseded_by: memory.superseded_by,
+        contradicts_with: memory.contradicts_with.clone(),
     })
     .into_response())
 }
@@ -1495,21 +1558,32 @@ async fn update(
 
     match updated {
         Some(mut memory) => {
+            let mut contradiction_updates = 0usize;
             // Re-embed if content changed, store back to SoT, let indexer handle the rest
             if content_changed && let Some(ref content) = new_content {
                 let embedding = state.embedding.embed_one(content).await?;
                 memory.embedding = Some(embedding);
+                contradiction_updates = apply_contradiction_detection(
+                    &state,
+                    &namespace,
+                    &mut memory,
+                    &claims.sub,
+                    &[],
+                )?;
                 state.doc_engine.store(&memory, &claims.sub)?;
             }
-            state
-                .indexer_state
-                .write_seq
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            state.indexer_state.write_seq.fetch_add(
+                (1 + contradiction_updates) as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
             state.indexer_state.wake();
             Ok(Json(json!({
                 "id": memory.id,
                 "version": memory.version,
                 "updated_at": memory.updated_at,
+                "status": memory.status,
+                "eligible_for_injection": memory.eligible_for_injection(),
+                "contradicts_with": memory.contradicts_with,
             }))
             .into_response())
         }
@@ -1909,6 +1983,21 @@ async fn inspect_memory(
         Some(mem) => {
             let trust = mem.recency_trust();
             let age_hours = (chrono::Utc::now() - mem.created_at).num_hours();
+            let conflicts: Vec<_> = mem
+                .contradicts_with
+                .iter()
+                .filter_map(|conflict_id| {
+                    state.doc_engine.get(*conflict_id, namespace).ok().flatten()
+                })
+                .map(|conflict| {
+                    json!({
+                        "id": conflict.id,
+                        "content": conflict.content,
+                        "status": conflict.status,
+                        "superseded_by": conflict.superseded_by,
+                    })
+                })
+                .collect();
             Ok(Json(json!({
                 "id": mem.id,
                 "content": mem.content,
@@ -1925,10 +2014,14 @@ async fn inspect_memory(
                 "evidence_count": mem.evidence_count,
                 "last_verified_at": mem.last_verified_at,
                 "superseded_by": mem.superseded_by,
+                "contradicts_with": mem.contradicts_with,
+                "contradiction_count": mem.contradicts_with.len(),
+                "conflicts": conflicts,
                 "has_embedding": mem.embedding.is_some(),
                 "trust_score": trust,
                 "low_trust": trust < 0.3,
                 "age_hours": age_hours,
+                "eligible_for_injection": mem.eligible_for_injection(),
             }))
             .into_response())
         }
@@ -2607,10 +2700,12 @@ async fn lifecycle_view(
                 "evidence_count": memory.evidence_count,
                 "last_verified_at": memory.last_verified_at,
                 "superseded_by": memory.superseded_by,
+                "contradicts_with": memory.contradicts_with,
                 "created_at": memory.created_at,
                 "updated_at": memory.updated_at,
                 "trust_score": trust.score,
                 "low_trust": trust.low_trust,
+                "eligible_for_injection": memory.eligible_for_injection(),
             })
         })
         .collect();

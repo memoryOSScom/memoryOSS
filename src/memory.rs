@@ -3,6 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -88,6 +89,8 @@ pub struct Memory {
     pub last_verified_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contradicts_with: Vec<Uuid>,
 }
 
 impl Memory {
@@ -114,6 +117,7 @@ impl Memory {
             evidence_count: default_evidence_count(),
             last_verified_at: Some(now),
             superseded_by: None,
+            contradicts_with: Vec::new(),
         }
     }
 
@@ -145,6 +149,28 @@ impl Memory {
         matches!(self.status, MemoryStatus::Active) && !self.archived
     }
 
+    pub fn mark_contradicted_by(&mut self, other_id: Uuid) -> bool {
+        let mut changed = false;
+        if !self.contradicts_with.contains(&other_id) {
+            self.contradicts_with.push(other_id);
+            self.contradicts_with.sort_unstable();
+            changed = true;
+        }
+        if self.status != MemoryStatus::Contested || self.superseded_by.is_some() {
+            changed = true;
+        }
+        self.status = MemoryStatus::Contested;
+        self.superseded_by = None;
+        if changed && let Some(conf) = self.confidence {
+            self.confidence = Some((conf * 0.6).clamp(0.0, 1.0));
+        }
+        changed
+    }
+
+    pub fn clear_contradictions(&mut self) {
+        self.contradicts_with.clear();
+    }
+
     pub fn confirm_from_signal(&mut self) {
         let now = Utc::now();
         self.updated_at = now;
@@ -157,7 +183,9 @@ impl Memory {
 
         match self.status {
             MemoryStatus::Candidate | MemoryStatus::Contested => {
-                if self.confidence.unwrap_or(1.0) >= 0.5 || self.evidence_count >= 1 {
+                if self.contradicts_with.is_empty()
+                    && (self.confidence.unwrap_or(1.0) >= 0.5 || self.evidence_count >= 1)
+                {
                     self.status = MemoryStatus::Active;
                     self.superseded_by = None;
                 }
@@ -170,6 +198,110 @@ impl Memory {
             MemoryStatus::Active => {}
         }
     }
+}
+
+const NEGATION_TOKENS: &[&str] = &[
+    "no", "not", "never", "without", "cannot", "cant", "don't", "dont", "doesn't", "doesnt",
+    "won't", "wont", "isn't", "isnt", "aren't", "arent",
+];
+
+const CONTRADICTION_STOPWORDS: &[&str] = &[
+    "a", "an", "the", "this", "that", "these", "those", "to", "for", "of", "and", "or", "in", "on",
+    "at", "by", "with", "from", "as", "it", "its", "be", "is", "are", "was", "were", "should",
+    "must", "can", "could", "would", "will", "within", "into", "our", "we", "i", "you", "they",
+    "them", "their", "my", "your", "if", "then",
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ContradictionSignature {
+    polarity_negative: bool,
+    core_tokens: Vec<String>,
+}
+
+fn contradiction_token(token: &str) -> Option<(String, bool)> {
+    let normalized = token
+        .trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '\'')
+        .to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+
+    let mapped = match normalized.as_str() {
+        "enables" | "enabled" | "enabling" => ("enable", false),
+        "disables" | "disabled" | "disabling" => ("enable", true),
+        "requires" | "required" | "requiring" => ("require", false),
+        "forbids" | "forbidden" => ("forbid", true),
+        "denies" | "denied" => ("deny", true),
+        "allows" | "allowed" | "allowing" => ("allow", false),
+        "blocks" | "blocked" | "blocking" => ("block", false),
+        "readonly" => ("write", true),
+        "full" => ("write", false),
+        "roll" => ("rollback", false),
+        "back" => ("rollback", false),
+        value => (value, false),
+    };
+    Some((mapped.0.to_string(), mapped.1))
+}
+
+fn contradiction_signature(content: &str) -> Option<ContradictionSignature> {
+    let mut polarity_negative = false;
+    let mut core_tokens = Vec::new();
+
+    for raw_token in content.split_whitespace() {
+        let Some((token, implied_negative)) = contradiction_token(raw_token) else {
+            continue;
+        };
+        if NEGATION_TOKENS.contains(&token.as_str()) {
+            polarity_negative = true;
+            continue;
+        }
+        if CONTRADICTION_STOPWORDS.contains(&token.as_str()) {
+            continue;
+        }
+        if implied_negative {
+            polarity_negative = true;
+        }
+        core_tokens.push(token);
+    }
+
+    if core_tokens.len() < 3 {
+        return None;
+    }
+
+    core_tokens.sort_unstable();
+    core_tokens.dedup();
+
+    Some(ContradictionSignature {
+        polarity_negative,
+        core_tokens,
+    })
+}
+
+pub fn memories_contradict(a: &Memory, b: &Memory) -> bool {
+    if a.id == b.id || a.archived || b.archived {
+        return false;
+    }
+    if a.superseded_by.is_some() || b.superseded_by.is_some() {
+        return false;
+    }
+
+    let Some(sig_a) = contradiction_signature(&a.content) else {
+        return false;
+    };
+    let Some(sig_b) = contradiction_signature(&b.content) else {
+        return false;
+    };
+
+    if sig_a.polarity_negative == sig_b.polarity_negative {
+        return false;
+    }
+
+    let set_a: HashSet<&str> = sig_a.core_tokens.iter().map(String::as_str).collect();
+    let set_b: HashSet<&str> = sig_b.core_tokens.iter().map(String::as_str).collect();
+    let shared = set_a.intersection(&set_b).count();
+    let total = set_a.union(&set_b).count();
+
+    shared >= 3 && shared * 100 >= total * 60
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -376,6 +508,8 @@ pub struct FeedbackResponse {
     pub last_verified_at: Option<DateTime<Utc>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contradicts_with: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -481,7 +615,7 @@ pub struct ConsolidateResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{Memory, MemoryStatus};
+    use super::{Memory, MemoryStatus, memories_contradict};
 
     #[test]
     fn test_confirm_from_signal_promotes_candidate() {
@@ -508,5 +642,27 @@ mod tests {
         memory.confirm_from_signal();
 
         assert_eq!(memory.status, MemoryStatus::Stale);
+    }
+
+    #[test]
+    fn test_confirm_from_signal_keeps_contested_memory_contested_while_conflicted() {
+        let mut memory = Memory::new("deploys require staging approval".to_string());
+        memory.status = MemoryStatus::Contested;
+        memory.contradicts_with.push(uuid::Uuid::now_v7());
+
+        memory.confirm_from_signal();
+
+        assert_eq!(memory.status, MemoryStatus::Contested);
+    }
+
+    #[test]
+    fn test_memories_contradict_for_negated_fact_pair() {
+        let mut first = Memory::new("Production deploys require staging approval.".to_string());
+        first.namespace = Some("test".to_string());
+        let mut second =
+            Memory::new("Production deploys do not require staging approval.".to_string());
+        second.namespace = Some("test".to_string());
+
+        assert!(memories_contradict(&first, &second));
     }
 }

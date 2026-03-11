@@ -970,6 +970,124 @@ async fn test_lifecycle_view_filters_and_summarizes() {
 }
 
 #[tokio::test]
+async fn test_contradiction_detection_marks_memories_contested() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("test.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_store.status(), 200);
+    let first_id = first_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let second_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys do not require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_store.status(), 200);
+    let second_id = second_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let inspect_first = client
+        .get(format!("{base}/v1/inspect/{first_id}"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(inspect_first.status(), 200);
+    let inspect_first_body: serde_json::Value = inspect_first.json().await.unwrap();
+    assert_eq!(inspect_first_body["status"].as_str(), Some("contested"));
+    assert_eq!(
+        inspect_first_body["eligible_for_injection"].as_bool(),
+        Some(false)
+    );
+    let first_conflicts = inspect_first_body["contradicts_with"]
+        .as_array()
+        .expect("missing contradicts_with");
+    assert_eq!(first_conflicts.len(), 1);
+    assert_eq!(first_conflicts[0].as_str(), Some(second_id.as_str()));
+
+    let inspect_second = client
+        .get(format!("{base}/v1/inspect/{second_id}"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(inspect_second.status(), 200);
+    let inspect_second_body: serde_json::Value = inspect_second.json().await.unwrap();
+    assert_eq!(inspect_second_body["status"].as_str(), Some("contested"));
+    assert_eq!(
+        inspect_second_body["eligible_for_injection"].as_bool(),
+        Some(false)
+    );
+    let second_conflicts = inspect_second_body["conflicts"]
+        .as_array()
+        .expect("missing conflicts");
+    assert_eq!(second_conflicts.len(), 1);
+    assert_eq!(second_conflicts[0]["id"].as_str(), Some(first_id.as_str()));
+
+    let lifecycle_resp = client
+        .get(format!(
+            "{base}/v1/admin/lifecycle?status=contested&limit=10"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lifecycle_resp.status(), 200);
+    let lifecycle_body: serde_json::Value = lifecycle_resp.json().await.unwrap();
+    assert_eq!(lifecycle_body["summary"]["contested"].as_u64(), Some(2));
+    let memories = lifecycle_body["memories"]
+        .as_array()
+        .expect("missing memories");
+    assert_eq!(memories.len(), 2);
+    assert!(
+        memories
+            .iter()
+            .all(|memory| memory["eligible_for_injection"] == false)
+    );
+    assert!(memories.iter().all(|memory| {
+        memory["contradicts_with"]
+            .as_array()
+            .map(|ids| ids.len() == 1)
+            .unwrap_or(false)
+    }));
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
 async fn test_auth_rejected_without_key() {
     let port = free_port();
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");

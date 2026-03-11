@@ -1754,6 +1754,21 @@ async fn extract_and_store_facts(
         memory.last_verified_at = None;
         memory.embedding = Some(embedding);
 
+        let contradiction_updates = crate::server::routes::apply_contradiction_detection(
+            state,
+            namespace,
+            &mut memory,
+            "proxy-extraction",
+            &[],
+        )?;
+        if contradiction_updates > 0 {
+            state.indexer_state.write_seq.fetch_add(
+                contradiction_updates as u64,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            state.indexer_state.wake();
+        }
+
         // Store via group committer
         match state
             .group_committer
