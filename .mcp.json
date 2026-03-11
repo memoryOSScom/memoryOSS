@@ -1,6 +1,0 @@
-{
-    "memoryoss": {
-        "command": "memoryoss",
-        "args": ["mcp-server"]
-    }
-}
