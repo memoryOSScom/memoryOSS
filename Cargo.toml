@@ -4,9 +4,20 @@ version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0-only"
 description = "Memory for AI Agents — store, recall, update, forget"
-repository = "https://github.com/memoryOSScom/memoryoss"
+repository = "https://github.com/memoryOSScom/memoryOSS"
 homepage = "https://memoryoss.com"
 readme = "README.md"
+keywords = ["ai", "memory", "agents", "embeddings", "mcp"]
+categories = ["database", "web-programming"]
+include = [
+    "src/**",
+    "Cargo.toml",
+    "Cargo.lock",
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "memoryoss.toml.example",
+]
 
 [dependencies]
 # Storage (Source of Truth)
