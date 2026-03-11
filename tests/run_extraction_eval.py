@@ -49,6 +49,21 @@ GENERIC_PATTERNS = [
     "glad that helped",
 ]
 
+TRANSIENT_PATTERNS = [
+    "sounds good, i'll be here",
+    "i'll be here when you return",
+    "be back in ten minutes",
+    "grab coffee",
+    "current ci run is still in progress",
+    "still in progress",
+    "wait for the run to finish",
+]
+
+GENERIC_PRODUCT_PATTERNS = [
+    "memoryoss is a local memory layer for ai agents",
+    "helps preserve context across sessions",
+]
+
 
 def infer_provider() -> str:
     explicit = os.environ.get("EXTRACTION_EVAL_PROVIDER", "").strip().lower()
@@ -138,6 +153,26 @@ def generic_fact(fact: dict) -> bool:
     return any(pattern in content for pattern in GENERIC_PATTERNS)
 
 
+def transient_fact(fact: dict) -> bool:
+    content = normalize(str(fact.get("content", "")))
+    if not content:
+        return False
+    return any(pattern in content for pattern in TRANSIENT_PATTERNS)
+
+
+def generic_product_fact(fact: dict) -> bool:
+    content = normalize(str(fact.get("content", "")))
+    if not content:
+        return False
+    return any(pattern in content for pattern in GENERIC_PRODUCT_PATTERNS)
+
+
+def should_store_fact(fact: dict) -> bool:
+    return not (
+        generic_fact(fact) or transient_fact(fact) or generic_product_fact(fact)
+    )
+
+
 def anthropic_call(model: str, prompt: str) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -222,10 +257,14 @@ def main() -> None:
     latencies_ms = []
     total_facts = 0
     generic_facts = 0
+    transient_facts = 0
+    generic_product_facts = 0
     positive_cases = 0
     negative_cases = 0
     positive_hits = 0
+    positive_hits_after_filter = 0
     negative_clean = 0
+    negative_clean_after_filter = 0
 
     for case in dataset:
         prompt = f"{prompt_prefix}{case['transcript']}"
@@ -234,14 +273,23 @@ def main() -> None:
         latencies_ms.append((time.time() - t0) * 1000.0)
 
         facts = extract_json_array(llm_result["text"])
+        kept_facts = [fact for fact in facts if should_store_fact(fact)]
         total_facts += len(facts)
         generic_count = sum(1 for fact in facts if generic_fact(fact))
+        transient_count = sum(1 for fact in facts if transient_fact(fact))
+        generic_product_count = sum(1 for fact in facts if generic_product_fact(fact))
         generic_facts += generic_count
+        transient_facts += transient_count
+        generic_product_facts += generic_product_count
 
         matched_expected = False
+        matched_expected_after_filter = False
         for expected in case.get("expected_facts", []):
             if any(fact_matches_keywords(fact, expected) for fact in facts):
                 matched_expected = True
+            if any(fact_matches_keywords(fact, expected) for fact in kept_facts):
+                matched_expected_after_filter = True
+            if matched_expected and matched_expected_after_filter:
                 break
 
         expect_extract = bool(case.get("expect_extract"))
@@ -249,10 +297,14 @@ def main() -> None:
             positive_cases += 1
             if matched_expected:
                 positive_hits += 1
+            if matched_expected_after_filter:
+                positive_hits_after_filter += 1
         else:
             negative_cases += 1
             if not facts:
                 negative_clean += 1
+            if not kept_facts:
+                negative_clean_after_filter += 1
 
         results.append(
             {
@@ -260,17 +312,23 @@ def main() -> None:
                 "category": case["category"],
                 "expect_extract": expect_extract,
                 "facts_found": len(facts),
+                "facts_kept": len(kept_facts),
                 "matched_expected": matched_expected,
+                "matched_expected_after_filter": matched_expected_after_filter,
                 "generic_facts": generic_count,
+                "transient_facts": transient_count,
+                "generic_product_facts": generic_product_count,
                 "input_tokens": llm_result.get("input_tokens"),
                 "output_tokens": llm_result.get("output_tokens"),
                 "latency_ms": round(latencies_ms[-1], 2),
                 "facts": facts,
+                "kept_facts": kept_facts,
             }
         )
         print(
             f"[extraction-eval] {case['id']} category={case['category']} facts={len(facts)} "
-            f"matched={matched_expected} generic={generic_count}",
+            f"kept={len(kept_facts)} matched={matched_expected_after_filter} "
+            f"generic={generic_count} transient={transient_count}",
             flush=True,
         )
 
@@ -281,10 +339,29 @@ def main() -> None:
         "positive_cases": positive_cases,
         "negative_cases": negative_cases,
         "case_recall": round(positive_hits / positive_cases, 4) if positive_cases else None,
+        "case_recall_after_filter": round(positive_hits_after_filter / positive_cases, 4)
+        if positive_cases
+        else None,
         "case_specificity": round(negative_clean / negative_cases, 4)
         if negative_cases
         else None,
+        "case_specificity_after_filter": round(
+            negative_clean_after_filter / negative_cases, 4
+        )
+        if negative_cases
+        else None,
         "generic_fact_rate": round(generic_facts / total_facts, 4) if total_facts else 0.0,
+        "transient_fact_rate": round(transient_facts / total_facts, 4)
+        if total_facts
+        else 0.0,
+        "generic_product_fact_rate": round(generic_product_facts / total_facts, 4)
+        if total_facts
+        else 0.0,
+        "post_filter_keep_rate": round(
+            sum(result["facts_kept"] for result in results) / total_facts, 4
+        )
+        if total_facts
+        else 0.0,
         "avg_facts_per_case": round(total_facts / len(dataset), 3),
         "avg_facts_per_positive_case": round(total_facts / positive_cases, 3)
         if positive_cases
