@@ -1,0 +1,108 @@
+{
+  "runner": "token_savings_benchmark",
+  "generated_at": "2026-03-11T14:00:31.919808Z",
+  "model": "claude-opus-4-6",
+  "runs_per_task": 3,
+  "total_tasks": 10,
+  "summary": {
+    "avg_input_tokens_without_memory": 237,
+    "avg_input_tokens_with_memory": 130,
+    "avg_savings_percent": 44.4,
+    "total_savings_percent": 45.0,
+    "min_savings_percent": 33.5,
+    "max_savings_percent": 52.6,
+    "estimated_monthly_savings_10k_queries_usd": 3.2
+  },
+  "tasks": [
+    {
+      "id": "T01",
+      "name": "Project stack question",
+      "avg_input_tokens_without_memory": 179,
+      "avg_input_tokens_with_memory": 119,
+      "token_savings_percent": 33.5,
+      "token_savings_absolute": 60,
+      "runs": 3
+    },
+    {
+      "id": "T02",
+      "name": "Debug auth error",
+      "avg_input_tokens_without_memory": 221,
+      "avg_input_tokens_with_memory": 145,
+      "token_savings_percent": 34.4,
+      "token_savings_absolute": 76,
+      "runs": 3
+    },
+    {
+      "id": "T03",
+      "name": "Deployment config",
+      "avg_input_tokens_without_memory": 260,
+      "avg_input_tokens_with_memory": 125,
+      "token_savings_percent": 51.9,
+      "token_savings_absolute": 135,
+      "runs": 3
+    },
+    {
+      "id": "T04",
+      "name": "Recall tuning",
+      "avg_input_tokens_without_memory": 280,
+      "avg_input_tokens_with_memory": 146,
+      "token_savings_percent": 47.9,
+      "token_savings_absolute": 134,
+      "runs": 3
+    },
+    {
+      "id": "T05",
+      "name": "MCP integration",
+      "avg_input_tokens_without_memory": 246,
+      "avg_input_tokens_with_memory": 140,
+      "token_savings_percent": 43.1,
+      "token_savings_absolute": 106,
+      "runs": 3
+    },
+    {
+      "id": "T06",
+      "name": "Proxy setup",
+      "avg_input_tokens_without_memory": 246,
+      "avg_input_tokens_with_memory": 134,
+      "token_savings_percent": 45.5,
+      "token_savings_absolute": 112,
+      "runs": 3
+    },
+    {
+      "id": "T07",
+      "name": "Encryption setup",
+      "avg_input_tokens_without_memory": 196,
+      "avg_input_tokens_with_memory": 119,
+      "token_savings_percent": 39.3,
+      "token_savings_absolute": 77,
+      "runs": 3
+    },
+    {
+      "id": "T08",
+      "name": "Migration issue",
+      "avg_input_tokens_without_memory": 221,
+      "avg_input_tokens_with_memory": 115,
+      "token_savings_percent": 48.0,
+      "token_savings_absolute": 106,
+      "runs": 3
+    },
+    {
+      "id": "T09",
+      "name": "Performance tuning",
+      "avg_input_tokens_without_memory": 276,
+      "avg_input_tokens_with_memory": 144,
+      "token_savings_percent": 47.8,
+      "token_savings_absolute": 132,
+      "runs": 3
+    },
+    {
+      "id": "T10",
+      "name": "Multi-agent sharing",
+      "avg_input_tokens_without_memory": 247,
+      "avg_input_tokens_with_memory": 117,
+      "token_savings_percent": 52.6,
+      "token_savings_absolute": 130,
+      "runs": 3
+    }
+  ]
+}

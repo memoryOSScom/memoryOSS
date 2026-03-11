@@ -1,0 +1,107 @@
+{
+  "runner": "token_savings_benchmark_openai",
+  "generated_at": "2026-03-11T14:16:11.555958+00:00",
+  "model": "gpt-4o",
+  "runs_per_task": 3,
+  "total_tasks": 10,
+  "summary": {
+    "avg_input_tokens_without_memory": 210,
+    "avg_input_tokens_with_memory": 115,
+    "avg_savings_percent": 44.4,
+    "total_savings_percent": 45.0,
+    "min_savings_percent": 32.5,
+    "max_savings_percent": 54.0
+  },
+  "tasks": [
+    {
+      "id": "T01",
+      "name": "Project stack question",
+      "avg_input_tokens_without_memory": 157,
+      "avg_input_tokens_with_memory": 106,
+      "token_savings_percent": 32.5,
+      "token_savings_absolute": 51,
+      "runs": 3
+    },
+    {
+      "id": "T02",
+      "name": "Debug auth error",
+      "avg_input_tokens_without_memory": 202,
+      "avg_input_tokens_with_memory": 129,
+      "token_savings_percent": 36.1,
+      "token_savings_absolute": 73,
+      "runs": 3
+    },
+    {
+      "id": "T03",
+      "name": "Deployment config",
+      "avg_input_tokens_without_memory": 221,
+      "avg_input_tokens_with_memory": 111,
+      "token_savings_percent": 49.8,
+      "token_savings_absolute": 110,
+      "runs": 3
+    },
+    {
+      "id": "T04",
+      "name": "Recall tuning",
+      "avg_input_tokens_without_memory": 245,
+      "avg_input_tokens_with_memory": 132,
+      "token_savings_percent": 46.1,
+      "token_savings_absolute": 113,
+      "runs": 3
+    },
+    {
+      "id": "T05",
+      "name": "MCP integration",
+      "avg_input_tokens_without_memory": 198,
+      "avg_input_tokens_with_memory": 120,
+      "token_savings_percent": 39.4,
+      "token_savings_absolute": 78,
+      "runs": 3
+    },
+    {
+      "id": "T06",
+      "name": "Proxy setup",
+      "avg_input_tokens_without_memory": 219,
+      "avg_input_tokens_with_memory": 118,
+      "token_savings_percent": 46.1,
+      "token_savings_absolute": 101,
+      "runs": 3
+    },
+    {
+      "id": "T07",
+      "name": "Encryption setup",
+      "avg_input_tokens_without_memory": 176,
+      "avg_input_tokens_with_memory": 106,
+      "token_savings_percent": 39.8,
+      "token_savings_absolute": 70,
+      "runs": 3
+    },
+    {
+      "id": "T08",
+      "name": "Migration issue",
+      "avg_input_tokens_without_memory": 203,
+      "avg_input_tokens_with_memory": 100,
+      "token_savings_percent": 50.7,
+      "token_savings_absolute": 103,
+      "runs": 3
+    },
+    {
+      "id": "T09",
+      "name": "Performance tuning",
+      "avg_input_tokens_without_memory": 253,
+      "avg_input_tokens_with_memory": 128,
+      "token_savings_percent": 49.4,
+      "token_savings_absolute": 125,
+      "runs": 3
+    },
+    {
+      "id": "T10",
+      "name": "Multi-agent sharing",
+      "avg_input_tokens_without_memory": 224,
+      "avg_input_tokens_with_memory": 103,
+      "token_savings_percent": 54.0,
+      "token_savings_absolute": 121,
+      "runs": 3
+    }
+  ]
+}
