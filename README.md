@@ -6,8 +6,11 @@ Persistent long-term memory for AI agents. memoryOSS runs as a local memory laye
 
 memoryOSS is for project context, preferences, prior fixes, and working history — not for replacing general world knowledge the model already has.
 
-In internal benchmark and soak runs, memoryOSS maintained retrieval of early high-signal memories even as the stored corpus grew into the tens of thousands.
+In internal retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands.
 
+Benchmark highlights are documented on the public tests page: 20k retention, long-memory regression, 2-hour soak stability, and the supported Claude/Codex compatibility matrix.
+
+In a separate 10-task Claude benchmark, using recalled memory context instead of replaying the full task context reduced average input tokens by 44.4%. We treat this as evidence for repeated-task context compression, not as a universal promise of lower token usage in every workload.
 ## Quickstart
 
 ```bash

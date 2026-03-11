@@ -78,7 +78,32 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
   <div class="hero">
     <h1>Test Results</h1>
     <p>These are real runner results generated from the same automated validation path used for releases.</p>
-    <p>In the current benchmark workload, early high-signal memories remained retrievable across a 20k-memory corpus, and the 2-hour soak run completed without errors or leak signals.</p>
+    <p>The main public proof set is simple: retention under load, explicit long-memory regression, sustained soak stability, and a compatibility matrix across the supported Claude and Codex flows.</p>
+  </div>
+
+  <div class="card">
+    <h2>Public Benchmark Set</h2>
+    <p>These are the benchmark classes that map most directly to user value and are the ones we intentionally surface publicly.</p>
+    <div class="test-row">
+      <span class="status pass">20k</span>
+      <div><strong>Retention under load</strong><div class="note">Early high-signal memories remained retrievable across a 20k-memory corpus with strong signal retention and noise suppression.</div></div>
+    </div>
+    <div class="test-row">
+      <span class="status pass">REG</span>
+      <div><strong>Long-memory regression</strong><div class="note">A sentinel stored first, followed by 5k or 20k background memories, remained retrievable at rank 1 in explicit regression runs.</div></div>
+    </div>
+    <div class="test-row">
+      <span class="status pass">SOAK</span>
+      <div><strong>2-hour soak stability</strong><div class="note">Sustained workload completed without errors or leak signals while retrieval quality remained stable.</div></div>
+    </div>
+    <div class="test-row">
+      <span class="status pass">MATRIX</span>
+      <div><strong>Compatibility matrix</strong><div class="note">Claude OAuth/API and Codex OAuth/API are tested across the supported MCP and proxy paths rather than left as undocumented assumptions.</div></div>
+    </div>
+    <div class="test-row">
+      <span class="status pass">TOKEN</span>
+      <div><strong>Input-token efficiency</strong><div class="note">In a 10-task Claude benchmark, recalled memory context reduced average input tokens by 44.4% versus replaying full task context. This is evidence for repeated-task context compression, not a universal token-savings guarantee.</div></div>
+    </div>
   </div>
 
   <div id="summary"></div>
