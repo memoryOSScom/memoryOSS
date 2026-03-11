@@ -1,6 +1,6 @@
 # Contributor License Agreement
 
-## memoryOSS Individual Contributor License Agreement v1.0
+## memoryOSS Individual Contributor License Agreement v1.1
 
 Thank you for your interest in contributing to memoryOSS ("the Project"), maintained by Christoph Boldt, operating as memoryOSS (hello@memoryoss.com) ("We" or "Us").
 
@@ -10,7 +10,7 @@ This Contributor License Agreement ("Agreement") documents the rights granted by
 
 **"You"** means the individual who submits a Contribution to the Project.
 
-**"Contribution"** means any original work of authorship, including any modifications or additions to an existing work, that is intentionally submitted by You to the Project for inclusion in, or documentation of, the Project. "Submitted" means any form of electronic, verbal, or written communication sent to the Project, including but not limited to pull requests, issues, commits, and messages on mailing lists or chat channels.
+**"Contribution"** means any original work of authorship, including any modifications or additions to an existing work, that is intentionally submitted by You to the Project for inclusion in, or documentation of, the Project. "Submitted" means code, documentation, patches, commits, pull requests, or other material that You clearly designate for inclusion in the Project. It does not include bug reports, feature requests, support requests, general discussions, or other communications that are not clearly intended for incorporation into the Project.
 
 ## 2. Grant of Copyright License
 
@@ -44,13 +44,13 @@ Your Contributions are provided "AS IS", WITHOUT WARRANTY OF ANY KIND, express o
 
 You agree to notify Us of any facts or circumstances of which You become aware that would make these representations inaccurate in any respect.
 
-## 8. Indemnification
+## 8. No Additional Obligation
 
-You agree to indemnify and hold harmless Us and Our officers, directors, and agents from and against any claims, damages, losses, or expenses (including reasonable legal fees) arising from any breach of Your representations in this Agreement or from any third-party claim that Your Contribution infringes or misappropriates any intellectual property right.
+Except for the representations in Section 5, You do not assume any support, warranty, indemnity, or other liability obligation by signing this Agreement.
 
 ## 9. Survival
 
-The rights and licenses granted in Sections 2, 3, and 8 shall survive any termination or expiration of this Agreement. Termination of this Agreement shall not affect the validity of any license granted hereunder with respect to Contributions made prior to termination.
+The rights and licenses granted in Sections 2 and 3 shall survive any termination or expiration of this Agreement. Termination of this Agreement shall not affect the validity of any license granted hereunder with respect to Contributions made prior to termination.
 
 ## 10. Effective Date
 
