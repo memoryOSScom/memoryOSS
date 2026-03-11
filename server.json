@@ -7,22 +7,6 @@
     "url": "https://github.com/memoryOSScom/memoryOSS",
     "source": "github"
   },
-  "version": "0.1.1",
-  "packages": [
-    {
-      "registryType": "mcpb",
-      "identifier": "https://github.com/memoryOSScom/memoryOSS/releases/download/v0.1.1/memoryoss-linux-x86_64.tar.gz",
-      "version": "0.1.1",
-      "transport": {
-        "type": "stdio"
-      },
-      "environmentVariables": [
-        {
-          "name": "MEMORYOSS_CONFIG",
-          "description": "Path to memoryoss.toml config file",
-          "required": false
-        }
-      ]
-    }
-  ]
+  "websiteUrl": "https://memoryoss.com",
+  "version": "0.1.1"
 }
