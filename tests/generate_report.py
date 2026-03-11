@@ -398,49 +398,112 @@ def build_sections(
     extraction_eval_step = step_by_slug.get("extraction_eval")
     if extraction_eval_report:
         summary = extraction_eval_report["summary"]
+        items = [
+            item(
+                "Dataset coverage",
+                "pass",
+                (
+                    f"{summary['dataset_size']} cases "
+                    f"({summary['positive_cases']} positive, "
+                    f"{summary['negative_cases']} negative)"
+                ),
+            )
+        ]
+        if summary.get("project_specific_fact_rate") is not None:
+            items.append(
+                item(
+                    "Project-specific fact rate",
+                    "pass",
+                    f"{summary['project_specific_fact_rate'] * 100:.1f}%",
+                )
+            )
+        if summary.get("duplicate_fact_rate") is not None:
+            duplicate_note = f"{summary['duplicate_fact_rate'] * 100:.1f}%"
+            kept_duplicate_rate = summary.get("kept_duplicate_fact_rate")
+            if kept_duplicate_rate is not None:
+                duplicate_note += f" raw, {kept_duplicate_rate * 100:.1f}% kept"
+            items.append(item("Duplicate fact rate", "pass", duplicate_note))
+        if summary.get("extraction_yield") is not None:
+            items.append(
+                item(
+                    "Extraction yield",
+                    "pass",
+                    f"{summary['extraction_yield']:.2f} kept facts per positive case",
+                )
+            )
+        if summary.get("false_positive_case_rate") is not None:
+            items.append(
+                item(
+                    "False-positive case rate",
+                    "pass",
+                    f"{summary['false_positive_case_rate'] * 100:.1f}%",
+                )
+            )
+        if summary.get("false_positive_fact_rate") is not None:
+            items.append(
+                item(
+                    "False-positive fact rate",
+                    "pass",
+                    f"{summary['false_positive_fact_rate'] * 100:.1f}%",
+                )
+            )
+        recall_key = (
+            "case_recall_after_filter"
+            if summary.get("case_recall_after_filter") is not None
+            else "case_recall"
+        )
+        specificity_key = (
+            "case_specificity_after_filter"
+            if summary.get("case_specificity_after_filter") is not None
+            else "case_specificity"
+        )
+        if summary.get(recall_key) is not None:
+            items.append(
+                item(
+                    "Positive-case recall",
+                    "pass",
+                    f"{summary[recall_key] * 100:.1f}%",
+                )
+            )
+        if summary.get(specificity_key) is not None:
+            items.append(
+                item(
+                    "Negative-case specificity",
+                    "pass",
+                    f"{summary[specificity_key] * 100:.1f}%",
+                )
+            )
+        if summary.get("generic_fact_rate") is not None:
+            items.append(
+                item(
+                    "Generic fact rate",
+                    "pass",
+                    f"{summary['generic_fact_rate'] * 100:.1f}%",
+                )
+            )
+        if summary.get("avg_facts_per_case") is not None:
+            items.append(
+                item(
+                    "Average facts per case",
+                    "pass",
+                    f"{summary['avg_facts_per_case']:.2f}",
+                )
+            )
+        items.append(
+            item(
+                f"{summary['provider']} / {summary['model']}",
+                "pass",
+                (
+                    f"mean {summary['latency_ms_mean']:.0f} ms, "
+                    f"p95 {summary['latency_ms_p95']:.0f} ms"
+                ),
+            )
+        )
         sections.append(
             {
                 "title": "Extraction Quality Evaluation",
-                "count": 6,
-                "items": [
-                    item(
-                        "Dataset coverage",
-                        "pass",
-                        (
-                            f"{summary['dataset_size']} cases "
-                            f"({summary['positive_cases']} positive, "
-                            f"{summary['negative_cases']} negative)"
-                        ),
-                    ),
-                    item(
-                        "Positive-case recall",
-                        "pass",
-                        f"{summary['case_recall'] * 100:.1f}%",
-                    ),
-                    item(
-                        "Negative-case specificity",
-                        "pass",
-                        f"{summary['case_specificity'] * 100:.1f}%",
-                    ),
-                    item(
-                        "Generic fact rate",
-                        "pass",
-                        f"{summary['generic_fact_rate'] * 100:.1f}%",
-                    ),
-                    item(
-                        "Average facts per case",
-                        "pass",
-                        f"{summary['avg_facts_per_case']:.2f}",
-                    ),
-                    item(
-                        f"{summary['provider']} / {summary['model']}",
-                        "pass",
-                        (
-                            f"mean {summary['latency_ms_mean']:.0f} ms, "
-                            f"p95 {summary['latency_ms_p95']:.0f} ms"
-                        ),
-                    ),
-                ],
+                "count": len(items),
+                "items": items,
             }
         )
     elif extraction_eval_step:

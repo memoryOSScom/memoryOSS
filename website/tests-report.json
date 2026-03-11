@@ -1,39 +1,40 @@
 {
   "runner": "tests/run_all.sh",
-  "generated_at": "2026-03-09T20:53:51.468483+00:00",
-  "duration_seconds": 151,
+  "generated_at": "2026-03-11T18:44:22.731032+00:00",
+  "duration_seconds": 771,
   "summary": {
     "status": "pass",
-    "total_checks_passed": 101,
-    "sections": 17,
-    "rust_unit_tests": 26,
-    "rust_integration_tests": 21,
+    "total_checks_passed": 127,
+    "sections": 18,
+    "rust_unit_tests": 40,
+    "rust_integration_tests": 29,
     "typescript_tests": 5,
-    "wizard_assertions": 102,
-    "wizard_scenarios": 9,
-    "benchmark_memories": 1000,
-    "calibration_queries": 1000
+    "wizard_assertions": 186,
+    "wizard_scenarios": 13,
+    "benchmark_memories": 20000,
+    "calibration_queries": 20000,
+    "extraction_eval_cases": 0
   },
   "steps": [
     {
       "slug": "cargo_fmt",
       "label": "cargo fmt --check",
       "status": "pass",
-      "duration_seconds": 1,
+      "duration_seconds": 2,
       "log_path": "tests/.last-run/cargo_fmt.log"
     },
     {
       "slug": "cargo_clippy",
       "label": "cargo clippy -- -D warnings",
       "status": "pass",
-      "duration_seconds": 19,
+      "duration_seconds": 24,
       "log_path": "tests/.last-run/cargo_clippy.log"
     },
     {
       "slug": "cargo_test",
       "label": "cargo test",
       "status": "pass",
-      "duration_seconds": 24,
+      "duration_seconds": 26,
       "log_path": "tests/.last-run/cargo_test.log"
     },
     {
@@ -47,49 +48,56 @@
       "slug": "wizard_smoke",
       "label": "setup wizard smoke test",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/wizard_smoke.log"
     },
     {
       "slug": "wizard_matrix",
       "label": "setup wizard matrix",
       "status": "pass",
-      "duration_seconds": 27,
+      "duration_seconds": 37,
       "log_path": "tests/.last-run/wizard_matrix.log"
     },
     {
       "slug": "benchmark",
       "label": "20k benchmark",
       "status": "pass",
-      "duration_seconds": 16,
+      "duration_seconds": 60,
       "log_path": "tests/.last-run/benchmark.log"
     },
     {
       "slug": "calibration",
       "label": "scoring calibration",
       "status": "pass",
-      "duration_seconds": 33,
+      "duration_seconds": 595,
       "log_path": "tests/.last-run/calibration.log"
+    },
+    {
+      "slug": "extraction_eval",
+      "label": "extraction quality evaluation",
+      "status": "skip",
+      "duration_seconds": 0,
+      "log_path": "tests/.last-run/extraction_eval.log"
     },
     {
       "slug": "coverage_gaps",
       "label": "coverage gaps",
       "status": "pass",
-      "duration_seconds": 23,
+      "duration_seconds": 20,
       "log_path": "tests/.last-run/coverage_gaps.log"
     },
     {
       "slug": "typescript_sdk",
       "label": "TypeScript SDK build/test",
       "status": "pass",
-      "duration_seconds": 3,
+      "duration_seconds": 4,
       "log_path": "tests/.last-run/typescript_sdk.log"
     },
     {
       "slug": "cargo_audit",
       "label": "cargo audit (offline if available)",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/cargo_audit.log"
     }
   ],
@@ -101,17 +109,17 @@
         {
           "name": "cargo fmt --check",
           "status": "pass",
-          "note": "1s"
+          "note": "2s"
         },
         {
           "name": "cargo clippy -- -D warnings",
           "status": "pass",
-          "note": "19s"
+          "note": "24s"
         },
         {
           "name": "cargo test",
           "status": "pass",
-          "note": "24s"
+          "note": "26s"
         },
         {
           "name": "cargo build",
@@ -122,10 +130,22 @@
     },
     {
       "title": "Rust Unit Tests",
-      "count": 26,
+      "count": 40,
       "items": [
         {
+          "name": "engines::fts::tests::sanitize_user_query_removes_parser_syntax",
+          "status": "pass"
+        },
+        {
+          "name": "engines::fts::tests::sanitize_user_query_removes_angle_brackets",
+          "status": "pass"
+        },
+        {
           "name": "Structural duplicate detection handles containment",
+          "status": "pass"
+        },
+        {
+          "name": "Fusion recall collapse merges structural duplicates",
           "status": "pass"
         },
         {
@@ -137,23 +157,7 @@
           "status": "pass"
         },
         {
-          "name": "Fusion recall collapse merges structural duplicates",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache canonicalization handles stopword-only input",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache keeps meaningful query terms",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache canonicalization normalizes basic queries",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache sorts and deduplicates tokens",
+          "name": "Intent cache hit/miss behavior",
           "status": "pass"
         },
         {
@@ -161,15 +165,23 @@
           "status": "pass"
         },
         {
-          "name": "Intent cache hit/miss behavior",
-          "status": "pass"
-        },
-        {
           "name": "Intent cache session isolation",
           "status": "pass"
         },
         {
-          "name": "Candidate memories promote from repeated signal",
+          "name": "Intent cache canonicalization handles stopword-only input",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache canonicalization normalizes basic queries",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache keeps meaningful query terms",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache sorts and deduplicates tokens",
           "status": "pass"
         },
         {
@@ -177,7 +189,7 @@
           "status": "pass"
         },
         {
-          "name": "Prefetch query recording deduplicates repeated prompts",
+          "name": "Candidate memories promote from repeated signal",
           "status": "pass"
         },
         {
@@ -193,11 +205,23 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_ready_accepts_request_scoped_override",
+          "name": "Prefetch query recording deduplicates repeated prompts",
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_ready_accepts_anthropic_key_for_claude_provider",
+          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_decision",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_copy",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_transient_status",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_accepts_request_scoped_api_key_override",
           "status": "pass"
         },
         {
@@ -205,11 +229,39 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_request_falls_back_to_claude_for_claude_oauth",
+          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_when_provider_is_claude",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_override_for_openai_default",
+          "status": "pass"
+        },
+        {
+          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_accepts_anthropic_key_for_claude_provider",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_request_disables_openai_oauth_override_without_real_key",
           "status": "pass"
         },
         {
           "name": "server::proxy::tests::extraction_uses_mapping_key_as_openai_fallback",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::injection_filter_rejects_html_comment_payload",
+          "status": "pass"
+        },
+        {
+          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::injection_filter_rejects_markdown_header_payload",
           "status": "pass"
         },
         {
@@ -221,11 +273,23 @@
           "status": "pass"
         },
         {
+          "name": "tests::shell_config_detection_finds_exported_key",
+          "status": "pass"
+        },
+        {
+          "name": "tests::shell_config_detection_ignores_commented_or_empty_keys",
+          "status": "pass"
+        },
+        {
           "name": "tests::prefers_current_binary_when_not_in_target_tree",
           "status": "pass"
         },
         {
           "name": "tests::prefers_stable_candidate_over_target_build_output",
+          "status": "pass"
+        },
+        {
+          "name": "engines::fts::tests::search_falls_back_for_colon_queries",
           "status": "pass"
         }
       ]
@@ -306,7 +370,7 @@
     },
     {
       "title": "Other Integration Paths",
-      "count": 7,
+      "count": 15,
       "items": [
         {
           "name": "test_batch_store_handles_zero_knowledge_and_source_provenance",
@@ -317,11 +381,11 @@
           "status": "pass"
         },
         {
-          "name": "test_hybrid_serve_manages_core_and_exposes_gateway_health",
+          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
           "status": "pass"
         },
         {
-          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
+          "name": "test_hybrid_serve_manages_core_and_exposes_gateway_health",
           "status": "pass"
         },
         {
@@ -329,11 +393,43 @@
           "status": "pass"
         },
         {
-          "name": "test_server_can_run_plain_http_without_dev_mode",
+          "name": "test_proxy_passthrough_is_local_only_by_default",
           "status": "pass"
         },
         {
-          "name": "test_proxy_passthrough_is_local_only_by_default",
+          "name": "test_proxy_responses_oauth_ignores_builtin_codex_tools_for_chat_fallback",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_stream_with_tools_maps_function_call_sse",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_text_fallback_uses_chat_completions",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_tool_calls_fallback_maps_function_call_output",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_without_required_openai_scopes_fails_closed",
+          "status": "pass"
+        },
+        {
+          "name": "test_server_can_run_plain_http_without_dev_mode",
           "status": "pass"
         }
       ]
@@ -345,17 +441,17 @@
         {
           "name": "Setup wizard writes a config file",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         },
         {
           "name": "Setup wizard persists `default_memory_mode = \"readonly\"`",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         },
         {
           "name": "Setup wizard reaches the ready banner and serves `/health`",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         }
       ]
     },
@@ -392,58 +488,78 @@
         {
           "name": "cargo audit (offline if available)",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         }
       ]
     },
     {
       "title": "Wizard Scenario Matrix",
-      "count": 9,
+      "count": 13,
       "items": [
         {
           "name": "No tools at all",
           "status": "pass",
-          "note": "claude=False, codex=False, openai_key=False, anthropic_key=False, assertions=11"
+          "note": "claude=False, codex=False, openai_key=False, anthropic_key=False, assertions=14"
         },
         {
-          "name": "Claude Code only",
+          "name": "Claude OAuth only",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=11"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=14"
         },
         {
-          "name": "Codex CLI only",
+          "name": "Codex OAuth only",
           "status": "pass",
-          "note": "claude=False, codex=True, openai_key=False, anthropic_key=False, assertions=11"
+          "note": "claude=False, codex=True, openai_key=False, anthropic_key=False, assertions=14"
         },
         {
-          "name": "Both without keys",
+          "name": "Both OAuth without keys",
           "status": "pass",
-          "note": "claude=True, codex=True, openai_key=False, anthropic_key=False, assertions=11"
+          "note": "claude=True, codex=True, openai_key=False, anthropic_key=False, assertions=14"
         },
         {
-          "name": "Claude + OpenAI key",
+          "name": "Claude OAuth + OpenAI key",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=True, anthropic_key=False, assertions=11"
+          "note": "claude=True, codex=False, openai_key=True, anthropic_key=False, assertions=14"
         },
         {
-          "name": "Claude + Anthropic key",
+          "name": "Claude OAuth + Anthropic key (default OAuth)",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=11"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=14"
         },
         {
-          "name": "Both + OpenAI key",
+          "name": "Claude OAuth + Anthropic key (force API key)",
           "status": "pass",
-          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=11"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=14"
         },
         {
-          "name": "Codex + OpenAI key",
+          "name": "Both OAuth + OpenAI key (default OAuth)",
           "status": "pass",
-          "note": "claude=False, codex=True, openai_key=True, anthropic_key=False, assertions=11"
+          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=14"
+        },
+        {
+          "name": "Both OAuth + OpenAI key (force Codex API key)",
+          "status": "pass",
+          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=14"
+        },
+        {
+          "name": "Codex OAuth + OpenAI key (default OAuth)",
+          "status": "pass",
+          "note": "claude=False, codex=True, openai_key=True, anthropic_key=False, assertions=14"
+        },
+        {
+          "name": "Codex OAuth + OpenAI key (force API key)",
+          "status": "pass",
+          "note": "claude=False, codex=True, openai_key=True, anthropic_key=False, assertions=14"
         },
         {
           "name": "Idempotency double run",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=14"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=17"
+        },
+        {
+          "name": "Codex stale MCP config is repaired",
+          "status": "pass",
+          "note": "claude=False, codex=True, openai_key=False, anthropic_key=False, assertions=15"
         }
       ]
     },
@@ -452,9 +568,9 @@
       "count": 6,
       "items": [
         {
-          "name": "Stored 1,000 memories in batches of 200",
+          "name": "Stored 20,000 memories in batches of 200",
           "status": "pass",
-          "note": "120.60 memories/sec with client-provided embeddings"
+          "note": "loaded from fixture (benchmark-20k)"
         },
         {
           "name": "Indexer backpressure handling",
@@ -479,7 +595,7 @@
         {
           "name": "Recall latency p50 / p95 / p99",
           "status": "pass",
-          "note": "63.92ms / 82.08ms / 93.74ms"
+          "note": "86.40ms / 119.05ms / 131.85ms"
         }
       ]
     },
@@ -490,32 +606,43 @@
         {
           "name": "Calibration corpus",
           "status": "pass",
-          "note": "1,000 queries (17 exact, 21 related, 962 noise)"
+          "note": "20,000 queries (344 exact, 428 related, 19,228 noise)"
         },
         {
           "name": "Exact score distribution",
           "status": "pass",
-          "note": "min 0.849, p5 0.850, p50 0.853, p95 0.858, max 0.858"
+          "note": "min 0.849, p5 0.849, p50 0.854, p95 0.858, max 0.858"
         },
         {
           "name": "Related score distribution",
           "status": "pass",
-          "note": "min 0.603, p5 0.607, p50 0.809, p95 0.827, max 0.828"
+          "note": "min 0.595, p5 0.600, p50 0.611, p95 0.825, max 0.828"
         },
         {
           "name": "Noise score distribution",
           "status": "pass",
-          "note": "min 0.384, p5 0.384, p50 0.384, p95 0.409, max 0.431"
+          "note": "min 0.384, p5 0.384, p50 0.384, p95 0.408, max 0.442"
         },
         {
           "name": "Threshold 0.400",
           "status": "pass",
-          "note": "noise rejected 93.6%, exact kept 100.0%, related kept 100.0%, F1 0.551"
+          "note": "noise rejected 93.5%, exact kept 100.0%, related kept 100.0%, F1 0.551"
         },
         {
           "name": "Best scanned threshold 0.450",
           "status": "pass",
           "note": "F1 1.000"
+        }
+      ]
+    },
+    {
+      "title": "Extraction Quality Evaluation",
+      "count": 1,
+      "items": [
+        {
+          "name": "extraction quality evaluation",
+          "status": "skip",
+          "note": "0s \u2014 report artifact not available"
         }
       ]
     },
@@ -570,7 +697,7 @@
         {
           "name": "Backup creates valid archive",
           "status": "pass",
-          "note": "31893 bytes"
+          "note": "31903 bytes"
         },
         {
           "name": "Restore from backup succeeds",

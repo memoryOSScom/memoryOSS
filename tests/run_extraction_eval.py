@@ -141,6 +141,55 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower()).strip()
 
 
+def tokenize(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", normalize(text))
+
+
+def token_jaccard(a: list[str], b: list[str]) -> float:
+    set_a = set(a)
+    set_b = set(b)
+    if not set_a or not set_b:
+        return 0.0
+    return len(set_a & set_b) / len(set_a | set_b)
+
+
+def structural_duplicate_content(a: str, b: str) -> bool:
+    norm_a = " ".join(tokenize(a))
+    norm_b = " ".join(tokenize(b))
+    if not norm_a or not norm_b:
+        return False
+    if norm_a == norm_b:
+        return True
+
+    tokens_a = norm_a.split()
+    tokens_b = norm_b.split()
+    shorter, longer = (tokens_a, tokens_b) if len(tokens_a) <= len(tokens_b) else (tokens_b, tokens_a)
+    shorter_norm = " ".join(shorter)
+    longer_norm = " ".join(longer)
+    if len(shorter) >= 5 and shorter_norm and shorter_norm in longer_norm:
+        return True
+
+    return (
+        len(tokens_a) >= 6
+        and len(tokens_b) >= 6
+        and token_jaccard(tokens_a, tokens_b) >= 0.92
+    )
+
+
+def count_duplicate_facts(facts: list[dict]) -> int:
+    seen: list[str] = []
+    duplicate_count = 0
+    for fact in facts:
+        content = str(fact.get("content", ""))
+        if not content:
+            continue
+        if any(structural_duplicate_content(content, prior) for prior in seen):
+            duplicate_count += 1
+        else:
+            seen.append(content)
+    return duplicate_count
+
+
 def fact_matches_keywords(fact: dict, keywords: list[str]) -> bool:
     content = normalize(str(fact.get("content", "")))
     return all(normalize(keyword) in content for keyword in keywords)
@@ -259,12 +308,16 @@ def main() -> None:
     generic_facts = 0
     transient_facts = 0
     generic_product_facts = 0
+    duplicate_facts = 0
+    kept_duplicate_facts = 0
     positive_cases = 0
     negative_cases = 0
     positive_hits = 0
     positive_hits_after_filter = 0
     negative_clean = 0
     negative_clean_after_filter = 0
+    total_kept_facts = 0
+    negative_kept_facts = 0
 
     for case in dataset:
         prompt = f"{prompt_prefix}{case['transcript']}"
@@ -275,12 +328,17 @@ def main() -> None:
         facts = extract_json_array(llm_result["text"])
         kept_facts = [fact for fact in facts if should_store_fact(fact)]
         total_facts += len(facts)
+        total_kept_facts += len(kept_facts)
         generic_count = sum(1 for fact in facts if generic_fact(fact))
         transient_count = sum(1 for fact in facts if transient_fact(fact))
         generic_product_count = sum(1 for fact in facts if generic_product_fact(fact))
+        duplicate_count = count_duplicate_facts(facts)
+        kept_duplicate_count = count_duplicate_facts(kept_facts)
         generic_facts += generic_count
         transient_facts += transient_count
         generic_product_facts += generic_product_count
+        duplicate_facts += duplicate_count
+        kept_duplicate_facts += kept_duplicate_count
 
         matched_expected = False
         matched_expected_after_filter = False
@@ -305,6 +363,7 @@ def main() -> None:
                 negative_clean += 1
             if not kept_facts:
                 negative_clean_after_filter += 1
+            negative_kept_facts += len(kept_facts)
 
         results.append(
             {
@@ -318,6 +377,8 @@ def main() -> None:
                 "generic_facts": generic_count,
                 "transient_facts": transient_count,
                 "generic_product_facts": generic_product_count,
+                "duplicate_facts": duplicate_count,
+                "kept_duplicate_facts": kept_duplicate_count,
                 "input_tokens": llm_result.get("input_tokens"),
                 "output_tokens": llm_result.get("output_tokens"),
                 "latency_ms": round(latencies_ms[-1], 2),
@@ -328,7 +389,7 @@ def main() -> None:
         print(
             f"[extraction-eval] {case['id']} category={case['category']} facts={len(facts)} "
             f"kept={len(kept_facts)} matched={matched_expected_after_filter} "
-            f"generic={generic_count} transient={transient_count}",
+            f"generic={generic_count} transient={transient_count} dup={duplicate_count}",
             flush=True,
         )
 
@@ -357,10 +418,30 @@ def main() -> None:
         "generic_product_fact_rate": round(generic_product_facts / total_facts, 4)
         if total_facts
         else 0.0,
+        "project_specific_fact_rate": round(total_kept_facts / total_facts, 4)
+        if total_facts
+        else 0.0,
+        "duplicate_fact_rate": round(duplicate_facts / total_facts, 4)
+        if total_facts
+        else 0.0,
+        "kept_duplicate_fact_rate": round(kept_duplicate_facts / total_kept_facts, 4)
+        if total_kept_facts
+        else 0.0,
+        "false_positive_case_rate": round(
+            (negative_cases - negative_clean_after_filter) / negative_cases, 4
+        )
+        if negative_cases
+        else None,
+        "false_positive_fact_rate": round(negative_kept_facts / total_kept_facts, 4)
+        if total_kept_facts
+        else 0.0,
         "post_filter_keep_rate": round(
-            sum(result["facts_kept"] for result in results) / total_facts, 4
+            total_kept_facts / total_facts, 4
         )
         if total_facts
+        else 0.0,
+        "extraction_yield": round(total_kept_facts / positive_cases, 3)
+        if positive_cases
         else 0.0,
         "avg_facts_per_case": round(total_facts / len(dataset), 3),
         "avg_facts_per_positive_case": round(total_facts / positive_cases, 3)
