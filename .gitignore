@@ -29,6 +29,7 @@ tests/benchmark-full-embeddings-report.json
 tests/calibration-report.json
 tests/coverage-gaps-report.json
 tests/e2e-proxy-report.json
+tests/extraction-eval-report.json
 tests/long-memory-regression-report.json
 tests/soak-test-report.json
 tests/soak-test-verify-report.json

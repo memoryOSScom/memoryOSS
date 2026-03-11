@@ -11,6 +11,7 @@ WEBSITE_REPORT_JSON="${RUN_ALL_WEBSITE_REPORT_JSON:-$ROOT_DIR/website/tests-repo
 WIZARD_MATRIX_JSON="${RUN_ALL_WIZARD_MATRIX_JSON:-$ROOT_DIR/tests/wizard-matrix.json}"
 BENCHMARK_JSON="${RUN_ALL_BENCHMARK_JSON:-$ROOT_DIR/tests/benchmark-report.json}"
 CALIBRATION_JSON="${RUN_ALL_CALIBRATION_JSON:-$ROOT_DIR/tests/calibration-report.json}"
+EXTRACTION_EVAL_JSON="${RUN_ALL_EXTRACTION_EVAL_JSON:-$ROOT_DIR/tests/extraction-eval-report.json}"
 COVERAGE_GAPS_JSON="${RUN_ALL_COVERAGE_GAPS_JSON:-$ROOT_DIR/tests/coverage-gaps-report.json}"
 mkdir -p "$REPORT_DIR"
 
@@ -27,6 +28,7 @@ generate_report() {
     --wizard-json "$WIZARD_MATRIX_JSON" \
     --benchmark-json "$BENCHMARK_JSON" \
     --calibration-json "$CALIBRATION_JSON" \
+    --extraction-eval-json "$EXTRACTION_EVAL_JSON" \
     --coverage-gaps-json "$COVERAGE_GAPS_JSON" \
     --duration "$duration" 2>/dev/null || true
 }
@@ -203,6 +205,7 @@ run_step "setup wizard smoke test" wizard_smoke wizard_smoke_test
 run_step "setup wizard matrix" wizard_matrix env WIZARD_MATRIX_OUTPUT_JSON="$WIZARD_MATRIX_JSON" bash "$ROOT_DIR/tests/run_wizard_matrix.sh"
 run_step "20k benchmark" benchmark env BENCHMARK_OUTPUT_JSON="$BENCHMARK_JSON" bash "$ROOT_DIR/tests/run_benchmarks.sh"
 run_step "scoring calibration" calibration env CALIBRATION_OUTPUT_JSON="$CALIBRATION_JSON" bash "$ROOT_DIR/tests/run_calibration.sh"
+run_step "extraction quality evaluation" extraction_eval env EXTRACTION_EVAL_OUTPUT_JSON="$EXTRACTION_EVAL_JSON" bash "$ROOT_DIR/tests/run_extraction_eval.sh"
 run_step "coverage gaps" coverage_gaps env COVERAGE_GAPS_OUTPUT_JSON="$COVERAGE_GAPS_JSON" bash "$ROOT_DIR/tests/run_coverage_gaps.sh"
 run_step "TypeScript SDK build/test" typescript_sdk typescript_sdk_checks
 run_step "cargo audit (offline if available)" cargo_audit dependency_audit
@@ -218,6 +221,7 @@ python3 "$ROOT_DIR/tests/generate_report.py" \
   --wizard-json "$WIZARD_MATRIX_JSON" \
   --benchmark-json "$BENCHMARK_JSON" \
   --calibration-json "$CALIBRATION_JSON" \
+  --extraction-eval-json "$EXTRACTION_EVAL_JSON" \
   --coverage-gaps-json "$COVERAGE_GAPS_JSON" \
   --duration "$RUN_DURATION"
 

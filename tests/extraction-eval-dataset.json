@@ -1,0 +1,139 @@
+[
+  {
+    "id": "E01",
+    "category": "decision",
+    "expect_extract": true,
+    "transcript": "User: For memoryOSS, keep redb as the source of truth and use tantivy only for BM25 and full-text search. We do not want tantivy to become the canonical store.\nAssistant: Understood. redb remains canonical storage, tantivy stays a derived index for search only.",
+    "expected_facts": [
+      ["redb", "source of truth"],
+      ["tantivy", "bm25"]
+    ]
+  },
+  {
+    "id": "E02",
+    "category": "preference",
+    "expect_extract": true,
+    "transcript": "User: Please keep my answers concise. No bullets unless I ask for them.\nAssistant: Got it. I will keep replies concise and avoid bullets unless requested.",
+    "expected_facts": [
+      ["concise"],
+      ["no bullets"]
+    ]
+  },
+  {
+    "id": "E03",
+    "category": "incident",
+    "expect_extract": true,
+    "transcript": "User: We found the release blocker. Migration 006 used the wrong down_revision and pointed to 005_add_self_assessments instead of 005_self_assessments.\nAssistant: I fixed migration 006 so it points to 005_self_assessments.",
+    "expected_facts": [
+      ["migration 006", "down_revision"],
+      ["005_self_assessments"]
+    ]
+  },
+  {
+    "id": "E04",
+    "category": "rule",
+    "expect_extract": true,
+    "transcript": "User: If production deploy metrics regress, roll back within 15 minutes and notify ops-red immediately.\nAssistant: Understood. Regression after deploy means rollback within 15 minutes and notify ops-red.",
+    "expected_facts": [
+      ["rollback", "15", "ops-red"]
+    ]
+  },
+  {
+    "id": "E05",
+    "category": "architecture",
+    "expect_extract": true,
+    "transcript": "User: Codex OAuth should stay MCP-first. We should not present proxy mode as the default for Codex OAuth.\nAssistant: Agreed. Codex OAuth remains MCP-first and proxy mode is not the default.",
+    "expected_facts": [
+      ["codex", "oauth", "mcp-first"]
+    ]
+  },
+  {
+    "id": "E06",
+    "category": "workflow",
+    "expect_extract": true,
+    "transcript": "User: If the auth setup changes later from OAuth to API key or back, we should tell users to rerun memoryoss setup.\nAssistant: Yes. Rerun memoryoss setup after auth mode changes so the integration path updates safely.",
+    "expected_facts": [
+      ["rerun", "memoryoss setup"],
+      ["auth", "changes"]
+    ]
+  },
+  {
+    "id": "E07",
+    "category": "convention",
+    "expect_extract": true,
+    "transcript": "User: For this repo, name feature branches feat/<ticket>-<slug> and bugfix branches fix/<ticket>-<slug>.\nAssistant: Okay, feature branches use feat/<ticket>-<slug> and bugfix branches use fix/<ticket>-<slug>.",
+    "expected_facts": [
+      ["feat", "ticket"],
+      ["fix", "ticket"]
+    ]
+  },
+  {
+    "id": "E08",
+    "category": "deployment",
+    "expect_extract": true,
+    "transcript": "User: On this host the stable binary path is /usr/local/bin/memoryoss and systemd should point to /root/memoryoss.toml.\nAssistant: Confirmed. The stable binary is /usr/local/bin/memoryoss and the service should use /root/memoryoss.toml.",
+    "expected_facts": [
+      ["/usr/local/bin/memoryoss"],
+      ["/root/memoryoss.toml"]
+    ]
+  },
+  {
+    "id": "E09",
+    "category": "generic_knowledge",
+    "expect_extract": false,
+    "transcript": "User: Rust ownership helps prevent data races and memory bugs.\nAssistant: Yes, Rust's ownership model provides strong memory-safety guarantees.",
+    "expected_facts": []
+  },
+  {
+    "id": "E10",
+    "category": "greeting",
+    "expect_extract": false,
+    "transcript": "User: Hey, how are you?\nAssistant: I'm doing well. How can I help today?",
+    "expected_facts": []
+  },
+  {
+    "id": "E11",
+    "category": "generic_advice",
+    "expect_extract": false,
+    "transcript": "User: What are some general ways to improve database performance?\nAssistant: Use indexes, reduce unnecessary queries, and profile slow statements.",
+    "expected_facts": []
+  },
+  {
+    "id": "E12",
+    "category": "ephemeral_meta",
+    "expect_extract": false,
+    "transcript": "User: I am going to grab coffee and will be back in ten minutes.\nAssistant: Sounds good, I'll be here when you return.",
+    "expected_facts": []
+  },
+  {
+    "id": "E13",
+    "category": "generic_product_description",
+    "expect_extract": false,
+    "transcript": "User: memoryOSS is a local memory layer for AI agents.\nAssistant: Correct, it helps preserve context across sessions.",
+    "expected_facts": []
+  },
+  {
+    "id": "E14",
+    "category": "one_off_status",
+    "expect_extract": false,
+    "transcript": "User: The current CI run is still in progress.\nAssistant: Understood. I'll wait for the run to finish.",
+    "expected_facts": []
+  },
+  {
+    "id": "E15",
+    "category": "support_meta",
+    "expect_extract": false,
+    "transcript": "User: Thanks, that solved it.\nAssistant: Glad that helped.",
+    "expected_facts": []
+  },
+  {
+    "id": "E16",
+    "category": "mixed_preference",
+    "expect_extract": true,
+    "transcript": "User: Please never show raw MemoryOSS entries to me unless I explicitly ask. Short summaries or counts are enough.\nAssistant: Understood. I will avoid raw MemoryOSS entries unless you explicitly ask for full details.",
+    "expected_facts": [
+      ["do not display", "raw memoryoss"],
+      ["short summaries"]
+    ]
+  }
+]

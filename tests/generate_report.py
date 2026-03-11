@@ -151,7 +151,17 @@ def item(name: str, status: str = "pass", note: str | None = None):
     return result
 
 
-def build_sections(steps, unit_tests, integration_tests, ts_tests, wizard_matrix, benchmark_report, calibration_report, coverage_gaps_report=None):
+def build_sections(
+    steps,
+    unit_tests,
+    integration_tests,
+    ts_tests,
+    wizard_matrix,
+    benchmark_report,
+    calibration_report,
+    extraction_eval_report=None,
+    coverage_gaps_report=None,
+):
     step_by_slug = {step["slug"]: step for step in steps}
 
     build_items = []
@@ -385,6 +395,69 @@ def build_sections(steps, unit_tests, integration_tests, ts_tests, wizard_matrix
             }
         )
 
+    extraction_eval_step = step_by_slug.get("extraction_eval")
+    if extraction_eval_report:
+        summary = extraction_eval_report["summary"]
+        sections.append(
+            {
+                "title": "Extraction Quality Evaluation",
+                "count": 6,
+                "items": [
+                    item(
+                        "Dataset coverage",
+                        "pass",
+                        (
+                            f"{summary['dataset_size']} cases "
+                            f"({summary['positive_cases']} positive, "
+                            f"{summary['negative_cases']} negative)"
+                        ),
+                    ),
+                    item(
+                        "Positive-case recall",
+                        "pass",
+                        f"{summary['case_recall'] * 100:.1f}%",
+                    ),
+                    item(
+                        "Negative-case specificity",
+                        "pass",
+                        f"{summary['case_specificity'] * 100:.1f}%",
+                    ),
+                    item(
+                        "Generic fact rate",
+                        "pass",
+                        f"{summary['generic_fact_rate'] * 100:.1f}%",
+                    ),
+                    item(
+                        "Average facts per case",
+                        "pass",
+                        f"{summary['avg_facts_per_case']:.2f}",
+                    ),
+                    item(
+                        f"{summary['provider']} / {summary['model']}",
+                        "pass",
+                        (
+                            f"mean {summary['latency_ms_mean']:.0f} ms, "
+                            f"p95 {summary['latency_ms_p95']:.0f} ms"
+                        ),
+                    ),
+                ],
+            }
+        )
+    elif extraction_eval_step:
+        sections.append(
+            {
+                "title": "Extraction Quality Evaluation",
+                "count": 1,
+                "items": [
+                    item(
+                        extraction_eval_step["label"],
+                        extraction_eval_step["status"],
+                        f"{extraction_eval_step['duration_seconds']}s — report artifact not available",
+                    )
+                ],
+            }
+        )
+
     coverage_gaps_step = step_by_slug.get("coverage_gaps")
     if coverage_gaps_report:
         for group in coverage_gaps_report.get("groups", []):
@@ -413,7 +486,15 @@ def build_sections(steps, unit_tests, integration_tests, ts_tests, wizard_matrix
     return sections
 
 
-def build_report(steps, duration_seconds, wizard_matrix=None, benchmark_report=None, calibration_report=None, coverage_gaps_report=None):
+def build_report(
+    steps,
+    duration_seconds,
+    wizard_matrix=None,
+    benchmark_report=None,
+    calibration_report=None,
+    extraction_eval_report=None,
+    coverage_gaps_report=None,
+):
     cargo_step = next((step for step in steps if step["slug"] == "cargo_test"), None)
     ts_step = next((step for step in steps if step["slug"] == "typescript_sdk"), None)
 
@@ -431,6 +512,7 @@ def build_report(steps, duration_seconds, wizard_matrix=None, benchmark_report=N
         wizard_matrix,
         benchmark_report,
         calibration_report,
+        extraction_eval_report,
         coverage_gaps_report,
     )
 
@@ -459,6 +541,11 @@ def build_report(steps, duration_seconds, wizard_matrix=None, benchmark_report=N
             ),
             "calibration_queries": (
                 calibration_report["summary"]["queries"] if calibration_report else 0
+            ),
+            "extraction_eval_cases": (
+                extraction_eval_report["summary"]["dataset_size"]
+                if extraction_eval_report
+                else 0
             ),
         },
         "steps": [
@@ -506,6 +593,7 @@ def main():
     parser.add_argument("--wizard-json")
     parser.add_argument("--benchmark-json")
     parser.add_argument("--calibration-json")
+    parser.add_argument("--extraction-eval-json")
     parser.add_argument("--coverage-gaps-json")
     parser.add_argument("--duration", required=True, type=int)
     args = parser.parse_args()
@@ -514,6 +602,7 @@ def main():
     wizard_matrix = load_optional_json(args.wizard_json)
     benchmark_report = load_optional_json(args.benchmark_json)
     calibration_report = load_optional_json(args.calibration_json)
+    extraction_eval_report = load_optional_json(args.extraction_eval_json)
     coverage_gaps_report = load_optional_json(args.coverage_gaps_json)
     report = build_report(
         steps,
@@ -521,6 +610,7 @@ def main():
         wizard_matrix=wizard_matrix,
         benchmark_report=benchmark_report,
         calibration_report=calibration_report,
+        extraction_eval_report=extraction_eval_report,
         coverage_gaps_report=coverage_gaps_report,
     )
 
