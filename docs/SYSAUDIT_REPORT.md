@@ -23,7 +23,7 @@ Scope:
 | CLI `memoryoss decay` | fixed | code audit + new unit coverage | stored-only namespaces are no longer skipped |
 | MCP HTTP bridge | healthy | integration tests | still depends on healthy `/v1/*` core path |
 | release workflow | healthy | prior live smoke run + workflow audit | real release and smoke are now separated |
-| release-smoke workflow | healthy | live run `23011040534` + shared artifact builder | smoke and release now share one reusable build workflow |
+| release-smoke workflow | healthy by local workflow audit | prior live run `23011040534`; shared builder refactor is local until the next remote smoke run | smoke and release now share one reusable build workflow |
 
 ## Findings
 
@@ -54,7 +54,7 @@ Scope:
 | `cargo test` | pass | `55` unit tests + `41` integration tests |
 | `bash tests/run_all.sh` | pass | fresh post-fix run completed; `178` checks passed, `13` wizard scenarios, `20,000` benchmark memories, `20,000` calibration queries, `extraction_eval=pass` |
 | `python3 tests/run_e2e_proxy_test.py` | pass | `33/33` checks passed against a fresh local HTTP server |
-| live release-smoke workflow | pass | GitHub Actions run `23011040534` |
+| live release-smoke workflow | pass on pre-refactor path | GitHub Actions run `23011040534`; the shared-builder refactor still needs a fresh remote smoke run |
 | latest live extraction eval artifact | pass | fresh rerun on `2026-03-12`: `case_recall_after_filter=1.0`, `case_specificity_after_filter=1.0`, `project_specific_fact_rate=0.9167`, `latency_ms_mean=2368.92` |
 
 ## Audit Verdict
