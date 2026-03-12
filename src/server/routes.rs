@@ -74,7 +74,8 @@ impl SharedState {
                 self.rate_limiter
                     .set_rate(new_config.limits.rate_limit_per_sec);
                 self.trust_scorer.set_threshold(new_config.trust.threshold);
-                // Reload IP allowlists
+                // Reload IP allowlists atomically so removed namespaces do not linger.
+                let mut allowlists = std::collections::HashMap::new();
                 for (ns, ips) in &new_config.trust.ip_allowlists {
                     let mut parsed = Vec::new();
                     for ip_str in ips {
@@ -87,8 +88,11 @@ impl SharedState {
                             ),
                         }
                     }
-                    self.trust_scorer.set_ip_allowlist(ns, parsed);
+                    if !parsed.is_empty() {
+                        allowlists.insert(ns.clone(), parsed);
+                    }
                 }
+                self.trust_scorer.replace_ip_allowlists(allowlists);
                 tracing::info!(
                     "Config hot-reloaded: rate_limit={}/s, trust_threshold={}",
                     new_config.limits.rate_limit_per_sec,

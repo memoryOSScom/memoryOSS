@@ -403,3 +403,173 @@ The current runner should cover:
 - setup wizard matrix
 - TypeScript SDK build/test
 - dependency audit when an offline advisory DB is available
+
+## 14. Recall and Query-Explain Path
+
+This is the ranking path used by admin `query-explain` and mirrored in the proxy recall stack.
+
+Important behaviors:
+- filter preselection uses FTS metadata when available, otherwise document scans
+- vector/FTS channels are gated by index freshness unless `consistency=eventual`
+- task-context re-ranking is fail-closed: ambiguous queries get **no** task-context boost
+
+```mermaid
+stateDiagram-v2
+    [*] --> AuthAndNamespace
+    AuthAndNamespace --> RateLimit
+    RateLimit --> DetermineIndexFreshness
+
+    DetermineIndexFreshness --> MetadataPrefilter: request has filters
+    DetermineIndexFreshness --> EmbedQuery: no filters
+
+    MetadataPrefilter --> FtsMetadataSearch: FTS fresh
+    MetadataPrefilter --> DocumentFilterScan: FTS stale
+    FtsMetadataSearch --> EmbedQuery
+    DocumentFilterScan --> EmbedQuery
+
+    EmbedQuery --> ChannelSearch
+    ChannelSearch --> VectorSearch: vector fresh or eventual
+    ChannelSearch --> FtsSearch: FTS fresh or eventual
+    ChannelSearch --> ExactIdentifierSearch: query has identifiers
+
+    VectorSearch --> ScoreMerge
+    FtsSearch --> ScoreMerge
+    ExactIdentifierSearch --> ScoreMerge
+
+    ScoreMerge --> DetectTaskContext
+    DetectTaskContext --> NoTaskBoost: ambiguous or no hits
+    DetectTaskContext --> ApplyTaskBoost: unique context wins
+
+    NoTaskBoost --> ExplainAndCollapse
+    ApplyTaskBoost --> ExplainAndCollapse
+
+    ExplainAndCollapse --> PostFilters
+    PostFilters --> Response
+    Response --> [*]
+```
+
+## 15. Proxy Injection, Extraction, and Outcome Learning
+
+This path combines retrieval, injection, asynchronous extraction, contradiction detection, and lifecycle signals.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ResolveProxyAuth
+    ResolveProxyAuth --> ParseMemoryMode
+
+    ParseMemoryMode --> ForwardDirect: off
+    ParseMemoryMode --> RecallAndRank: readonly/full/after
+
+    RecallAndRank --> QualifyForInjection
+    QualifyForInjection --> ForwardUpstream
+    QualifyForInjection --> RecordInjection: injected_count > 0
+    RecordInjection --> ForwardUpstream
+
+    ForwardUpstream --> ReturnUpstreamResponse
+
+    ReturnUpstreamResponse --> SkipExtraction: extraction disabled or no extractable response
+    ReturnUpstreamResponse --> ExtractFacts: extraction enabled
+
+    ExtractFacts --> FilterGenericOrUnsafe
+    FilterGenericOrUnsafe --> DropFact: generic copy / transient / unsafe
+    FilterGenericOrUnsafe --> DedupCheck: project-specific fact
+
+    DedupCheck --> ConfirmExisting: duplicate or near-duplicate
+    DedupCheck --> StoreCandidate: novel fact
+
+    ConfirmExisting --> RecordReuseSignal
+    RecordReuseSignal --> ContradictionCheck
+    StoreCandidate --> ContradictionCheck
+
+    ContradictionCheck --> CandidateOrActive: no conflict
+    ContradictionCheck --> Contested: conflicting fact pair
+
+    CandidateOrActive --> FeedbackLoop
+    Contested --> FeedbackLoop
+
+    FeedbackLoop --> PromoteActive: confirm/reuse signal and no contradiction
+    FeedbackLoop --> Stale: repeated inject without reuse / supersede
+    FeedbackLoop --> Archived: lifecycle decay or manual archive
+    PromoteActive --> [*]
+    Stale --> [*]
+    Archived --> [*]
+    DropFact --> [*]
+    ForwardDirect --> [*]
+```
+
+## 16. Reload, Decay, and Consolidation Paths
+
+The important system-level behavior after the audit fix is:
+- startup and SIGHUP reload both **replace** namespace IP allowlists atomically
+- automatic workers enumerate namespaces from the document engine
+- CLI `memoryoss decay` now scans the union of configured namespaces, stored namespaces, and `default`
+
+```mermaid
+stateDiagram-v2
+    [*] --> ServerStart
+    ServerStart --> BuildSharedState
+    BuildSharedState --> ReplaceAllowlists
+    ReplaceAllowlists --> SpawnWorkers
+
+    SpawnWorkers --> DecayTicker: decay.enabled
+    SpawnWorkers --> ConsolidationTicker: consolidation.enabled
+    SpawnWorkers --> WaitForSignals
+
+    WaitForSignals --> SighupReload: SIGHUP
+    SighupReload --> LoadConfig
+    LoadConfig --> ParseSafeFields
+    ParseSafeFields --> ReplaceAllowlists
+    ReplaceAllowlists --> WaitForSignals
+
+    DecayTicker --> ListStoredNamespaces
+    ListStoredNamespaces --> RunLifecycleSweep
+    RunLifecycleSweep --> InvalidateIntentCache: changed > 0
+    RunLifecycleSweep --> DecayTicker
+    InvalidateIntentCache --> DecayTicker
+
+    ConsolidationTicker --> ListStoredNamespacesForMerge
+    ListStoredNamespacesForMerge --> RunConsolidation
+    RunConsolidation --> ConsolidationTicker
+
+    state "CLI decay" as CliDecay {
+        [*] --> LoadConfigAndDb
+        LoadConfigAndDb --> NamespaceUnion
+        NamespaceUnion --> ScanNamespace
+        ScanNamespace --> ApplyLifecyclePolicy
+        ApplyLifecyclePolicy --> PersistArchiveOrStatus
+        PersistArchiveOrStatus --> [*]
+    }
+```
+
+## 17. Release and Release-Smoke Validation Paths
+
+The repository now has two intentionally separate distribution paths that share one reusable artifact-build workflow:
+- `release.yml` for real `v*` tags
+- `release-smoke.yml` for tagless validation on `smoke/*` or manual dispatch
+- `build-release-artifacts.yml` as the shared build/package/upload path
+
+```mermaid
+stateDiagram-v2
+    [*] --> GitRef
+
+    GitRef --> RealRelease: push tag v*
+    GitRef --> SmokeValidation: push smoke/* or workflow_dispatch
+
+    RealRelease --> SharedArtifactBuild
+    SmokeValidation --> SharedArtifactBuild
+
+    SharedArtifactBuild --> UploadArtifacts
+    UploadArtifacts --> CreateGitHubRelease
+    CreateGitHubRelease --> PublishCrate
+    UploadArtifacts --> PublishContainer
+    UploadArtifacts --> OptionalSmokeContainer: smoke run and push_container = true
+    UploadArtifacts --> EndSmoke: smoke run and push_container = false
+    OptionalSmokeContainer --> EndSmoke
+
+    PublishCrate --> [*]
+    PublishContainer --> [*]
+    EndSmoke --> [*]
+```
+
+Audit note:
+- release and smoke now share the same reusable artifact-build workflow, so matrix drift between the two paths is removed at the source

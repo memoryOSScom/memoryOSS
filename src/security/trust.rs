@@ -347,6 +347,19 @@ impl TrustScorer {
         }
     }
 
+    /// Replace the complete allowlist map atomically.
+    /// Used by config load/reload so removed namespaces do not linger in memory.
+    pub fn replace_ip_allowlists(&self, allowlists: HashMap<String, Vec<IpAddr>>) {
+        if let Ok(mut lists) = self.ip_allowlists.write() {
+            lists.clear();
+            for (namespace, ips) in allowlists {
+                if !ips.is_empty() {
+                    lists.insert(namespace, ips);
+                }
+            }
+        }
+    }
+
     /// Check if an IP is allowed for a namespace.
     /// Returns true if no allowlist is set OR if the IP is in the list.
     pub fn check_ip(&self, namespace: &str, ip: &IpAddr) -> bool {
@@ -559,4 +572,28 @@ fn default_trust_threshold() -> f64 {
 }
 fn default_semantic_dedup_threshold() -> f64 {
     0.95
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TrustScorer;
+
+    #[test]
+    fn replace_ip_allowlists_clears_removed_namespaces() {
+        let scorer = TrustScorer::new(0.3);
+        let alpha_ip: std::net::IpAddr = "127.0.0.1".parse().unwrap();
+        let beta_ip: std::net::IpAddr = "10.0.0.7".parse().unwrap();
+
+        scorer.set_ip_allowlist("alpha", vec![alpha_ip]);
+        scorer.set_ip_allowlist("beta", vec![beta_ip]);
+
+        let mut replacement = std::collections::HashMap::new();
+        replacement.insert("alpha".to_string(), vec![alpha_ip]);
+        scorer.replace_ip_allowlists(replacement);
+
+        assert!(scorer.has_ip_allowlist("alpha"));
+        assert!(!scorer.has_ip_allowlist("beta"));
+        assert!(scorer.check_ip("alpha", &alpha_ip));
+        assert!(scorer.check_ip("beta", &beta_ip));
+    }
 }

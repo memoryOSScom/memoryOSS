@@ -134,13 +134,15 @@ pub fn build_shared_state(
         config.limits.intent_cache_max_entries,
     ));
 
-    // Load IP allowlists from config
+    // Load IP allowlists from config atomically so stale namespaces never linger.
+    let mut allowlists = std::collections::HashMap::new();
     for (ns, ips) in &config.trust.ip_allowlists {
         let parsed: Vec<std::net::IpAddr> = ips.iter().filter_map(|s| s.parse().ok()).collect();
         if !parsed.is_empty() {
-            trust_scorer.set_ip_allowlist(ns, parsed);
+            allowlists.insert(ns.clone(), parsed);
         }
     }
+    trust_scorer.replace_ip_allowlists(allowlists);
 
     Arc::new(SharedState {
         config: config.clone(),

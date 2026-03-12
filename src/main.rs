@@ -214,6 +214,22 @@ fn shell_config_has_var(home_dir: &str, var_name: &str) -> bool {
         })
 }
 
+fn decay_namespaces(
+    config: &config::Config,
+    stored_namespaces: impl IntoIterator<Item = String>,
+) -> Vec<String> {
+    let mut namespaces = std::collections::BTreeSet::from(["default".to_string()]);
+    namespaces.extend(
+        config
+            .auth
+            .api_keys
+            .iter()
+            .map(|entry| entry.namespace.clone()),
+    );
+    namespaces.extend(stored_namespaces.into_iter().filter(|ns| !ns.is_empty()));
+    namespaces.into_iter().collect()
+}
+
 async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
     println!();
     println!("╔════════════════════════════════════════════════════╗");
@@ -1056,6 +1072,30 @@ mod tests {
             "ANTHROPIC_API_KEY"
         ));
     }
+
+    #[test]
+    fn decay_namespace_set_includes_stored_namespaces_not_in_config() {
+        let mut config = config::Config::default();
+        config.auth.api_keys.push(config::ApiKeyEntry {
+            key: "ek_test".to_string(),
+            role: crate::config::Role::Admin,
+            namespace: "configured".to_string(),
+        });
+
+        let namespaces = decay_namespaces(
+            &config,
+            vec!["stored-only".to_string(), "configured".to_string()],
+        );
+
+        assert_eq!(
+            namespaces,
+            vec![
+                "configured".to_string(),
+                "default".to_string(),
+                "stored-only".to_string()
+            ]
+        );
+    }
 }
 
 #[tokio::main]
@@ -1391,15 +1431,7 @@ async fn main() -> anyhow::Result<()> {
             let namespaces = if let Some(ns) = namespace {
                 vec![ns]
             } else {
-                // Collect unique namespaces from API key config + "default"
-                let mut ns_set: std::collections::HashSet<String> = config
-                    .auth
-                    .api_keys
-                    .iter()
-                    .map(|k| k.namespace.clone())
-                    .collect();
-                ns_set.insert("default".to_string());
-                ns_set.into_iter().collect()
+                decay_namespaces(&config, doc_engine.list_namespaces()?)
             };
 
             if namespaces.is_empty() {
