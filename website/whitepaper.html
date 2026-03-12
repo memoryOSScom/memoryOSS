@@ -242,6 +242,11 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
   <h3>MCP Alongside the Gateway</h3>
   <p>For tools that support the Model Context Protocol (Claude Desktop, Claude Code, Codex), memoryOSS also runs as an MCP server with four tools: <code>store</code>, <code>recall</code>, <code>update</code>, <code>forget</code>. In this mode, the agent explicitly decides when to use memory rather than having it injected transparently. MCP is therefore not the transport failover path; it is the explicit memory-tool path that runs alongside the gateway.</p>
 
+  <h3>Anthropic Local MCP Submission Path</h3>
+  <p>For Anthropic's local MCP / Claude Desktop extension path, memoryOSS uses the same local stdio server it already ships today: <code>memoryoss -c /absolute/path/to/memoryoss.toml mcp-server</code>. The public package metadata lives in <code>server.json</code>, the operator install path and three end-user examples are documented in the repository README, and the public privacy policy and support contact are published at <a href="https://memoryoss.com/datenschutz.html">memoryoss.com/datenschutz.html</a> and <a href="mailto:hello@memoryoss.com">hello@memoryoss.com</a>.</p>
+  <p>The prepared local-MCP examples intentionally match real memory workflows rather than synthetic toy prompts: project continuity recall, preference capture, and deleting an outdated memory. That gives a future directory submission a concrete install path and a practical \"what can I do with this?\" story without inventing a separate packaging-only feature surface.</p>
+  <p>One packaging gap remains explicit instead of hidden: the current <code>rmcp 0.1.5</code> transport does not yet emit MCP spec-era tool <code>title</code>, <code>readOnlyHint</code>, and <code>destructiveHint</code> fields on the live <code>tools/list</code> response. memoryOSS therefore documents the exact annotation mapping in code and docs today, but does not claim that a finished Anthropic directory bundle or portable <code>.mcpb</code> artifact already ships in this repository.</p>
+
   <h3>Memory Modes</h3>
   <p>Not every request should read and write memory. memoryOSS supports four modes, configurable globally or per-request via HTTP headers:</p>
   <table class="wp-table">

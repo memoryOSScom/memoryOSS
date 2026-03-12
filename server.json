@@ -2,11 +2,103 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "io.github.memoryOSScom/memoryoss",
   "title": "memoryOSS",
-  "description": "Persistent memory layer for AI agents — store, recall, update, forget. Local-first, hybrid search (vector + full-text + BM25), MCP native.",
+  "description": "Persistent memory for AI agents with local MCP tools and hybrid recall.",
   "repository": {
     "url": "https://github.com/memoryOSScom/memoryOSS",
     "source": "github"
   },
   "websiteUrl": "https://memoryoss.com",
-  "version": "0.1.1"
+  "version": "0.1.1",
+  "icons": [
+    {
+      "src": "https://memoryoss.com/favicon-32.png",
+      "sizes": [
+        "32x32"
+      ],
+      "mimeType": "image/png"
+    }
+  ],
+  "_meta": {
+    "io.github.memoryOSScom/anthropic-local-mcp": {
+      "submissionPath": "local-mcp-server",
+      "readinessStatus": "documented",
+      "privacyPolicyUrl": "https://memoryoss.com/datenschutz.html",
+      "support": {
+        "email": "hello@memoryoss.com",
+        "issuesUrl": "https://github.com/memoryOSScom/memoryOSS/issues"
+      },
+      "desktopInstall": {
+        "command": "memoryoss",
+        "args": [
+          "-c",
+          "${user_config.config_path}",
+          "mcp-server"
+        ],
+        "docsUrl": "https://github.com/memoryOSScom/memoryOSS#anthropic-local-mcp-readiness"
+      },
+      "manifestTemplate": {
+        "manifest_version": "0.3",
+        "server": {
+          "type": "binary",
+          "entry_point": "memoryoss",
+          "mcp_config": {
+            "command": "memoryoss",
+            "args": [
+              "-c",
+              "${user_config.config_path}",
+              "mcp-server"
+            ]
+          }
+        },
+        "privacy_policies": [
+          "https://memoryoss.com/datenschutz.html"
+        ],
+        "support": "https://github.com/memoryOSScom/memoryOSS/issues",
+        "compatibility": {
+          "platforms": [
+            "darwin",
+            "linux"
+          ]
+        }
+      },
+      "toolAnnotations": [
+        {
+          "name": "memoryoss_recall",
+          "title": "Recall Relevant Memories",
+          "annotations": {
+            "readOnlyHint": true,
+            "destructiveHint": false
+          }
+        },
+        {
+          "name": "memoryoss_store",
+          "title": "Store New Memory",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true
+          }
+        },
+        {
+          "name": "memoryoss_update",
+          "title": "Update Existing Memory",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true
+          }
+        },
+        {
+          "name": "memoryoss_forget",
+          "title": "Delete Stored Memory",
+          "annotations": {
+            "readOnlyHint": false,
+            "destructiveHint": true
+          }
+        }
+      ],
+      "submissionGaps": [
+        "Live tools/list annotations are blocked on rmcp 0.1.5, which does not yet serialize title/readOnlyHint/destructiveHint fields.",
+        "Portable .mcpb packaging and Windows release artifacts are tracked separately and not claimed in this metadata."
+      ]
+    }
+  }
 }

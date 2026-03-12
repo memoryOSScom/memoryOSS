@@ -18,6 +18,68 @@ use crate::config::Config;
 
 // -- Tool parameter types (define the MCP schema) --
 
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct MarketplaceToolAnnotations {
+    read_only_hint: bool,
+    destructive_hint: bool,
+}
+
+impl MarketplaceToolAnnotations {
+    const fn read_only() -> Self {
+        Self {
+            read_only_hint: true,
+            destructive_hint: false,
+        }
+    }
+
+    const fn destructive() -> Self {
+        Self {
+            read_only_hint: false,
+            destructive_hint: true,
+        }
+    }
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, Copy)]
+struct MarketplaceToolDefinition {
+    name: &'static str,
+    title: &'static str,
+    description: &'static str,
+    annotations: MarketplaceToolAnnotations,
+}
+
+// rmcp 0.1.5 does not yet serialize MCP spec-era tool titles and safety hints on tools/list.
+// Keep the Anthropic/marketplace metadata in one place so it stays testable and ready to wire
+// through once the transport layer exposes the fields.
+const MARKETPLACE_TOOLS: [MarketplaceToolDefinition; 4] = [
+    MarketplaceToolDefinition {
+        name: "memoryoss_recall",
+        title: "Recall Relevant Memories",
+        description: "Search your long-term memory. Call this FIRST at the start of every conversation turn to retrieve relevant context from previous sessions. Pass the user's question or topic as the query. Returns ranked results with content and relevance scores. Always check memory before answering — you may already know things the user told you before.",
+        annotations: MarketplaceToolAnnotations::read_only(),
+    },
+    MarketplaceToolDefinition {
+        name: "memoryoss_store",
+        title: "Store New Memory",
+        description: "Save important information to long-term memory so you can recall it in future sessions. Store facts, decisions, user preferences, project context, and key findings. Call this whenever you learn something worth remembering — if in doubt, store it. Memories persist across sessions and are searchable by content.",
+        annotations: MarketplaceToolAnnotations::destructive(),
+    },
+    MarketplaceToolDefinition {
+        name: "memoryoss_update",
+        title: "Update Existing Memory",
+        description: "Update an existing memory by ID. Use this when information has changed — e.g. a user preference was corrected or a fact is outdated. Pass the memory ID from a previous recall result.",
+        annotations: MarketplaceToolAnnotations::destructive(),
+    },
+    MarketplaceToolDefinition {
+        name: "memoryoss_forget",
+        title: "Delete Stored Memory",
+        description: "Delete memories by their IDs. Use when the user asks you to forget something or when stored information is wrong and should not be updated but removed entirely.",
+        annotations: MarketplaceToolAnnotations::destructive(),
+    },
+];
+
 #[derive(Debug, Serialize, Deserialize, JsonSchema)]
 pub struct StoreParams {
     /// The text content to store as a memory
@@ -78,46 +140,46 @@ fn tool_schema<T: JsonSchema>() -> Arc<JsonObject> {
     Arc::new(schema)
 }
 
+fn tool_schema_for(name: &str) -> Arc<JsonObject> {
+    match name {
+        "memoryoss_recall" => tool_schema::<RecallParams>(),
+        "memoryoss_store" => tool_schema::<StoreParams>(),
+        "memoryoss_update" => tool_schema::<UpdateParams>(),
+        "memoryoss_forget" => tool_schema::<ForgetParams>(),
+        _ => unreachable!("missing MCP schema for tool {name}"),
+    }
+}
+
+fn build_marketplace_tool(definition: &MarketplaceToolDefinition) -> Tool {
+    Tool {
+        name: Cow::Borrowed(definition.name),
+        description: Cow::Borrowed(definition.description),
+        input_schema: tool_schema_for(definition.name),
+    }
+}
+
+#[cfg(test)]
+fn marketplace_tool_metadata() -> Vec<serde_json::Value> {
+    MARKETPLACE_TOOLS
+        .iter()
+        .map(|definition| {
+            serde_json::json!({
+                "name": definition.name,
+                "title": definition.title,
+                "annotations": {
+                    "readOnlyHint": definition.annotations.read_only_hint,
+                    "destructiveHint": definition.annotations.destructive_hint,
+                }
+            })
+        })
+        .collect()
+}
+
 fn tools_list() -> Vec<Tool> {
-    vec![
-        Tool {
-            name: Cow::Borrowed("memoryoss_recall"),
-            description: Cow::Borrowed(
-                "Search your long-term memory. Call this FIRST at the start of every conversation \
-                 turn to retrieve relevant context from previous sessions. Pass the user's question \
-                 or topic as the query. Returns ranked results with content and relevance scores. \
-                 Always check memory before answering — you may already know things the user told you before.",
-            ),
-            input_schema: tool_schema::<RecallParams>(),
-        },
-        Tool {
-            name: Cow::Borrowed("memoryoss_store"),
-            description: Cow::Borrowed(
-                "Save important information to long-term memory so you can recall it in future sessions. \
-                 Store facts, decisions, user preferences, project context, and key findings. \
-                 Call this whenever you learn something worth remembering — if in doubt, store it. \
-                 Memories persist across sessions and are searchable by content.",
-            ),
-            input_schema: tool_schema::<StoreParams>(),
-        },
-        Tool {
-            name: Cow::Borrowed("memoryoss_update"),
-            description: Cow::Borrowed(
-                "Update an existing memory by ID. Use this when information has changed — \
-                 e.g. a user preference was corrected or a fact is outdated. \
-                 Pass the memory ID from a previous recall result.",
-            ),
-            input_schema: tool_schema::<UpdateParams>(),
-        },
-        Tool {
-            name: Cow::Borrowed("memoryoss_forget"),
-            description: Cow::Borrowed(
-                "Delete memories by their IDs. Use when the user asks you to forget something \
-                 or when stored information is wrong and should not be updated but removed entirely.",
-            ),
-            input_schema: tool_schema::<ForgetParams>(),
-        },
-    ]
+    MARKETPLACE_TOOLS
+        .iter()
+        .map(build_marketplace_tool)
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -512,4 +574,48 @@ pub async fn run_mcp_server(
         .map_err(|e| anyhow::anyhow!("MCP server join error: {e}"))?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{MARKETPLACE_TOOLS, marketplace_tool_metadata, tools_list};
+
+    #[test]
+    fn marketplace_tool_metadata_covers_every_tool() {
+        let tool_names: Vec<String> = tools_list()
+            .into_iter()
+            .map(|tool| tool.name.into_owned())
+            .collect();
+        let metadata = marketplace_tool_metadata();
+
+        assert_eq!(tool_names.len(), metadata.len());
+        for definition in MARKETPLACE_TOOLS {
+            assert!(!definition.title.is_empty(), "tool title must be non-empty");
+            assert_ne!(
+                definition.annotations.read_only_hint, definition.annotations.destructive_hint,
+                "tool {} must set exactly one safety hint",
+                definition.name
+            );
+            assert!(
+                tool_names.iter().any(|name| name == definition.name),
+                "tool {} missing from tools/list",
+                definition.name
+            );
+        }
+
+        for entry in metadata {
+            let annotations = entry
+                .get("annotations")
+                .and_then(|value| value.as_object())
+                .expect("metadata annotations missing");
+            assert!(
+                annotations.contains_key("readOnlyHint"),
+                "metadata must include readOnlyHint"
+            );
+            assert!(
+                annotations.contains_key("destructiveHint"),
+                "metadata must include destructiveHint"
+            );
+        }
+    }
 }

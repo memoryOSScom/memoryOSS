@@ -270,6 +270,104 @@ For Claude Desktop, Claude Code, or Codex MCP support:
 
 Provides 4 tools: `store`, `recall`, `update`, `forget`. In the default setup MCP runs alongside the gateway. It is not the transport failover path; it is the explicit memory-tool path.
 
+## Anthropic Local MCP Readiness
+
+memoryOSS uses the same local stdio MCP path Anthropic documents for Claude Desktop extensions and local MCP directory submissions. The repo now maps the submission-critical pieces explicitly instead of implying they are already bundled:
+
+| Requirement | memoryOSS mapping | Status |
+|-------------|-------------------|--------|
+| Local MCP server | `memoryoss mcp-server` over stdio via [server.json](server.json) and [src/mcp.rs](src/mcp.rs) | Ready |
+| Public privacy policy | https://memoryoss.com/datenschutz.html | Ready |
+| Support channel | `hello@memoryoss.com` and GitHub issues | Ready |
+| Minimum three usable examples | See examples below | Ready |
+| Tool titles + safety hints | Canonical mapping in [src/mcp.rs](src/mcp.rs) | Mapped |
+| `manifest.json` / `.mcpb` package | Template documented below | Documented, not bundled |
+
+Current packaging gaps are explicit:
+
+- `rmcp 0.1.5` does not yet serialize MCP spec-era `title`, `readOnlyHint`, and `destructiveHint` fields on the live `tools/list` response, so memoryOSS is not claiming directory-ready wire compatibility yet.
+- A portable `.mcpb` artifact and Windows release path are follow-up packaging work; the current documented install path is source/binary based.
+
+### Current install path
+
+For Claude Desktop, Claude Code, or Codex today, install memoryOSS locally and register the stdio server:
+
+```json
+{
+  "mcpServers": {
+    "memoryoss": {
+      "command": "memoryoss",
+      "args": ["-c", "/absolute/path/to/memoryoss.toml", "mcp-server"]
+    }
+  }
+}
+```
+
+If you used the setup wizard, it writes the equivalent registration automatically.
+
+### Marketplace tool annotation map
+
+Anthropic requires a clear title and safety annotation per tool. memoryOSS currently maps them as follows in [src/mcp.rs](src/mcp.rs):
+
+| Tool | Title | Safety annotation | Why |
+|------|-------|-------------------|-----|
+| `memoryoss_recall` | `Recall Relevant Memories` | `readOnlyHint: true` | Reads stored memory only |
+| `memoryoss_store` | `Store New Memory` | `destructiveHint: true` | Persists new user/project data |
+| `memoryoss_update` | `Update Existing Memory` | `destructiveHint: true` | Mutates existing stored data |
+| `memoryoss_forget` | `Delete Stored Memory` | `destructiveHint: true` | Deletes stored data |
+
+### Submission examples
+
+These are the three practical examples prepared for a future Claude Desktop / local MCP submission:
+
+1. Project continuity: “Before we touch deployment docs, recall anything we already decided about staging-first rollouts for this repo.”
+2. Preference capture: “Remember that I only want concise summaries and never raw memory dumps unless I ask.”
+3. Memory hygiene: “Find the outdated memory that says staging is optional and delete it if it is still stored.”
+
+### Manifest / MCPB template
+
+When the packaging step is added, the Anthropic Desktop extension bundle will follow a manifest shape like this:
+
+```json
+{
+  "manifest_version": "0.3",
+  "name": "memoryoss",
+  "display_name": "memoryOSS",
+  "version": "0.1.1",
+  "description": "Persistent memory for AI agents with local MCP tools.",
+  "author": {
+    "name": "memoryOSS Contributors"
+  },
+  "homepage": "https://memoryoss.com",
+  "documentation": "https://github.com/memoryOSScom/memoryOSS#anthropic-local-mcp-readiness",
+  "support": "https://github.com/memoryOSScom/memoryOSS/issues",
+  "privacy_policies": [
+    "https://memoryoss.com/datenschutz.html"
+  ],
+  "server": {
+    "type": "binary",
+    "entry_point": "memoryoss",
+    "mcp_config": {
+      "command": "memoryoss",
+      "args": ["-c", "${user_config.config_path}", "mcp-server"]
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "linux"]
+  },
+  "user_config": {
+    "config_path": {
+      "type": "string",
+      "title": "memoryOSS config path",
+      "description": "Absolute path to your memoryoss.toml file.",
+      "required": true
+    }
+  }
+}
+```
+
+This template is intentionally documented, not claimed as a shipped `.mcpb` artifact yet.
+
 ## CLI Commands
 
 | Command | Description |
