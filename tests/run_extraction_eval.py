@@ -37,6 +37,10 @@ OUTPUT_JSON = Path(
 )
 TIMEOUT = float(os.environ.get("EXTRACTION_EVAL_TIMEOUT", "60"))
 MAX_TOKENS = int(os.environ.get("EXTRACTION_EVAL_MAX_TOKENS", "800"))
+HTTP_RETRIES = int(os.environ.get("EXTRACTION_EVAL_HTTP_RETRIES", "3"))
+HTTP_RETRY_BACKOFF_SECONDS = float(
+    os.environ.get("EXTRACTION_EVAL_HTTP_RETRY_BACKOFF_SECONDS", "2")
+)
 
 GENERIC_PATTERNS = [
     "rust ownership",
@@ -434,25 +438,72 @@ def merge_facts(facts: list[dict], supplemental: list[dict]) -> list[dict]:
     return merged
 
 
+def post_with_retries(
+    url: str,
+    *,
+    headers: dict[str, str],
+    payload: dict[str, Any],
+) -> requests.Response:
+    last_error: Exception | None = None
+    for attempt in range(1, HTTP_RETRIES + 1):
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=payload,
+                timeout=TIMEOUT,
+            )
+            if (
+                response.status_code in {408, 429, 500, 502, 503, 504}
+                and attempt < HTTP_RETRIES
+            ):
+                time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
+                continue
+            response.raise_for_status()
+            return response
+        except (
+            requests.exceptions.Timeout,
+            requests.exceptions.ConnectionError,
+            requests.exceptions.HTTPError,
+        ) as exc:
+            last_error = exc
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            retryable_http = isinstance(exc, requests.exceptions.HTTPError) and status_code in {
+                408,
+                429,
+                500,
+                502,
+                503,
+                504,
+            }
+            if attempt >= HTTP_RETRIES or (
+                isinstance(exc, requests.exceptions.HTTPError) and not retryable_http
+            ):
+                raise
+            time.sleep(HTTP_RETRY_BACKOFF_SECONDS * attempt)
+
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("unreachable retry loop exit")
+
+
 def anthropic_call(model: str, prompt: str) -> dict:
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise SystemExit("ANTHROPIC_API_KEY is required for provider=claude")
-    response = requests.post(
+    response = post_with_retries(
         "https://api.anthropic.com/v1/messages",
         headers={
             "x-api-key": api_key,
             "anthropic-version": "2023-06-01",
             "content-type": "application/json",
         },
-        json={
+        payload={
             "model": model,
             "max_tokens": MAX_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
     data = response.json()
     text = ""
     for block in data.get("content", []):
@@ -470,21 +521,19 @@ def openai_call(model: str, prompt: str) -> dict:
     api_key = os.environ.get("OPENAI_API_KEY", "")
     if not api_key:
         raise SystemExit("OPENAI_API_KEY is required for provider=openai")
-    response = requests.post(
+    response = post_with_retries(
         "https://api.openai.com/v1/chat/completions",
         headers={
             "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
-        json={
+        payload={
             "model": model,
             "temperature": 0,
             "max_tokens": MAX_TOKENS,
             "messages": [{"role": "user", "content": prompt}],
         },
-        timeout=TIMEOUT,
     )
-    response.raise_for_status()
     data = response.json()
     usage = data.get("usage", {})
     message = data["choices"][0]["message"]["content"]
