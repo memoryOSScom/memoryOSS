@@ -1,19 +1,29 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 memoryOSS Contributors
 
+#[cfg(target_os = "windows")]
+use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::Mutex;
 
+#[cfg(not(target_os = "windows"))]
 use usearch::{Index, IndexOptions, MetricKind, ScalarKind};
 use uuid::Uuid;
 
 /// Internal state protected by a single Mutex to prevent lock-ordering issues.
+#[cfg(not(target_os = "windows"))]
 struct VectorState {
     index: Index,
     key_to_uuid: HashMap<u64, Uuid>,
     uuid_to_key: HashMap<Uuid, u64>,
     next_key: u64,
+}
+
+#[cfg(target_os = "windows")]
+struct VectorState {
+    dimension: usize,
+    vectors: HashMap<Uuid, Vec<f32>>,
 }
 
 pub struct VectorEngine {
@@ -22,6 +32,7 @@ pub struct VectorEngine {
 }
 
 impl VectorEngine {
+    #[cfg(not(target_os = "windows"))]
     pub fn open(data_dir: &Path, dimension: usize) -> anyhow::Result<Self> {
         let path = data_dir.join("vectors.usearch");
 
@@ -76,6 +87,21 @@ impl VectorEngine {
         })
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn open(data_dir: &Path, dimension: usize) -> anyhow::Result<Self> {
+        tracing::warn!(
+            "Windows build uses the portable brute-force vector backend; large-memory recall will be slower than usearch-backed platforms"
+        );
+        Ok(Self {
+            state: Mutex::new(VectorState {
+                dimension,
+                vectors: HashMap::new(),
+            }),
+            data_dir: data_dir.to_path_buf(),
+        })
+    }
+
+    #[cfg(not(target_os = "windows"))]
     pub fn add(&self, id: Uuid, embedding: &[f32]) -> anyhow::Result<()> {
         let mut st = self
             .state
@@ -102,6 +128,18 @@ impl VectorEngine {
         Ok(())
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn add(&self, id: Uuid, embedding: &[f32]) -> anyhow::Result<()> {
+        let mut st = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        ensure_embedding_dimension(embedding, st.dimension)?;
+        st.vectors.insert(id, embedding.to_vec());
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "windows"))]
     pub fn search(&self, query: &[f32], limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
         let st = self
             .state
@@ -125,6 +163,28 @@ impl VectorEngine {
         Ok(out)
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn search(&self, query: &[f32], limit: usize) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let st = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        ensure_embedding_dimension(query, st.dimension)?;
+
+        let mut out: Vec<_> = st
+            .vectors
+            .iter()
+            .filter_map(|(uuid, embedding)| {
+                cosine_similarity(query, embedding).map(|similarity| (*uuid, similarity))
+            })
+            .collect();
+
+        out.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(Ordering::Equal));
+        out.truncate(limit);
+        Ok(out)
+    }
+
+    #[cfg(not(target_os = "windows"))]
     pub fn remove(&self, id: Uuid) -> anyhow::Result<bool> {
         let mut st = self
             .state
@@ -140,11 +200,27 @@ impl VectorEngine {
         }
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn remove(&self, id: Uuid) -> anyhow::Result<bool> {
+        let mut st = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+        Ok(st.vectors.remove(&id).is_some())
+    }
+
+    #[cfg(not(target_os = "windows"))]
     pub fn size(&self) -> usize {
         self.state.lock().map(|st| st.index.size()).unwrap_or(0)
     }
 
+    #[cfg(target_os = "windows")]
+    pub fn size(&self) -> usize {
+        self.state.lock().map(|st| st.vectors.len()).unwrap_or(0)
+    }
+
     /// Persist key mappings to disk. Called periodically by indexer.
+    #[cfg(not(target_os = "windows"))]
     pub fn persist_mappings(&self) -> anyhow::Result<()> {
         let st = self
             .state
@@ -163,7 +239,15 @@ impl VectorEngine {
         Ok(())
     }
 
+    /// Derived indexes are rebuilt from redb on startup, so the portable Windows backend
+    /// does not need a separate on-disk key-mapping file.
+    #[cfg(target_os = "windows")]
+    pub fn persist_mappings(&self) -> anyhow::Result<()> {
+        Ok(())
+    }
+
     /// Rebuild from document engine data. Call on startup to restore key mappings.
+    #[cfg(not(target_os = "windows"))]
     pub fn rebuild(&self, memories: &[(Uuid, Vec<f32>)]) -> anyhow::Result<()> {
         let mut st = self
             .state
@@ -189,12 +273,68 @@ impl VectorEngine {
         tracing::info!("Rebuilt vector index: {} vectors", memories.len());
         Ok(())
     }
+
+    /// Rebuild the portable Windows backend from SoT embeddings on startup.
+    #[cfg(target_os = "windows")]
+    pub fn rebuild(&self, memories: &[(Uuid, Vec<f32>)]) -> anyhow::Result<()> {
+        let mut st = self
+            .state
+            .lock()
+            .map_err(|e| anyhow::anyhow!("lock: {e}"))?;
+
+        st.vectors.clear();
+        for (uuid, embedding) in memories {
+            ensure_embedding_dimension(embedding, st.dimension)?;
+            st.vectors.insert(*uuid, embedding.clone());
+        }
+
+        tracing::info!(
+            "Rebuilt portable vector index on Windows: {} vectors",
+            memories.len()
+        );
+        Ok(())
+    }
 }
 
+#[cfg(not(target_os = "windows"))]
 #[derive(serde::Serialize, serde::Deserialize)]
 struct SavedMappings {
     next_key: u64,
     mappings: Vec<(u64, Uuid)>,
+}
+
+#[cfg(target_os = "windows")]
+fn ensure_embedding_dimension(embedding: &[f32], expected: usize) -> anyhow::Result<()> {
+    if embedding.len() != expected {
+        anyhow::bail!(
+            "embedding dimension mismatch: expected {expected}, got {}",
+            embedding.len()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() {
+        return None;
+    }
+
+    let (mut dot, mut norm_a, mut norm_b) = (0.0f64, 0.0f64, 0.0f64);
+    for (lhs, rhs) in a.iter().zip(b.iter()) {
+        let lhs = *lhs as f64;
+        let rhs = *rhs as f64;
+        dot += lhs * rhs;
+        norm_a += lhs * lhs;
+        norm_b += rhs * rhs;
+    }
+
+    let denom = norm_a.sqrt() * norm_b.sqrt();
+    if denom <= f64::EPSILON {
+        return Some(0.0);
+    }
+
+    Some((dot / denom) as f32)
 }
 
 #[cfg(test)]

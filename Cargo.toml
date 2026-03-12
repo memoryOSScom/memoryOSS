@@ -108,11 +108,6 @@ tempfile = "3"
 # Keep the faster SIMD-enabled defaults on platforms where they already build cleanly.
 usearch = "2"
 
-[target.'cfg(target_os = "windows")'.dependencies]
-# Windows release builds must avoid SimSIMD, but still need fp16lib to keep
-# usearch out of the MSVC-incompatible `_Float16` fallback path.
-usearch = { version = "2", default-features = false, features = ["fp16lib"] }
-
 [profile.release]
 lto = true
 strip = true

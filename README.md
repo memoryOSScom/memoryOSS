@@ -105,6 +105,7 @@ Windows-specific notes:
 - use NTFS ACLs to protect secrets instead of Unix-style `chmod 600`
 - if you set an absolute Windows `data_dir`, use a TOML-safe path such as `'C:\Users\you\AppData\Local\memoryoss\data'`
 - if you need remote access from outside the machine, change `[server].host` to `0.0.0.0`; otherwise keep the default loopback host
+- current Windows builds use a portable brute-force vector backend instead of `usearch`, so very large-memory recall will be slower than on Linux/macOS
 
 The setup wizard auto-detects your environment, registers MCP for Claude/Codex, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
