@@ -27,6 +27,52 @@ memoryoss setup
 memoryoss -c memoryoss.toml serve
 ```
 
+## Docker
+
+memoryOSS also ships as an official container image on GHCR:
+
+- `ghcr.io/memoryosscom/memoryoss:latest`
+- `ghcr.io/memoryosscom/memoryoss:<version>`
+
+This is an additional self-hosting path, not a replacement for the source/binary install.
+
+Before starting the container:
+
+- copy [memoryoss.toml.example](memoryoss.toml.example) to `memoryoss.toml`
+- set `[server].host = "0.0.0.0"` so the service is reachable outside the container
+- set `[storage].data_dir = "/data"` so the persisted database lands on the mounted volume
+- fill in your real API keys and secrets
+
+### Minimal `docker run`
+
+```bash
+docker run -d \
+  --name memoryoss \
+  -p 8000:8000 \
+  -v "$(pwd)/memoryoss.toml:/config/memoryoss.toml:ro" \
+  -v memoryoss-data:/data \
+  ghcr.io/memoryosscom/memoryoss:latest \
+  -c /config/memoryoss.toml serve
+```
+
+### Minimal `docker compose`
+
+```yaml
+services:
+  memoryoss:
+    image: ghcr.io/memoryosscom/memoryoss:latest
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./memoryoss.toml:/config/memoryoss.toml:ro
+      - memoryoss-data:/data
+    command: ["-c", "/config/memoryoss.toml", "serve"]
+
+volumes:
+  memoryoss-data:
+```
+
 The setup wizard auto-detects your environment, registers MCP for Claude/Codex, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
 If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup` again so memoryOSS can safely update the integration path.
