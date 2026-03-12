@@ -60,10 +60,45 @@ TRANSIENT_PATTERNS = [
 ]
 
 GENERIC_PRODUCT_PATTERNS = [
-    "memoryoss is a local memory layer for ai agents",
-    "local memory layer for ai agents",
+    "local memory layer",
+    "ai agents",
     "helps preserve context across sessions",
     "preserve context across sessions",
+    "designed to preserve context across sessions",
+    "maintain context across sessions",
+    "context persistence",
+]
+
+PROJECT_SPECIFIC_ANCHORS = [
+    "/",
+    ".rs",
+    ".toml",
+    ".json",
+    "readme",
+    "homepage",
+    "landing page",
+    "docs",
+    "documentation",
+    "proxy",
+    "mcp",
+    "oauth",
+    "anthropic",
+    "openai",
+    "docker",
+    "workflow",
+    "release",
+    "latency",
+    "namespace",
+    "config",
+    "setting",
+    "flag",
+    "bug",
+    "fix",
+    "decision",
+    "constraint",
+    "preference",
+    "unless",
+    "because",
 ]
 
 KEYWORD_ALIASES = {
@@ -260,7 +295,10 @@ def generic_product_fact(fact: dict) -> bool:
     content = normalize(str(fact.get("content", "")))
     if not content:
         return False
-    return any(pattern in content for pattern in GENERIC_PRODUCT_PATTERNS)
+    generic_hits = sum(1 for pattern in GENERIC_PRODUCT_PATTERNS if pattern in content)
+    if generic_hits < 2:
+        return False
+    return not any(anchor in content for anchor in PROJECT_SPECIFIC_ANCHORS)
 
 
 def should_store_fact(fact: dict) -> bool:

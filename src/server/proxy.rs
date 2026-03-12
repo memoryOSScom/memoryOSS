@@ -606,6 +606,10 @@ fn should_store_extracted_fact(content: &str) -> bool {
         return false;
     }
 
+    if is_generic_product_copy(&lower) {
+        return false;
+    }
+
     // Reject obvious meta chatter, transient status, and generic product copy.
     const REJECT_PATTERNS: &[&str] = &[
         "hello",
@@ -619,10 +623,6 @@ fn should_store_extracted_fact(content: &str) -> bool {
         "current ci run is still in progress",
         "still in progress",
         "wait for the run to finish",
-        "memoryoss is a local memory layer for ai agents",
-        "local memory layer for ai agents",
-        "helps preserve context across sessions",
-        "preserve context across sessions",
         "rust ownership helps prevent data races",
         "memory-safety guarantees",
         "memory safety guarantees",
@@ -637,6 +637,66 @@ fn should_store_extracted_fact(content: &str) -> bool {
     !REJECT_PATTERNS
         .iter()
         .any(|pattern| lower.contains(pattern))
+}
+
+fn is_generic_product_copy(lower: &str) -> bool {
+    const GENERIC_PRODUCT_PATTERNS: &[&str] = &[
+        "local memory layer",
+        "ai agents",
+        "preserve context across sessions",
+        "helps preserve context across sessions",
+        "designed to preserve context across sessions",
+        "maintain context across sessions",
+        "context persistence",
+    ];
+    const PROJECT_SPECIFIC_ANCHORS: &[&str] = &[
+        "/",
+        ".rs",
+        ".toml",
+        ".json",
+        "readme",
+        "homepage",
+        "landing page",
+        "docs",
+        "documentation",
+        "proxy",
+        "mcp",
+        "oauth",
+        "anthropic",
+        "openai",
+        "docker",
+        "workflow",
+        "release",
+        "latency",
+        "namespace",
+        "config",
+        "setting",
+        "flag",
+        "bug",
+        "fix",
+        "decision",
+        "constraint",
+        "preference",
+        "unless",
+        "because",
+    ];
+
+    let generic_hits = GENERIC_PRODUCT_PATTERNS
+        .iter()
+        .filter(|pattern| lower.contains(**pattern))
+        .count();
+    if generic_hits < 2 {
+        return false;
+    }
+
+    if PROJECT_SPECIFIC_ANCHORS
+        .iter()
+        .any(|anchor| lower.contains(anchor))
+    {
+        return false;
+    }
+
+    true
 }
 
 fn fallback_preference_facts(conversation_text: &str) -> Vec<serde_json::Value> {
@@ -1513,9 +1573,12 @@ Rules:
 - EXTRACT: response-style preferences even when phrased negatively ("No bullets unless I ask")
 - EXTRACT: bugs encountered and their solutions
 - EXTRACT: architecture choices with their context
+- SKIP: product descriptions, marketing copy, or generic restatements of what memoryOSS/the project is
+- SKIP: assistant paraphrases that only restate generic capabilities without a concrete decision, issue, constraint, or preference
 - SKIP: general knowledge any engineer would know
 - SKIP: textbook definitions, best practices, or generic explanations
 - SKIP: greetings, acknowledgments, and meta-conversation
+- If the conversation only says what the product/project generally is, return []
 - Every fact MUST include the context in which it applies
 - Maximum 5 facts per extraction
 - If nothing project-specific was discussed, return []
@@ -2025,6 +2088,13 @@ mod tests {
     }
 
     #[test]
+    fn extracted_fact_filter_rejects_generic_product_capability_summary() {
+        assert!(!should_store_extracted_fact(
+            "This tool is a local memory layer for AI agents with context persistence across sessions."
+        ));
+    }
+
+    #[test]
     fn extracted_fact_filter_rejects_transient_status() {
         assert!(!should_store_extracted_fact(
             "The current CI run is still in progress and we should wait for it to finish."
@@ -2035,6 +2105,13 @@ mod tests {
     fn extracted_fact_filter_keeps_project_specific_decision() {
         assert!(should_store_extracted_fact(
             "Codex OAuth should stay MCP-first and proxy mode is not the default."
+        ));
+    }
+
+    #[test]
+    fn extracted_fact_filter_keeps_project_specific_copy_decision() {
+        assert!(should_store_extracted_fact(
+            "For the README intro, describe memoryOSS as a local memory layer for AI agents; that wording only applies to the homepage copy."
         ));
     }
 
