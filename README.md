@@ -6,25 +6,47 @@ Persistent long-term memory for AI agents. memoryOSS runs as a local memory laye
 
 memoryOSS is for project context, preferences, prior fixes, and working history — not for replacing general world knowledge the model already has.
 
-In internal retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands.
+## Why It Exists
 
-The public tests page publishes the current benchmark and quality artifacts: 20k retention, long-memory regression, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix.
+Agents lose project context between sessions. memoryOSS persists the things that actually matter in day-to-day work: decisions, conventions, fixes, constraints, and user preferences.
+
+In public retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands. The public test page publishes the current proof set: 20k retention, long-memory regression, soak stability, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix.
 
 In a separate constrained 10-task Claude benchmark, using recalled memory context instead of replaying the full task context reduced average input tokens by 44.4%. We treat this as evidence for repeated-task context compression in that workload, not as a universal promise of lower token usage in every workload.
-## Quickstart
+
+## How It Works
+
+1. Run memoryOSS locally as a small proxy and memory service.
+2. Let it recall relevant project memory before the LLM call.
+3. Let it extract durable project-specific facts after the response.
+4. Keep explicit memory tools available through MCP when you want direct control.
+
+## Fastest Install
+
+Use a prebuilt release binary from GitHub Releases. Current archives:
+
+- `memoryoss-linux-x86_64.tar.gz`
+- `memoryoss-linux-aarch64.tar.gz`
+- `memoryoss-darwin-x86_64.tar.gz`
+- `memoryoss-darwin-aarch64.tar.gz`
+- `memoryoss-windows-x86_64.zip`
+
+Linux/macOS example:
 
 ```bash
-# Install from source
-cargo install --git https://github.com/memoryOSScom/memoryOSS.git
-
-# Or build locally
-cargo build --release
-
-# Interactive setup (creates config, registers MCP, starts the hybrid gateway)
+curl -L https://github.com/memoryOSScom/memoryOSS/releases/latest/download/memoryoss-linux-x86_64.tar.gz -o memoryoss.tar.gz
+tar xzf memoryoss.tar.gz
+sudo install -m 0755 memoryoss /usr/local/bin/memoryoss
 memoryoss setup
+```
 
-# Or start directly with an existing config
-memoryoss -c memoryoss.toml serve
+Windows has a PowerShell example in [Windows](#windows).
+
+## From Source
+
+```bash
+cargo install --git https://github.com/memoryOSScom/memoryOSS.git
+memoryoss setup
 ```
 
 ## Docker
