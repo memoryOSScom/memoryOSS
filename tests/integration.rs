@@ -470,6 +470,20 @@ async fn dummy_anthropic(
             "usage": { "input_tokens": 1, "output_tokens": 1 }
         }));
     }
+    if body["model"].as_str() == Some("claude-test-promote") {
+        return Json(serde_json::json!({
+            "id": "msg_promote",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-test-promote",
+            "stop_reason": "end_turn",
+            "content": [{
+                "type": "text",
+                "text": "[{\"content\":\"Promotion fact alpha: use the rollout checklist before every production release.\",\"tags\":[\"deploy\",\"checklist\"]}]"
+            }],
+            "usage": { "input_tokens": 1, "output_tokens": 1 }
+        }));
+    }
     Json(serde_json::json!({
         "id": "msg_test",
         "type": "message",
@@ -856,6 +870,20 @@ async fn test_query_explain_returns_real_score_breakdown() {
         "missing trust multiplier"
     );
     assert!(
+        first["trust_confidence_low"].as_f64().is_some(),
+        "missing trust confidence low"
+    );
+    assert!(
+        first["trust_confidence_high"].as_f64().is_some(),
+        "missing trust confidence high"
+    );
+    assert!(
+        first["trust_signals"]["outcome_learning"]
+            .as_f64()
+            .is_some(),
+        "missing outcome_learning trust signal"
+    );
+    assert!(
         first["final_score"].as_f64().is_some(),
         "missing final score"
     );
@@ -936,6 +964,7 @@ async fn test_feedback_updates_memory_lifecycle() {
     assert_eq!(reject_resp.status(), 200, "reject feedback failed");
     let reject_body: serde_json::Value = reject_resp.json().await.unwrap();
     assert_eq!(reject_body["status"].as_str(), Some("contested"));
+    assert_eq!(reject_body["reject_count"].as_u64(), Some(1));
 
     let supersede_resp = client
         .post(format!("{base}/v1/feedback"))
@@ -955,6 +984,8 @@ async fn test_feedback_updates_memory_lifecycle() {
         supersede_body["superseded_by"].as_str(),
         Some(second_id.as_str())
     );
+    assert_eq!(supersede_body["reject_count"].as_u64(), Some(1));
+    assert_eq!(supersede_body["supersede_count"].as_u64(), Some(1));
 
     tokio::time::sleep(Duration::from_secs(2)).await;
 
@@ -967,6 +998,15 @@ async fn test_feedback_updates_memory_lifecycle() {
     assert_eq!(inspect_first.status(), 200);
     let inspect_first_body: serde_json::Value = inspect_first.json().await.unwrap();
     assert_eq!(inspect_first_body["status"].as_str(), Some("stale"));
+    assert_eq!(inspect_first_body["reject_count"].as_u64(), Some(1));
+    assert_eq!(inspect_first_body["supersede_count"].as_u64(), Some(1));
+    assert!(inspect_first_body["last_outcome_at"].as_str().is_some());
+    assert!(
+        inspect_first_body["trust_signals"]["outcome_learning"]
+            .as_f64()
+            .is_some(),
+        "inspect should expose outcome trust signals for stale memory"
+    );
 
     let inspect_second = client
         .get(format!("{base}/v1/inspect/{second_id}"))
@@ -978,8 +1018,19 @@ async fn test_feedback_updates_memory_lifecycle() {
     let inspect_second_body: serde_json::Value = inspect_second.json().await.unwrap();
     assert_eq!(inspect_second_body["status"].as_str(), Some("active"));
     assert!(
+        inspect_second_body["confirm_count"].as_u64().unwrap_or(0) >= 1,
+        "superseding memory should record confirm outcomes"
+    );
+    assert!(
         inspect_second_body["evidence_count"].as_u64().unwrap_or(0) >= 2,
         "superseding memory should gain evidence"
+    );
+    assert!(inspect_second_body["last_outcome_at"].as_str().is_some());
+    assert!(
+        inspect_second_body["trust_signals"]["outcome_learning"]
+            .as_f64()
+            .is_some(),
+        "inspect should expose outcome trust signals for active memory"
     );
 
     child.kill().await.ok();
@@ -1503,6 +1554,220 @@ namespace = "test"
             .iter()
             .any(|request| { request["body"]["model"].as_str() == Some("claude-test-extract") }),
         "dummy upstream should receive a dedicated extraction request"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_proxy_extraction_repeated_signals_promote_candidate_and_track_reuse() {
+    let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = true
+extract_provider = "claude"
+extract_model = "claude-test-promote"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-promotion.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_proxy = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Summarize the rollout checklist."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_proxy.status(), 200);
+    wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 1).await;
+
+    let lifecycle_resp = client
+        .get(format!(
+            "{base}/v1/admin/lifecycle?status=candidate&limit=10"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(lifecycle_resp.status(), 200);
+    let lifecycle_body: serde_json::Value = lifecycle_resp.json().await.unwrap();
+    let candidate = lifecycle_body["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|memory| {
+            memory["content"].as_str()
+                == Some(
+                    "Promotion fact alpha: use the rollout checklist before every production release.",
+                )
+        })
+        .cloned()
+        .expect("expected extracted candidate memory");
+    let memory_id = candidate["id"].as_str().unwrap().to_string();
+    assert_eq!(candidate["status"].as_str(), Some("candidate"));
+    assert_eq!(candidate["reuse_count"].as_u64(), Some(0));
+
+    let second_proxy = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Repeat the rollout checklist."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_proxy.status(), 200);
+    wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 2).await;
+
+    let promoted = inspect_memory(&client, &base, "test-key-integration", &memory_id).await;
+    assert_eq!(promoted["status"].as_str(), Some("active"));
+    assert_eq!(promoted["reuse_count"].as_u64(), Some(1));
+    assert!(promoted["last_reused_at"].as_str().is_some());
+    assert!(promoted["evidence_count"].as_u64().unwrap_or(0) >= 1);
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_repeated_unused_injection_drives_memory_stale() {
+    let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+
+[decay]
+after_days = 0
+enabled = false
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-stale.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Lifecycle marker low-relevance alpha: check staging cluster health before rollout.",
+            "tags": ["deploy", "checklist"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+    let memory_id = store_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    for _ in 0..3 {
+        let proxy_resp = client
+            .post(format!("{base}/proxy/anthropic/v1/messages"))
+            .header("x-api-key", "test-key-proxy")
+            .header("anthropic-version", "2023-06-01")
+            .header("x-memory-mode", "full")
+            .json(&serde_json::json!({
+                "model": "claude-3-5-haiku-latest",
+                "max_tokens": 32,
+                "messages": [{
+                    "role": "user",
+                    "content": "Lifecycle marker low-relevance alpha: check staging cluster health before rollout."
+                }]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(proxy_resp.status(), 200);
+    }
+
+    let stale = inspect_memory(&client, &base, "test-key-integration", &memory_id).await;
+    assert_eq!(stale["status"].as_str(), Some("stale"));
+    assert_eq!(stale["injection_count"].as_u64(), Some(3));
+    assert_eq!(stale["reuse_count"].as_u64(), Some(0));
+    assert_eq!(stale["eligible_for_injection"].as_bool(), Some(false));
+    assert!(
+        stale["trust_signals"]["outcome_learning"]
+            .as_f64()
+            .is_some(),
+        "inspect should expose outcome trust signals after lifecycle decay"
     );
 
     child.kill().await.ok();
@@ -3707,13 +3972,46 @@ async fn test_decay_and_migrate_cli_connections() {
         .post(format!("{base}/v1/store"))
         .header("Authorization", "Bearer test-key-integration")
         .json(&serde_json::json!({
-            "content": "Decay should archive this memory when after_days is zero.",
-            "tags": ["decay", "cli"]
+            "content": "Legacy deployment note that should become stale before decay archival.",
+            "tags": ["decay", "cli", "legacy"]
         }))
         .send()
         .await
         .unwrap();
     assert_eq!(store_resp.status(), 200);
+    let stale_id = store_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let replacement_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Current deployment note that supersedes the legacy CLI decay rule.",
+            "tags": ["decay", "cli", "current"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replacement_resp.status(), 200);
+    let replacement_id = replacement_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let supersede_resp = client
+        .post(format!("{base}/v1/feedback"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": stale_id,
+            "action": "supersede",
+            "superseded_by": replacement_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(supersede_resp.status(), 200);
 
     tokio::time::sleep(Duration::from_secs(3)).await;
     child.kill().await.ok();
@@ -3814,8 +4112,17 @@ async fn test_decay_and_migrate_cli_connections() {
     assert_eq!(recall_resp.status(), 200);
     let recall_body: serde_json::Value = recall_resp.json().await.unwrap();
     assert!(
-        recall_body["memories"].as_array().unwrap().is_empty(),
-        "archived memory should not be recalled"
+        recall_body["memories"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|memory| {
+                memory["content"].as_str()
+                    != Some(
+                        "Legacy deployment note that should become stale before decay archival.",
+                    )
+            }),
+        "archived legacy memory should not be recalled"
     );
 
     child.kill().await.ok();

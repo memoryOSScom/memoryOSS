@@ -326,22 +326,52 @@ pub fn score_and_explain(
             final_score *= status_factor;
 
             // Trust scoring
-            let (trust_score, low_trust) = if options.apply_trust_scoring {
+            let (
+                trust_score,
+                low_trust,
+                trust_confidence_low,
+                trust_confidence_high,
+                trust_signals,
+            ) = if options.apply_trust_scoring {
                 if let Some(ts) = trust_scorer {
-                    let result = ts.score(
-                        memory.id,
-                        memory.created_at,
-                        memory.source_key.as_deref(),
-                        memory.embedding.as_deref(),
-                        &options.namespace,
-                    );
-                    (result.score, result.low_trust)
+                    let result = ts.score_memory(&memory, &options.namespace);
+                    (
+                        result.score,
+                        result.low_trust,
+                        result.confidence_low,
+                        result.confidence_high,
+                        result.signals,
+                    )
                 } else {
-                    (1.0, false)
+                    (
+                        1.0,
+                        false,
+                        1.0,
+                        1.0,
+                        crate::security::trust::TrustSignals {
+                            recency: 1.0,
+                            source_reputation: 1.0,
+                            embedding_coherence: 1.0,
+                            access_frequency: 1.0,
+                            outcome_learning: 1.0,
+                        },
+                    )
                 }
             } else {
                 let trust = memory.recency_trust();
-                (trust, trust < 0.3)
+                (
+                    trust,
+                    trust < 0.3,
+                    trust,
+                    trust,
+                    crate::security::trust::TrustSignals {
+                        recency: trust,
+                        source_reputation: 0.5,
+                        embedding_coherence: 0.5,
+                        access_frequency: 0.0,
+                        outcome_learning: memory.outcome_signal(),
+                    },
+                )
             };
 
             // P5: Trust as score multiplier (not just a binary filter).
@@ -366,6 +396,9 @@ pub fn score_and_explain(
                 confidence_factor,
                 status_factor,
                 trust_score,
+                trust_confidence_low,
+                trust_confidence_high,
+                trust_signals,
                 trust_multiplier,
                 final_score,
                 low_trust,

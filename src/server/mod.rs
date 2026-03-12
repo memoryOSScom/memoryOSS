@@ -25,6 +25,7 @@ use crate::sharing::SharingStore;
 use axum::Extension;
 use routes::SharedState;
 use tokio::net::TcpListener;
+use tokio::time::{self, Duration};
 
 /// Initialize engines, rebuild indexes, spawn async indexer pipeline.
 /// Returns shared state ready for the HTTP server.
@@ -219,6 +220,54 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         space_index,
     );
     let trust_for_shutdown = state.trust_scorer.clone();
+
+    if config.decay.enabled {
+        let decay_state = state.clone();
+        let after_days = config.decay.after_days;
+        let interval = if after_days == 0 {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(15 * 60)
+        };
+        tokio::spawn(async move {
+            let mut ticker = time::interval(interval);
+            ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let namespaces = match decay_state.doc_engine.list_namespaces() {
+                    Ok(namespaces) => namespaces,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "automatic lifecycle sweep failed to list namespaces");
+                        continue;
+                    }
+                };
+                for namespace in namespaces {
+                    match routes::run_namespace_lifecycle(
+                        &decay_state,
+                        &namespace,
+                        "auto-lifecycle",
+                        after_days,
+                    ) {
+                        Ok(changed) if changed > 0 => {
+                            decay_state
+                                .intent_cache
+                                .invalidate_namespace(&namespace)
+                                .await;
+                            tracing::info!(
+                                namespace,
+                                changed,
+                                "automatic lifecycle sweep updated memories"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(namespace, error = %e, "automatic lifecycle sweep failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
 
     let bind_addr = config.bind_addr();
     let app = routes::router(state.clone());

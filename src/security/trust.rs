@@ -18,6 +18,7 @@ use std::net::IpAddr;
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::memory::Memory;
 use serde::{Deserialize, Serialize};
 
 // ── Bayesian Trust Scorer ──────────────────────────────────────────────
@@ -38,12 +39,13 @@ pub struct TrustResult {
 }
 
 /// Individual trust signals before combination.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrustSignals {
     pub recency: f64,
     pub source_reputation: f64,
     pub embedding_coherence: f64,
     pub access_frequency: f64,
+    pub outcome_learning: f64,
 }
 
 /// Per-source (API key) reputation tracker using Beta distribution.
@@ -127,21 +129,18 @@ impl TrustScorer {
     }
 
     /// Compute full Bayesian trust score for a memory.
-    pub fn score(
-        &self,
-        memory_id: uuid::Uuid,
-        created_at: chrono::DateTime<chrono::Utc>,
-        source_key: Option<&str>,
-        embedding: Option<&[f32]>,
-        namespace: &str,
-    ) -> TrustResult {
+    pub fn score_memory(&self, memory: &Memory, namespace: &str) -> TrustResult {
         // Signal 1: Recency decay (exponential, 7-day half-life)
-        let age_hours = (chrono::Utc::now() - created_at).num_hours().max(0) as f64;
+        let age_hours = (chrono::Utc::now() - memory.lifecycle_anchor())
+            .num_hours()
+            .max(0) as f64;
         let half_life_hours = 7.0 * 24.0;
         let recency = (-0.693 * age_hours / half_life_hours).exp();
 
         // Signal 2: Source reputation (Beta distribution mean)
-        let source_reputation = source_key
+        let source_reputation = memory
+            .source_key
+            .as_deref()
             .and_then(|key| {
                 self.source_reputations
                     .read()
@@ -151,7 +150,9 @@ impl TrustScorer {
             .unwrap_or(0.5); // Unknown source = neutral
 
         // Signal 3: Embedding coherence (cosine sim to namespace centroid)
-        let embedding_coherence = embedding
+        let embedding_coherence = memory
+            .embedding
+            .as_deref()
             .and_then(|emb| self.embedding_coherence(emb, namespace))
             .unwrap_or(0.5); // No embedding = neutral
 
@@ -160,24 +161,30 @@ impl TrustScorer {
             .access_counts
             .read()
             .ok()
-            .and_then(|ac| ac.get(&memory_id).copied())
+            .and_then(|ac| ac.get(&memory.id).copied())
             .unwrap_or(0);
         let access_frequency = (1.0 + access_count as f64).ln() / (1.0 + 100.0_f64).ln();
         let access_frequency = access_frequency.min(1.0);
 
+        // Signal 5: Outcome learning from reuse/feedback counters.
+        let outcome_learning = memory.outcome_signal();
+
         // Bayesian combination: weighted product
-        let weights = [0.3, 0.3, 0.25, 0.15]; // recency, source, embedding, access
+        let weights = [0.22, 0.22, 0.18, 0.13, 0.25];
         let signals = [
             recency,
             source_reputation,
             embedding_coherence,
             access_frequency,
+            outcome_learning,
         ];
         let score: f64 = weights.iter().zip(signals.iter()).map(|(w, s)| w * s).sum();
         let score = score.clamp(0.0, 1.0);
 
         // Confidence interval from source reputation
-        let (ci_low, ci_high) = source_key
+        let (ci_low, ci_high) = memory
+            .source_key
+            .as_deref()
             .and_then(|key| {
                 self.source_reputations
                     .read()
@@ -200,6 +207,7 @@ impl TrustScorer {
                 source_reputation,
                 embedding_coherence,
                 access_frequency,
+                outcome_learning,
             },
         }
     }

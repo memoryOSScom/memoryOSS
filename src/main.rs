@@ -1162,7 +1162,11 @@ async fn main() -> anyhow::Result<()> {
             let doc_engine = engines::document::DocumentEngine::open(&config.storage.data_dir)?;
             match doc_engine.get(uuid, "default")? {
                 Some(mem) => {
-                    let trust = mem.recency_trust();
+                    let trust_scorer =
+                        crate::security::trust::TrustScorer::new(config.trust.threshold);
+                    let _ = trust_scorer.load_from_redb(doc_engine.db());
+                    let trust = trust_scorer
+                        .score_memory(&mem, mem.namespace.as_deref().unwrap_or("default"));
                     let age = chrono::Utc::now() - mem.created_at;
                     println!("ID:           {}", mem.id);
                     println!(
@@ -1190,14 +1194,34 @@ async fn main() -> anyhow::Result<()> {
                     println!("Evidence:     {}", mem.evidence_count);
                     println!("Verified at:  {:?}", mem.last_verified_at);
                     println!("Superseded by:{:?}", mem.superseded_by);
+                    println!("Injected:     {}", mem.injection_count);
+                    println!("Reused:       {}", mem.reuse_count);
+                    println!("Confirmed:    {}", mem.confirm_count);
+                    println!("Rejected:     {}", mem.reject_count);
+                    println!("Superseded:   {}", mem.supersede_count);
+                    println!("Last injected:{:?}", mem.last_injected_at);
+                    println!("Last reused:  {:?}", mem.last_reused_at);
+                    println!("Last outcome: {:?}", mem.last_outcome_at);
                     println!("Source key:   {}", mem.source_key.as_deref().unwrap_or("-")); // already hashed key_id
                     println!(
                         "Content hash: {}",
                         mem.content_hash.as_deref().unwrap_or("-")
                     );
                     println!("Has embedding:{}", mem.embedding.is_some());
-                    println!("Trust score:  {:.4}", trust);
-                    println!("Low trust:    {}", trust < 0.3);
+                    println!("Trust score:  {:.4}", trust.score);
+                    println!(
+                        "Trust CI:     {:.4} .. {:.4}",
+                        trust.confidence_low, trust.confidence_high
+                    );
+                    println!("Low trust:    {}", trust.low_trust);
+                    println!(
+                        "Signals:      recency={:.3} source={:.3} embedding={:.3} access={:.3} outcome={:.3}",
+                        trust.signals.recency,
+                        trust.signals.source_reputation,
+                        trust.signals.embedding_coherence,
+                        trust.signals.access_frequency,
+                        trust.signals.outcome_learning,
+                    );
                     println!(
                         "Age:          {}h {}m",
                         age.num_hours(),
@@ -1341,7 +1365,7 @@ async fn main() -> anyhow::Result<()> {
             namespace,
         } => {
             let after_days = after_days.unwrap_or(config.decay.after_days);
-            let cutoff = chrono::Utc::now() - chrono::Duration::days(after_days as i64);
+            let now = chrono::Utc::now();
 
             std::fs::create_dir_all(&config.storage.data_dir)?;
             let doc_engine = engines::document::DocumentEngine::open_with_config(
@@ -1349,6 +1373,8 @@ async fn main() -> anyhow::Result<()> {
                 &config.encryption,
                 config.auth.audit_hmac_secret.as_bytes(),
             )?;
+            let trust_scorer = crate::security::trust::TrustScorer::new(config.trust.threshold);
+            let _ = trust_scorer.load_from_redb(doc_engine.db());
 
             // Determine namespaces to scan
             let namespaces = if let Some(ns) = namespace {
@@ -1371,41 +1397,80 @@ async fn main() -> anyhow::Result<()> {
             }
 
             let mut total_scanned = 0usize;
+            let mut total_stale = 0usize;
             let mut total_archived = 0usize;
 
             for ns in &namespaces {
-                let memories = doc_engine.search(ns, None, None, None, &[])?;
+                let memories = doc_engine.list_all_including_archived(ns)?;
+                let scanned_count = memories.len();
+                let mut ns_stale = 0usize;
                 let mut ns_archived = 0;
 
-                for mem in &memories {
+                for mut mem in memories {
                     total_scanned += 1;
-                    // Decay condition: updated_at older than cutoff (proxy for "never interacted with")
-                    if mem.updated_at < cutoff {
-                        if dry_run {
-                            println!(
-                                "[DRY-RUN] Would archive: {} (ns={}, age={}d, content={})",
-                                mem.id,
-                                ns,
-                                (chrono::Utc::now() - mem.updated_at).num_days(),
-                                if mem.content.len() > 60 {
-                                    let truncated: String = mem.content.chars().take(60).collect();
-                                    format!("{truncated}...")
-                                } else {
-                                    mem.content.clone()
-                                },
-                            );
-                        } else if doc_engine.archive(mem.id, ns, "decay-policy")? {
-                            ns_archived += 1;
-                        }
+                    let trust = trust_scorer.score_memory(&mem, ns);
+                    let decision = mem.apply_lifecycle_policy(now, after_days, trust.score);
+
+                    if dry_run && decision.archive {
+                        println!(
+                            "[DRY-RUN] Would archive: {} (ns={}, idle={}d, trust={:.3}, content={})",
+                            mem.id,
+                            ns,
+                            (now - mem.lifecycle_anchor()).num_days(),
+                            trust.score,
+                            if mem.content.len() > 60 {
+                                let truncated: String = mem.content.chars().take(60).collect();
+                                format!("{truncated}...")
+                            } else {
+                                mem.content.clone()
+                            },
+                        );
+                        total_archived += 1;
+                        continue;
+                    }
+
+                    if dry_run && decision.changed {
+                        println!(
+                            "[DRY-RUN] Would mark stale: {} (ns={}, idle={}d, trust={:.3}, content={})",
+                            mem.id,
+                            ns,
+                            (now - mem.lifecycle_anchor()).num_days(),
+                            trust.score,
+                            if mem.content.len() > 60 {
+                                let truncated: String = mem.content.chars().take(60).collect();
+                                format!("{truncated}...")
+                            } else {
+                                mem.content.clone()
+                            },
+                        );
+                        total_stale += 1;
+                        continue;
+                    }
+
+                    if !dry_run && decision.changed {
+                        doc_engine.replace(&mem, "decay-policy")?;
+                        ns_stale += 1;
+                        total_stale += 1;
+                    }
+
+                    if !dry_run
+                        && decision.archive
+                        && doc_engine.archive(mem.id, ns, "decay-policy")?
+                    {
+                        ns_archived += 1;
                         total_archived += 1;
                     }
                 }
 
-                if ns_archived > 0 || (dry_run && total_archived > 0) {
+                if ns_stale > 0
+                    || ns_archived > 0
+                    || (dry_run && (total_stale > 0 || total_archived > 0))
+                {
                     println!(
-                        "Namespace '{}': {} memories scanned, {} {}",
+                        "Namespace '{}': {} memories scanned, {} stale, {} {}",
                         ns,
-                        memories.len(),
+                        scanned_count,
+                        ns_stale,
                         ns_archived,
                         if dry_run {
                             "would be archived"
@@ -1417,8 +1482,9 @@ async fn main() -> anyhow::Result<()> {
             }
 
             println!(
-                "\nTotal: {} scanned, {} {} across {} namespace(s) (cutoff: {}d)",
+                "\nTotal: {} scanned, {} stale, {} {} across {} namespace(s) (threshold: {}d)",
                 total_scanned,
+                total_stale,
                 total_archived,
                 if dry_run {
                     "would be archived"

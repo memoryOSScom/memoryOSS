@@ -252,7 +252,7 @@ async fn confirm_existing_extracted_fact(
         existing.tags.push("proxy-extracted".to_string());
     }
 
-    existing.confirm_from_signal();
+    existing.record_reuse_signal();
     state.doc_engine.replace(&existing, "proxy-extraction")?;
     state
         .trust_scorer
@@ -265,6 +265,34 @@ async fn confirm_existing_extracted_fact(
     state.intent_cache.invalidate_namespace(namespace).await;
 
     Ok(true)
+}
+
+async fn record_injected_memories(
+    state: &Arc<SharedState>,
+    namespace: &str,
+    memories: &[ScoredMemory],
+) {
+    if memories.is_empty() {
+        return;
+    }
+
+    let mut changed = 0usize;
+    for scored in memories {
+        let Ok(Some(mut memory)) = state.doc_engine.get(scored.memory.id, namespace) else {
+            continue;
+        };
+        memory.record_injection();
+        if state.doc_engine.replace(&memory, "proxy-injection").is_ok() {
+            state
+                .trust_scorer
+                .record_access(memory.id, memory.source_key.as_deref());
+            changed += 1;
+        }
+    }
+
+    if changed > 0 {
+        state.intent_cache.invalidate_namespace(namespace).await;
+    }
 }
 
 /// Resolve proxy API key to namespace + upstream key.
@@ -894,6 +922,14 @@ pub async fn proxy_chat_completions(
                     {
                         injected_count =
                             inject_memories(messages, &qualified, memory_budget) as u64;
+                        if injected_count > 0 {
+                            record_injected_memories(
+                                &state,
+                                &namespace,
+                                &qualified[..injected_count as usize],
+                            )
+                            .await;
+                        }
                     }
                 }
                 Err(e) => {
@@ -2352,6 +2388,14 @@ pub async fn proxy_anthropic_messages(
 
                     injected_count =
                         inject_memories_anthropic(&mut body, &qualified, memory_budget) as u64;
+                    if injected_count > 0 {
+                        record_injected_memories(
+                            &state,
+                            &namespace,
+                            &qualified[..injected_count as usize],
+                        )
+                        .await;
+                    }
                 }
                 Err(e) => {
                     tracing::warn!(namespace, error = %e, "anthropic proxy recall failed");
@@ -3391,6 +3435,14 @@ pub async fn proxy_responses(
                     .collect();
 
                 injected_count = inject_memories(&mut messages, &qualified, memory_budget) as u64;
+                if injected_count > 0 {
+                    record_injected_memories(
+                        &state,
+                        &namespace,
+                        &qualified[..injected_count as usize],
+                    )
+                    .await;
+                }
 
                 // Write injected messages back into the Responses input format
                 if injected_count > 0 {

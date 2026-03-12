@@ -161,6 +161,51 @@ pub(crate) fn apply_contradiction_detection(
     Ok(updates)
 }
 
+pub(crate) fn apply_memory_lifecycle(
+    state: &AppState,
+    namespace: &str,
+    memory: &mut Memory,
+    subject: &str,
+    after_days: u64,
+) -> anyhow::Result<bool> {
+    let trust = state.trust_scorer.score_memory(memory, namespace);
+    let decision = memory.apply_lifecycle_policy(chrono::Utc::now(), after_days, trust.score);
+    let mut changed = false;
+
+    if decision.changed {
+        state.doc_engine.replace(memory, subject)?;
+        changed = true;
+    }
+
+    if decision.archive && state.doc_engine.archive(memory.id, namespace, subject)? {
+        memory.archived = true;
+        memory.updated_at = chrono::Utc::now();
+        state
+            .indexer_state
+            .write_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state.indexer_state.wake();
+        changed = true;
+    }
+
+    Ok(changed)
+}
+
+pub(crate) fn run_namespace_lifecycle(
+    state: &AppState,
+    namespace: &str,
+    subject: &str,
+    after_days: u64,
+) -> anyhow::Result<usize> {
+    let mut changed = 0usize;
+    for mut memory in state.doc_engine.list_all_including_archived(namespace)? {
+        if apply_memory_lifecycle(state, namespace, &mut memory, subject, after_days)? {
+            changed += 1;
+        }
+    }
+    Ok(changed)
+}
+
 pub fn router(state: AppState) -> axum::Router {
     axum::Router::new()
         .route("/health", get(health))
@@ -1435,6 +1480,7 @@ fn apply_feedback_to_memory(
     let now = chrono::Utc::now();
     memory.updated_at = now;
     memory.version += 1;
+    memory.record_feedback_outcome(action);
 
     match action {
         MemoryFeedbackAction::Confirm => {
@@ -1530,6 +1576,11 @@ async fn feedback(
         last_verified_at: memory.last_verified_at,
         superseded_by: memory.superseded_by,
         contradicts_with: memory.contradicts_with.clone(),
+        injection_count: memory.injection_count,
+        reuse_count: memory.reuse_count,
+        confirm_count: memory.confirm_count,
+        reject_count: memory.reject_count,
+        supersede_count: memory.supersede_count,
     })
     .into_response())
 }
@@ -1980,8 +2031,18 @@ async fn inspect_memory(
     let namespace = &claims.namespace;
     let memory = state.doc_engine.get(id, namespace)?;
     match memory {
-        Some(mem) => {
-            let trust = mem.recency_trust();
+        Some(mut mem) => {
+            let lifecycle_changed = apply_memory_lifecycle(
+                &state,
+                namespace,
+                &mut mem,
+                &claims.sub,
+                state.config.decay.after_days,
+            )?;
+            if lifecycle_changed {
+                state.intent_cache.invalidate_namespace(namespace).await;
+            }
+            let trust = state.trust_scorer.score_memory(&mem, namespace);
             let age_hours = (chrono::Utc::now() - mem.created_at).num_hours();
             let conflicts: Vec<_> = mem
                 .contradicts_with
@@ -2018,10 +2079,21 @@ async fn inspect_memory(
                 "contradiction_count": mem.contradicts_with.len(),
                 "conflicts": conflicts,
                 "has_embedding": mem.embedding.is_some(),
-                "trust_score": trust,
-                "low_trust": trust < 0.3,
+                "trust_score": trust.score,
+                "trust_confidence_low": trust.confidence_low,
+                "trust_confidence_high": trust.confidence_high,
+                "trust_signals": trust.signals,
+                "low_trust": trust.low_trust,
                 "age_hours": age_hours,
                 "eligible_for_injection": mem.eligible_for_injection(),
+                "injection_count": mem.injection_count,
+                "reuse_count": mem.reuse_count,
+                "confirm_count": mem.confirm_count,
+                "reject_count": mem.reject_count,
+                "supersede_count": mem.supersede_count,
+                "last_injected_at": mem.last_injected_at,
+                "last_reused_at": mem.last_reused_at,
+                "last_outcome_at": mem.last_outcome_at,
             }))
             .into_response())
         }
@@ -2643,6 +2715,15 @@ async fn lifecycle_view(
     }
 
     let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let lifecycle_updates = run_namespace_lifecycle(
+        &state,
+        namespace,
+        &claims.sub,
+        state.config.decay.after_days,
+    )?;
+    if lifecycle_updates > 0 {
+        state.intent_cache.invalidate_namespace(namespace).await;
+    }
     let all_memories = state.doc_engine.list_all_including_archived(namespace)?;
     let summary = LifecycleSummary {
         total: all_memories.len(),
@@ -2680,13 +2761,7 @@ async fn lifecycle_view(
         .into_iter()
         .take(limit)
         .map(|memory| {
-            let trust = state.trust_scorer.score(
-                memory.id,
-                memory.created_at,
-                memory.source_key.as_deref(),
-                memory.embedding.as_deref(),
-                memory.namespace.as_deref().unwrap_or(namespace),
-            );
+            let trust = state.trust_scorer.score_memory(&memory, namespace);
             json!({
                 "id": memory.id,
                 "content": memory.content,
@@ -2701,9 +2776,20 @@ async fn lifecycle_view(
                 "last_verified_at": memory.last_verified_at,
                 "superseded_by": memory.superseded_by,
                 "contradicts_with": memory.contradicts_with,
+                "injection_count": memory.injection_count,
+                "reuse_count": memory.reuse_count,
+                "confirm_count": memory.confirm_count,
+                "reject_count": memory.reject_count,
+                "supersede_count": memory.supersede_count,
+                "last_injected_at": memory.last_injected_at,
+                "last_reused_at": memory.last_reused_at,
+                "last_outcome_at": memory.last_outcome_at,
                 "created_at": memory.created_at,
                 "updated_at": memory.updated_at,
                 "trust_score": trust.score,
+                "trust_confidence_low": trust.confidence_low,
+                "trust_confidence_high": trust.confidence_high,
+                "trust_signals": trust.signals,
                 "low_trust": trust.low_trust,
                 "eligible_for_injection": memory.eligible_for_injection(),
             })

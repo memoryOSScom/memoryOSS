@@ -91,6 +91,28 @@ pub struct Memory {
     pub superseded_by: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contradicts_with: Vec<Uuid>,
+    #[serde(default)]
+    pub injection_count: u32,
+    #[serde(default)]
+    pub reuse_count: u32,
+    #[serde(default)]
+    pub confirm_count: u32,
+    #[serde(default)]
+    pub reject_count: u32,
+    #[serde(default)]
+    pub supersede_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_injected_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_reused_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_outcome_at: Option<DateTime<Utc>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LifecyclePolicyResult {
+    pub changed: bool,
+    pub archive: bool,
 }
 
 impl Memory {
@@ -118,6 +140,14 @@ impl Memory {
             last_verified_at: Some(now),
             superseded_by: None,
             contradicts_with: Vec::new(),
+            injection_count: 0,
+            reuse_count: 0,
+            confirm_count: 0,
+            reject_count: 0,
+            supersede_count: 0,
+            last_injected_at: None,
+            last_reused_at: None,
+            last_outcome_at: None,
         }
     }
 
@@ -171,9 +201,41 @@ impl Memory {
         self.contradicts_with.clear();
     }
 
+    pub fn record_injection(&mut self) {
+        let now = Utc::now();
+        self.injection_count = self.injection_count.saturating_add(1);
+        self.last_injected_at = Some(now);
+        self.updated_at = now;
+        self.version = self.version.saturating_add(1);
+    }
+
+    pub fn record_reuse_signal(&mut self) {
+        let now = Utc::now();
+        self.reuse_count = self.reuse_count.saturating_add(1);
+        self.last_reused_at = Some(now);
+        self.confirm_from_signal();
+    }
+
+    pub fn record_feedback_outcome(&mut self, action: MemoryFeedbackAction) {
+        let now = Utc::now();
+        self.last_outcome_at = Some(now);
+        match action {
+            MemoryFeedbackAction::Confirm => {
+                self.confirm_count = self.confirm_count.saturating_add(1);
+            }
+            MemoryFeedbackAction::Reject => {
+                self.reject_count = self.reject_count.saturating_add(1);
+            }
+            MemoryFeedbackAction::Supersede => {
+                self.supersede_count = self.supersede_count.saturating_add(1);
+            }
+        }
+    }
+
     pub fn confirm_from_signal(&mut self) {
         let now = Utc::now();
         self.updated_at = now;
+        self.version = self.version.saturating_add(1);
         self.evidence_count = self.evidence_count.saturating_add(1);
         self.last_verified_at = Some(now);
 
@@ -196,6 +258,97 @@ impl Memory {
                 }
             }
             MemoryStatus::Active => {}
+        }
+    }
+
+    pub fn lifecycle_anchor(&self) -> DateTime<Utc> {
+        let mut anchor = self.updated_at.max(self.created_at);
+        for candidate in [
+            self.last_verified_at,
+            self.last_injected_at,
+            self.last_reused_at,
+            self.last_outcome_at,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            if candidate > anchor {
+                anchor = candidate;
+            }
+        }
+        anchor
+    }
+
+    pub fn outcome_signal(&self) -> f64 {
+        let positive = self.reuse_count as f64
+            + self.confirm_count as f64 * 1.5
+            + self.evidence_count.saturating_sub(1) as f64;
+        let negative = self.reject_count as f64 * 2.0 + self.supersede_count as f64 * 1.5;
+        ((positive + 1.0) / (positive + negative + 2.0)).clamp(0.0, 1.0)
+    }
+
+    pub fn apply_lifecycle_policy(
+        &mut self,
+        now: DateTime<Utc>,
+        after_days: u64,
+        trust_score: f64,
+    ) -> LifecyclePolicyResult {
+        if self.archived {
+            return LifecyclePolicyResult {
+                changed: false,
+                archive: false,
+            };
+        }
+
+        let threshold_days = after_days as i64;
+        let idle_days = (now - self.lifecycle_anchor()).num_days().max(0);
+        let low_relevance =
+            self.injection_count >= 3 && self.reuse_count == 0 && self.confirm_count == 0;
+        let no_positive_outcomes =
+            self.reuse_count == 0 && self.confirm_count == 0 && self.evidence_count <= 1;
+        let negative_outcomes =
+            self.reject_count > 0 || self.supersede_count > 0 || self.superseded_by.is_some();
+        let low_trust = trust_score < 0.45;
+
+        let mut changed = false;
+        let mut became_stale = false;
+
+        if self.superseded_by.is_some() && self.status != MemoryStatus::Stale {
+            self.status = MemoryStatus::Stale;
+            changed = true;
+            became_stale = true;
+        }
+
+        if self.status == MemoryStatus::Active
+            && idle_days >= threshold_days
+            && (low_relevance || negative_outcomes || (low_trust && no_positive_outcomes))
+        {
+            self.status = MemoryStatus::Stale;
+            changed = true;
+            became_stale = true;
+        } else if self.status == MemoryStatus::Candidate
+            && idle_days >= threshold_days
+            && self.injection_count > 0
+            && self.reuse_count == 0
+            && self.confirm_count == 0
+        {
+            self.status = MemoryStatus::Stale;
+            changed = true;
+            became_stale = true;
+        }
+
+        let should_archive = !became_stale
+            && idle_days >= threshold_days
+            && matches!(self.status, MemoryStatus::Stale | MemoryStatus::Contested);
+
+        if changed {
+            self.updated_at = now;
+            self.version = self.version.saturating_add(1);
+        }
+
+        LifecyclePolicyResult {
+            changed,
+            archive: should_archive,
         }
     }
 }
@@ -474,6 +627,9 @@ pub struct ScoreExplainEntry {
     pub confidence_factor: f64,
     pub status_factor: f64,
     pub trust_score: f64,
+    pub trust_confidence_low: f64,
+    pub trust_confidence_high: f64,
+    pub trust_signals: crate::security::trust::TrustSignals,
     pub trust_multiplier: f64,
     pub final_score: f64,
     pub low_trust: bool,
@@ -510,6 +666,11 @@ pub struct FeedbackResponse {
     pub superseded_by: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contradicts_with: Vec<Uuid>,
+    pub injection_count: u32,
+    pub reuse_count: u32,
+    pub confirm_count: u32,
+    pub reject_count: u32,
+    pub supersede_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -664,5 +825,53 @@ mod tests {
         second.namespace = Some("test".to_string());
 
         assert!(memories_contradict(&first, &second));
+    }
+
+    #[test]
+    fn test_record_reuse_signal_promotes_candidate_and_tracks_outcome() {
+        let mut memory = Memory::new("Proxy extraction fact".to_string());
+        memory.status = MemoryStatus::Candidate;
+        memory.confidence = Some(0.2);
+        memory.evidence_count = 0;
+        memory.last_verified_at = None;
+
+        memory.record_reuse_signal();
+
+        assert_eq!(memory.status, MemoryStatus::Active);
+        assert_eq!(memory.reuse_count, 1);
+        assert!(memory.last_reused_at.is_some());
+        assert_eq!(memory.evidence_count, 1);
+    }
+
+    #[test]
+    fn test_apply_lifecycle_policy_stales_low_relevance_active_memory() {
+        let mut memory = Memory::new("Stale me".to_string());
+        memory.injection_count = 3;
+        memory.reuse_count = 0;
+        memory.confirm_count = 0;
+        memory.evidence_count = 1;
+        memory.created_at = chrono::Utc::now() - chrono::Duration::days(30);
+        memory.updated_at = chrono::Utc::now() - chrono::Duration::days(30);
+        memory.last_verified_at = None;
+
+        let result = memory.apply_lifecycle_policy(chrono::Utc::now(), 14, 0.4);
+
+        assert!(result.changed);
+        assert!(!result.archive);
+        assert_eq!(memory.status, MemoryStatus::Stale);
+    }
+
+    #[test]
+    fn test_apply_lifecycle_policy_archives_old_stale_memory() {
+        let mut memory = Memory::new("Archive me".to_string());
+        memory.status = MemoryStatus::Stale;
+        memory.created_at = chrono::Utc::now() - chrono::Duration::days(30);
+        memory.updated_at = chrono::Utc::now() - chrono::Duration::days(30);
+        memory.last_verified_at = None;
+
+        let result = memory.apply_lifecycle_policy(chrono::Utc::now(), 14, 0.5);
+
+        assert!(!result.changed);
+        assert!(result.archive);
     }
 }
