@@ -74,6 +74,23 @@ enum Commands {
     McpServer,
     /// Start in dev mode (mock embeddings, no TLS, relaxed auth)
     Dev,
+    /// Show namespace health, lifecycle counts, worker state, and index health
+    Status {
+        /// Only inspect a specific namespace
+        #[arg(long)]
+        namespace: Option<String>,
+    },
+    /// Diagnose config, auth, database, and index issues
+    Doctor,
+    /// Show recent injections, extractions, feedbacks, and consolidations
+    Recent {
+        /// Only inspect a specific namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Maximum entries per activity group
+        #[arg(long, default_value_t = server::routes::DEFAULT_RECENT_ACTIVITY_LIMIT)]
+        limit: usize,
+    },
     /// Inspect a memory by ID
     Inspect {
         /// Memory UUID
@@ -228,6 +245,449 @@ fn decay_namespaces(
     );
     namespaces.extend(stored_namespaces.into_iter().filter(|ns| !ns.is_empty()));
     namespaces.into_iter().collect()
+}
+
+fn namespace_health(summary: &crate::memory::LifecycleSummary) -> &'static str {
+    if summary.total == 0 {
+        "empty"
+    } else if summary.contested > 0 {
+        "contested"
+    } else if summary.candidate > 0 {
+        "review"
+    } else if summary.stale > 0 {
+        "maintenance"
+    } else {
+        "healthy"
+    }
+}
+
+fn index_health_status(pending_outbox: usize) -> &'static str {
+    if pending_outbox == 0 {
+        "healthy"
+    } else if pending_outbox < 100 {
+        "catching_up"
+    } else {
+        "behind"
+    }
+}
+
+#[derive(Debug)]
+struct LocalIndexHealth {
+    checkpoint: u64,
+    pending_outbox: usize,
+    status: &'static str,
+    fts_dir_exists: bool,
+    vector_index_exists: bool,
+    vector_mapping_exists: bool,
+    embedded_memories: usize,
+}
+
+fn open_operator_doc_engine(
+    config: &config::Config,
+) -> anyhow::Result<engines::document::DocumentEngine> {
+    engines::document::DocumentEngine::open_with_config(
+        &config.storage.data_dir,
+        &config.encryption,
+        config.auth.audit_hmac_secret.as_bytes(),
+    )
+}
+
+fn collect_namespace_memories(
+    config: &config::Config,
+    doc_engine: &engines::document::DocumentEngine,
+    namespace_filter: Option<&str>,
+) -> anyhow::Result<Vec<(String, Vec<crate::memory::Memory>)>> {
+    let namespaces = if let Some(namespace) = namespace_filter {
+        vec![namespace.to_string()]
+    } else {
+        decay_namespaces(config, doc_engine.list_namespaces()?)
+    };
+
+    namespaces
+        .into_iter()
+        .map(|namespace| {
+            let memories = doc_engine.list_all_including_archived(&namespace)?;
+            Ok((namespace, memories))
+        })
+        .collect()
+}
+
+fn snapshot_local_index_health(
+    config: &config::Config,
+    doc_engine: &engines::document::DocumentEngine,
+    namespace_memories: &[(String, Vec<crate::memory::Memory>)],
+) -> anyhow::Result<LocalIndexHealth> {
+    let checkpoint = doc_engine.load_indexer_checkpoint();
+    let pending_outbox = doc_engine
+        .consume_outbox(checkpoint.saturating_add(1))?
+        .len();
+    let embedded_memories = namespace_memories
+        .iter()
+        .flat_map(|(_, memories)| memories.iter())
+        .filter(|memory| memory.embedding.is_some())
+        .count();
+
+    #[cfg(target_os = "windows")]
+    let vector_index_exists = true;
+    #[cfg(not(target_os = "windows"))]
+    let vector_index_exists = config.storage.data_dir.join("vectors.usearch").exists();
+
+    #[cfg(target_os = "windows")]
+    let vector_mapping_exists = true;
+    #[cfg(not(target_os = "windows"))]
+    let vector_mapping_exists = config.storage.data_dir.join("vector_keys.json").exists();
+
+    Ok(LocalIndexHealth {
+        checkpoint,
+        pending_outbox,
+        status: index_health_status(pending_outbox),
+        fts_dir_exists: config.storage.data_dir.join("fts").exists(),
+        vector_index_exists,
+        vector_mapping_exists,
+        embedded_memories,
+    })
+}
+
+fn render_status_report(
+    config: &config::Config,
+    config_path: &Path,
+    namespace_memories: &[(String, Vec<crate::memory::Memory>)],
+    index_health: &LocalIndexHealth,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Config: {}", config_path.display());
+    let _ = writeln!(
+        output,
+        "Server: {}:{} ({}, tls={})",
+        config.server.host,
+        config.server.port,
+        if config.server.hybrid_mode {
+            "hybrid"
+        } else {
+            "standalone"
+        },
+        if config.tls.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    );
+    let _ = writeln!(output, "Data dir: {}", config.storage.data_dir.display());
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Namespaces:");
+    for (namespace, memories) in namespace_memories {
+        let summary = server::routes::lifecycle_summary_from_memories(memories);
+        let _ = writeln!(
+            output,
+            "- {} [{}]: total={} active={} candidate={} contested={} stale={} archived={}",
+            namespace,
+            namespace_health(&summary),
+            summary.total,
+            summary.active,
+            summary.candidate,
+            summary.contested,
+            summary.stale,
+            summary.archived
+        );
+    }
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Workers:");
+    let _ = writeln!(
+        output,
+        "- indexer: {} (checkpoint={} pending_outbox={})",
+        index_health.status, index_health.checkpoint, index_health.pending_outbox
+    );
+    let _ = writeln!(
+        output,
+        "- decay: {} (after_days={})",
+        if config.decay.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.decay.after_days
+    );
+    let _ = writeln!(
+        output,
+        "- consolidation: {} (interval={}m threshold={:.2})",
+        if config.consolidation.enabled {
+            "enabled"
+        } else {
+            "disabled"
+        },
+        config.consolidation.interval_minutes,
+        config.consolidation.threshold
+    );
+    let _ = writeln!(
+        output,
+        "- proxy extraction: {} (provider={} model={})",
+        if config.proxy.enabled && config.proxy.extraction_enabled {
+            "enabled"
+        } else if config.proxy.enabled {
+            "disabled"
+        } else {
+            "proxy disabled"
+        },
+        config.proxy.extract_provider,
+        config.proxy.extract_model
+    );
+    let _ = writeln!(
+        output,
+        "- group commit: batch={} flush={}ms",
+        config.limits.group_commit_batch_size, config.limits.group_commit_flush_ms
+    );
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Index:");
+    let _ = writeln!(output, "- status: {}", index_health.status);
+    let _ = writeln!(output, "- checkpoint: {}", index_health.checkpoint);
+    let _ = writeln!(output, "- pending_outbox: {}", index_health.pending_outbox);
+    let _ = writeln!(
+        output,
+        "- embedded_memories: {}",
+        index_health.embedded_memories
+    );
+    let _ = writeln!(
+        output,
+        "- fts_dir: {}",
+        if index_health.fts_dir_exists {
+            "present"
+        } else {
+            "missing"
+        }
+    );
+    let _ = writeln!(
+        output,
+        "- vector_index: {}",
+        if index_health.vector_index_exists {
+            "present"
+        } else {
+            "missing"
+        }
+    );
+    let _ = writeln!(
+        output,
+        "- vector_mappings: {}",
+        if index_health.vector_mapping_exists {
+            "present"
+        } else {
+            "missing"
+        }
+    );
+
+    output
+}
+
+fn render_recent_report(activities: &[(String, serde_json::Value)], limit: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Recent activity (limit {})", limit);
+
+    for (namespace, recent) in activities {
+        let _ = writeln!(output);
+        let _ = writeln!(output, "Namespace: {}", namespace);
+        for (title, key) in [
+            ("Injections", "injections"),
+            ("Extractions", "extractions"),
+            ("Feedbacks", "feedbacks"),
+            ("Consolidations", "consolidations"),
+        ] {
+            let count = recent["counts"][key].as_u64().unwrap_or(0);
+            let _ = writeln!(output, "  {}: {}", title, count);
+            let Some(events) = recent[key].as_array() else {
+                let _ = writeln!(output, "    - none");
+                continue;
+            };
+            if events.is_empty() {
+                let _ = writeln!(output, "    - none");
+                continue;
+            }
+            for event in events {
+                let detail = match key {
+                    "injections" => format!(
+                        "injections={} reuse={}",
+                        event["injection_count"].as_u64().unwrap_or(0),
+                        event["reuse_count"].as_u64().unwrap_or(0)
+                    ),
+                    "extractions" => format!(
+                        "confidence={:.2} evidence={}",
+                        event["confidence"].as_f64().unwrap_or(0.0),
+                        event["evidence_count"].as_u64().unwrap_or(0)
+                    ),
+                    "feedbacks" => format!(
+                        "action={} confirm={} reject={} supersede={}",
+                        event["action"].as_str().unwrap_or("-"),
+                        event["confirm_count"].as_u64().unwrap_or(0),
+                        event["reject_count"].as_u64().unwrap_or(0),
+                        event["supersede_count"].as_u64().unwrap_or(0)
+                    ),
+                    "consolidations" => format!(
+                        "derived_from={}",
+                        event["derived_count"].as_u64().unwrap_or(0)
+                    ),
+                    _ => String::new(),
+                };
+                let _ = writeln!(
+                    output,
+                    "    - {} {} {} {}",
+                    event["at"].as_str().unwrap_or("-"),
+                    event["id"].as_str().unwrap_or("-"),
+                    detail,
+                    event["preview"].as_str().unwrap_or("")
+                );
+            }
+        }
+    }
+
+    output
+}
+
+fn run_status(
+    config: &config::Config,
+    config_path: &Path,
+    namespace_filter: Option<&str>,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let namespace_memories = collect_namespace_memories(config, &doc_engine, namespace_filter)?;
+    let index_health = snapshot_local_index_health(config, &doc_engine, &namespace_memories)?;
+    print!(
+        "{}",
+        render_status_report(config, config_path, &namespace_memories, &index_health)
+    );
+    Ok(())
+}
+
+fn run_recent(
+    config: &config::Config,
+    namespace_filter: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let namespace_memories = collect_namespace_memories(config, &doc_engine, namespace_filter)?;
+    let activities: Vec<_> = namespace_memories
+        .into_iter()
+        .map(|(namespace, memories)| {
+            (
+                namespace,
+                server::routes::build_recent_activity(&memories, limit),
+            )
+        })
+        .collect();
+    print!("{}", render_recent_report(&activities, limit));
+    Ok(())
+}
+
+fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()> {
+    let mut issues = 0usize;
+    println!("Running doctor for {}", config_path.display());
+    println!("[ok] config: loaded and validated");
+
+    let admin_keys = config
+        .auth
+        .api_keys
+        .iter()
+        .filter(|entry| entry.role == crate::config::Role::Admin)
+        .count();
+    if admin_keys == 0 {
+        println!("[error] auth: no admin API key configured");
+        issues += 1;
+    } else {
+        println!("[ok] auth: {admin_keys} admin key(s) configured");
+    }
+
+    let doc_engine = match open_operator_doc_engine(config) {
+        Ok(engine) => engine,
+        Err(err) => {
+            println!(
+                "[error] database: failed to open {} ({err})",
+                config.storage.data_dir.display()
+            );
+            anyhow::bail!("doctor found 1 issue(s)");
+        }
+    };
+    let stored_namespaces = doc_engine.list_namespaces()?;
+    println!(
+        "[ok] database: opened {} ({} namespace table(s))",
+        config.storage.data_dir.display(),
+        stored_namespaces.len()
+    );
+
+    let namespace_memories = collect_namespace_memories(config, &doc_engine, None)?;
+    let index_health = snapshot_local_index_health(config, &doc_engine, &namespace_memories)?;
+    if index_health.pending_outbox > 0 {
+        println!(
+            "[error] index: pending_outbox={} (checkpoint={} status={})",
+            index_health.pending_outbox, index_health.checkpoint, index_health.status
+        );
+        issues += 1;
+    } else {
+        println!(
+            "[ok] index: checkpoint={} pending_outbox=0",
+            index_health.checkpoint
+        );
+    }
+
+    if namespace_memories
+        .iter()
+        .flat_map(|(_, memories)| memories.iter())
+        .any(|memory| !memory.archived)
+        && !index_health.fts_dir_exists
+    {
+        println!("[error] index: missing fts directory");
+        issues += 1;
+    } else {
+        println!(
+            "[ok] fts: {}",
+            if index_health.fts_dir_exists {
+                "present"
+            } else {
+                "not yet materialized"
+            }
+        );
+    }
+
+    if index_health.embedded_memories > 0 && !index_health.vector_index_exists {
+        println!(
+            "[error] vector: missing on-disk vector index for {} embedded memory/memories",
+            index_health.embedded_memories
+        );
+        issues += 1;
+    } else {
+        println!(
+            "[ok] vector index: {}",
+            if index_health.vector_index_exists {
+                "present"
+            } else {
+                "not yet materialized"
+            }
+        );
+    }
+
+    if index_health.embedded_memories > 0 && !index_health.vector_mapping_exists {
+        println!("[error] vector: missing vector key mappings");
+        issues += 1;
+    } else {
+        println!(
+            "[ok] vector mappings: {}",
+            if index_health.vector_mapping_exists {
+                "present"
+            } else {
+                "not required"
+            }
+        );
+    }
+
+    if issues > 0 {
+        println!("Doctor FAILED: {issues} issue(s)");
+        anyhow::bail!("doctor found {issues} issue(s)");
+    }
+
+    println!("Doctor OK");
+    Ok(())
 }
 
 async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
@@ -1119,9 +1579,17 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let command = cli.command.unwrap_or(Commands::Serve);
+    let operator_command = matches!(
+        &command,
+        Commands::Status { .. } | Commands::Doctor | Commands::Recent { .. }
+    );
+
+    if operator_command && !cli.config.exists() {
+        anyhow::bail!("config not found at '{}'", cli.config.display());
+    }
 
     // Auto-run setup wizard if no config exists and no explicit command given
-    if !cli.config.exists() && !matches!(command, Commands::Setup) {
+    if !cli.config.exists() && !matches!(&command, Commands::Setup) {
         println!();
         println!(
             "  No config found at '{}'. Starting setup wizard...",
@@ -1204,6 +1672,15 @@ async fn main() -> anyhow::Result<()> {
         Commands::Dev => {
             config.dev_mode = true;
             server::run_dev(config, cli.config).await?;
+        }
+        Commands::Status { namespace } => {
+            run_status(&config, &cli.config, namespace.as_deref())?;
+        }
+        Commands::Doctor => {
+            run_doctor(&config, &cli.config)?;
+        }
+        Commands::Recent { namespace, limit } => {
+            run_recent(&config, namespace.as_deref(), limit)?;
         }
         Commands::Inspect { id } => {
             let uuid: uuid::Uuid = id

@@ -327,6 +327,8 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/idf-stats` | GET | IDF index statistics |
 | `/v1/admin/space-stats` | GET | Space index statistics |
 | `/v1/admin/query-explain` | POST | Query debug/explain |
+| `/v1/admin/lifecycle` | GET | Lifecycle state summary and latest memories |
+| `/v1/admin/recent` | GET | Recent injections, extractions, feedbacks, and consolidations |
 | `/v1/admin/intent-cache/stats` | GET | Intent cache statistics |
 | `/v1/admin/intent-cache/flush` | POST | Flush intent cache |
 | `/v1/admin/prefetch/stats` | GET | Prefetch statistics |
@@ -478,6 +480,9 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss serve` | Start the configured server mode (monolith or hybrid gateway) |
 | `memoryoss dev` | Start without TLS (development) |
 | `memoryoss mcp-server` | Start as MCP server (stdio, embedded) |
+| `memoryoss status` | Show namespace health, lifecycle counts, worker state, and index health |
+| `memoryoss doctor` | Diagnose config, auth, database, and index issues (non-zero on error) |
+| `memoryoss recent` | Show recent injections, extractions, feedbacks, and consolidations |
 | `memoryoss inspect <id>` | Inspect a memory |
 | `memoryoss backup -o backup.tar.zst` | Backup all data |
 | `memoryoss restore <path>` | Restore from backup |

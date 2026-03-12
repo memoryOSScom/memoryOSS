@@ -115,6 +115,20 @@ namespace = "beta"
     )
 }
 
+fn writer_only_test_config(port: u16, data_dir: &str) -> String {
+    test_config_with_sections(
+        port,
+        data_dir,
+        r#"
+[[auth.api_keys]]
+key = "writer-only-key"
+role = "writer"
+namespace = "test"
+"#,
+        "",
+    )
+}
+
 fn test_client() -> reqwest::Client {
     reqwest::Client::builder()
         .danger_accept_invalid_certs(true)
@@ -2078,6 +2092,162 @@ enabled = false
             .as_f64()
             .is_some(),
         "inspect should expose outcome trust signals after lifecycle decay"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_admin_recent_groups_injections_extractions_feedbacks_and_consolidations() {
+    let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = true
+extract_provider = "claude"
+extract_model = "claude-test-extract"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("recent-activity.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let injection_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Release checklist: check staging cluster health before rollout.",
+            "tags": ["deploy", "checklist", "recent"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(injection_store.status(), 200);
+    let injection_id = injection_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    for content in [
+        "Consolidation recent note: rotate gateway certificates before deploy.",
+        "Consolidation recent note: rotate gateway certs before deploy and notify ops.",
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&serde_json::json!({
+                "content": content,
+                "tags": ["consolidation", "recent"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 32,
+            "messages": [{
+                "role": "user",
+                "content": "Release checklist: check staging cluster health before rollout."
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 1).await;
+
+    let feedback_resp = client
+        .post(format!("{base}/v1/feedback"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": injection_id,
+            "action": "confirm"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(feedback_resp.status(), 200);
+
+    let consolidate_resp = client
+        .post(format!("{base}/v1/consolidate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "threshold": 0.9,
+            "max_clusters": 10,
+            "dry_run": false
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consolidate_resp.status(), 200);
+    let consolidate_body: serde_json::Value = consolidate_resp.json().await.unwrap();
+    assert_eq!(consolidate_body["derived_created"].as_u64(), Some(1));
+
+    let recent_resp = client
+        .get(format!("{base}/v1/admin/recent?limit=5"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recent_resp.status(), 200);
+    let recent_body: serde_json::Value = recent_resp.json().await.unwrap();
+    let counts = &recent_body["recent"]["counts"];
+    assert!(
+        counts["injections"].as_u64().unwrap_or(0) >= 1,
+        "recent should surface at least one injection"
+    );
+    assert!(
+        counts["extractions"].as_u64().unwrap_or(0) >= 1,
+        "recent should surface at least one extraction"
+    );
+    assert!(
+        counts["feedbacks"].as_u64().unwrap_or(0) >= 1,
+        "recent should surface at least one feedback"
+    );
+    assert!(
+        counts["consolidations"].as_u64().unwrap_or(0) >= 1,
+        "recent should surface at least one consolidation"
     );
 
     child.kill().await.ok();
@@ -4679,4 +4849,73 @@ async fn test_decay_and_migrate_cli_connections() {
     );
 
     child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("doctor-healthy.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let status = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", config_path.to_str().unwrap(), "status"])
+        .output()
+        .await
+        .expect("failed to run status");
+    assert!(
+        status.status.success(),
+        "status failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&status.stdout),
+        String::from_utf8_lossy(&status.stderr)
+    );
+    let status_stdout = String::from_utf8_lossy(&status.stdout);
+    assert!(status_stdout.contains("Namespaces:"));
+    assert!(status_stdout.contains("Workers:"));
+    assert!(status_stdout.contains("Index:"));
+    assert!(
+        status_stdout.contains("test [empty]"),
+        "status should show configured namespace health"
+    );
+
+    let doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", config_path.to_str().unwrap(), "doctor"])
+        .output()
+        .await
+        .expect("failed to run doctor");
+    assert!(
+        doctor.status.success(),
+        "doctor should succeed for healthy config: stdout={} stderr={}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(doctor_stdout.contains("Doctor OK"));
+    assert!(doctor_stdout.contains("[ok] auth: 1 admin key(s) configured"));
+
+    let broken_dir = tempfile::tempdir().expect("failed to create broken temp dir");
+    let broken_data_dir = broken_dir.path().join("data");
+    std::fs::create_dir_all(&broken_data_dir).unwrap();
+    let broken_config = writer_only_test_config(port + 1, broken_data_dir.to_str().unwrap());
+    let broken_config_path = broken_dir.path().join("doctor-broken.toml");
+    std::fs::write(&broken_config_path, &broken_config).unwrap();
+
+    let broken_doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", broken_config_path.to_str().unwrap(), "doctor"])
+        .output()
+        .await
+        .expect("failed to run broken doctor");
+    assert!(
+        !broken_doctor.status.success(),
+        "doctor should fail without admin key: stdout={} stderr={}",
+        String::from_utf8_lossy(&broken_doctor.stdout),
+        String::from_utf8_lossy(&broken_doctor.stderr)
+    );
+    let broken_stdout = String::from_utf8_lossy(&broken_doctor.stdout);
+    assert!(broken_stdout.contains("[error] auth: no admin API key configured"));
+    assert!(broken_stdout.contains("Doctor FAILED"));
 }

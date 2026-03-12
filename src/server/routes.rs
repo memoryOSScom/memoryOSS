@@ -42,6 +42,8 @@ use crate::validation;
 /// Maximum outbox lag before store() returns 429 (backpressure).
 const BACKPRESSURE_THRESHOLD: u64 = 1000;
 const FILTER_DELETE_SCAN_LIMIT: usize = 10_000;
+pub(crate) const DEFAULT_RECENT_ACTIVITY_LIMIT: usize = 10;
+const MAX_RECENT_ACTIVITY_LIMIT: usize = 100;
 
 pub struct SharedState {
     pub config: Config,
@@ -523,6 +525,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/admin/keys", get(list_keys))
         .route("/v1/admin/trust-stats", get(trust_stats))
         .route("/v1/admin/lifecycle", get(lifecycle_view))
+        .route("/v1/admin/recent", get(recent_activity_view))
         .route("/v1/admin/intent-cache/stats", get(intent_cache_stats))
         .route("/v1/admin/intent-cache/flush", post(flush_intent_cache))
         .route("/v1/admin/prefetch/stats", get(prefetch_stats))
@@ -590,6 +593,163 @@ async fn health(State(state): State<Arc<SharedState>>) -> Response {
         "total_memories": total_memories
     }))
     .into_response()
+}
+
+pub(crate) fn lifecycle_summary_from_memories(memories: &[Memory]) -> LifecycleSummary {
+    LifecycleSummary {
+        total: memories.len(),
+        active: memories
+            .iter()
+            .filter(|memory| memory.status == MemoryStatus::Active)
+            .count(),
+        candidate: memories
+            .iter()
+            .filter(|memory| memory.status == MemoryStatus::Candidate)
+            .count(),
+        contested: memories
+            .iter()
+            .filter(|memory| memory.status == MemoryStatus::Contested)
+            .count(),
+        stale: memories
+            .iter()
+            .filter(|memory| memory.status == MemoryStatus::Stale)
+            .count(),
+        archived: memories.iter().filter(|memory| memory.archived).count(),
+    }
+}
+
+fn preview_text(content: &str, max_chars: usize) -> String {
+    let mut preview: String = content.chars().take(max_chars).collect();
+    if content.chars().count() > max_chars {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn feedback_action_label(memory: &Memory) -> &'static str {
+    if memory.supersede_count > 0 {
+        "supersede"
+    } else if memory.reject_count > 0 {
+        "reject"
+    } else if memory.confirm_count > 0 {
+        "confirm"
+    } else {
+        "feedback"
+    }
+}
+
+fn build_recent_entries<F>(
+    memories: &[Memory],
+    limit: usize,
+    mut mapper: F,
+) -> Vec<serde_json::Value>
+where
+    F: FnMut(&Memory) -> Option<(chrono::DateTime<chrono::Utc>, serde_json::Value)>,
+{
+    let mut entries: Vec<_> = memories.iter().filter_map(&mut mapper).collect();
+    entries.sort_by(|a, b| b.0.cmp(&a.0));
+    entries
+        .into_iter()
+        .take(limit)
+        .map(|(_, entry)| entry)
+        .collect()
+}
+
+pub(crate) fn build_recent_activity(memories: &[Memory], limit: usize) -> serde_json::Value {
+    let limit = limit.clamp(1, MAX_RECENT_ACTIVITY_LIMIT);
+
+    let injections = build_recent_entries(memories, limit, |memory| {
+        memory.last_injected_at.map(|at| {
+            (
+                at,
+                json!({
+                    "id": memory.id,
+                    "at": at,
+                    "preview": preview_text(&memory.content, 100),
+                    "status": memory.status,
+                    "archived": memory.archived,
+                    "namespace": memory.namespace,
+                    "agent": memory.agent,
+                    "session": memory.session,
+                    "injection_count": memory.injection_count,
+                    "reuse_count": memory.reuse_count,
+                    "last_reused_at": memory.last_reused_at,
+                }),
+            )
+        })
+    });
+
+    let extractions = build_recent_entries(memories, limit, |memory| {
+        (memory.source_key.as_deref() == Some("proxy-extraction")).then_some(())?;
+        Some((
+            memory.created_at,
+            json!({
+                "id": memory.id,
+                "at": memory.created_at,
+                "preview": preview_text(&memory.content, 100),
+                "status": memory.status,
+                "archived": memory.archived,
+                "namespace": memory.namespace,
+                "confidence": memory.confidence,
+                "evidence_count": memory.evidence_count,
+                "source_key": memory.source_key,
+            }),
+        ))
+    });
+
+    let feedbacks = build_recent_entries(memories, limit, |memory| {
+        memory.last_outcome_at.map(|at| {
+            (
+                at,
+                json!({
+                    "id": memory.id,
+                    "at": at,
+                    "preview": preview_text(&memory.content, 100),
+                    "status": memory.status,
+                    "archived": memory.archived,
+                    "namespace": memory.namespace,
+                    "action": feedback_action_label(memory),
+                    "confirm_count": memory.confirm_count,
+                    "reject_count": memory.reject_count,
+                    "supersede_count": memory.supersede_count,
+                    "superseded_by": memory.superseded_by,
+                }),
+            )
+        })
+    });
+
+    let consolidations = build_recent_entries(memories, limit, |memory| {
+        if memory.derived_from.is_empty() {
+            return None;
+        }
+        Some((
+            memory.created_at,
+            json!({
+                "id": memory.id,
+                "at": memory.created_at,
+                "preview": preview_text(&memory.content, 100),
+                "status": memory.status,
+                "archived": memory.archived,
+                "namespace": memory.namespace,
+                "derived_from": memory.derived_from,
+                "derived_count": memory.derived_from.len(),
+                "superseded_by": memory.superseded_by,
+            }),
+        ))
+    });
+
+    json!({
+        "counts": {
+            "injections": injections.len(),
+            "extractions": extractions.len(),
+            "feedbacks": feedbacks.len(),
+            "consolidations": consolidations.len(),
+        },
+        "injections": injections,
+        "extractions": extractions,
+        "feedbacks": feedbacks,
+        "consolidations": consolidations,
+    })
 }
 
 /// AGPL-3.0 Section 13 compliance: provide source code location to network users.
@@ -2901,6 +3061,14 @@ struct LifecycleViewParams {
     include_archived: Option<bool>,
 }
 
+#[derive(Debug, Deserialize)]
+struct RecentActivityParams {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
 /// GET /v1/admin/lifecycle — Status breakdown and latest memories by lifecycle state.
 async fn lifecycle_view(
     State(state): State<AppState>,
@@ -2923,26 +3091,7 @@ async fn lifecycle_view(
         state.intent_cache.invalidate_namespace(namespace).await;
     }
     let all_memories = state.doc_engine.list_all_including_archived(namespace)?;
-    let summary = LifecycleSummary {
-        total: all_memories.len(),
-        active: all_memories
-            .iter()
-            .filter(|memory| memory.status == MemoryStatus::Active)
-            .count(),
-        candidate: all_memories
-            .iter()
-            .filter(|memory| memory.status == MemoryStatus::Candidate)
-            .count(),
-        contested: all_memories
-            .iter()
-            .filter(|memory| memory.status == MemoryStatus::Contested)
-            .count(),
-        stale: all_memories
-            .iter()
-            .filter(|memory| memory.status == MemoryStatus::Stale)
-            .count(),
-        archived: all_memories.iter().filter(|memory| memory.archived).count(),
-    };
+    let summary = lifecycle_summary_from_memories(&all_memories);
 
     let include_archived = params.include_archived.unwrap_or(false);
     let status_filter = params.status;
@@ -3004,6 +3153,33 @@ async fn lifecycle_view(
             "include_archived": include_archived,
         },
         "memories": memories,
+    }))
+    .into_response())
+}
+
+/// GET /v1/admin/recent — grouped recent injections, extractions, feedbacks, consolidations.
+async fn recent_activity_view(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<RecentActivityParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for recent activity"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_RECENT_ACTIVITY_LIMIT)
+        .clamp(1, MAX_RECENT_ACTIVITY_LIMIT);
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let recent = build_recent_activity(&memories, limit);
+
+    Ok(Json(json!({
+        "namespace": namespace,
+        "limit": limit,
+        "recent": recent,
     }))
     .into_response())
 }
