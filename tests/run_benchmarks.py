@@ -4,8 +4,13 @@ import hashlib
 import math
 import os
 import shutil
+import ssl
 import tempfile
+import threading
 import time
+import urllib.error
+import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from runner_common import (
@@ -43,6 +48,11 @@ EMBED_DIM = int(os.environ.get("BENCHMARK_EMBED_DIM", "384"))
 LAG_PAUSE_THRESHOLD = int(os.environ.get("BENCHMARK_LAG_PAUSE_THRESHOLD", "800"))
 LAG_RESUME_THRESHOLD = int(os.environ.get("BENCHMARK_LAG_RESUME_THRESHOLD", "200"))
 LAG_CHECK_EVERY_BATCHES = int(os.environ.get("BENCHMARK_LAG_CHECK_EVERY_BATCHES", "10"))
+DUPLICATE_SAMPLE_LIMIT = int(os.environ.get("BENCHMARK_DUPLICATE_SAMPLE_LIMIT", "100"))
+
+MIN_SUBSTRING_TOKENS = 5
+MIN_JACCARD_TOKENS = 6
+JACCARD_DUP_THRESHOLD = 0.92
 
 
 def make_embedding(*tokens: str) -> list[float]:
@@ -124,6 +134,190 @@ def format_pct(value: float) -> str:
     return f"{value * 100:.1f}%"
 
 
+def text_tokens(content: str) -> list[str]:
+    tokens: list[str] = []
+    current: list[str] = []
+    for ch in content:
+        if ch.isalnum():
+            current.append(ch.lower())
+        elif current:
+            tokens.append("".join(current))
+            current = []
+    if current:
+        tokens.append("".join(current))
+    return tokens
+
+
+def token_jaccard(a_tokens: list[str], b_tokens: list[str]) -> float:
+    a_set = set(a_tokens)
+    b_set = set(b_tokens)
+    if not a_set or not b_set:
+        return 0.0
+    return len(a_set & b_set) / len(a_set | b_set)
+
+
+def are_structural_duplicates(a: str, b: str) -> bool:
+    a_tokens = text_tokens(a)
+    b_tokens = text_tokens(b)
+    a_norm = " ".join(a_tokens)
+    b_norm = " ".join(b_tokens)
+    if not a_norm or not b_norm:
+        return False
+    if a_norm == b_norm:
+        return True
+
+    shorter_norm, shorter_tokens, longer_norm = (
+        (a_norm, a_tokens, b_norm)
+        if len(a_tokens) <= len(b_tokens)
+        else (b_norm, b_tokens, a_norm)
+    )
+    if len(shorter_tokens) >= MIN_SUBSTRING_TOKENS and shorter_norm in longer_norm:
+        return True
+
+    return (
+        len(a_tokens) >= MIN_JACCARD_TOKENS
+        and len(b_tokens) >= MIN_JACCARD_TOKENS
+        and token_jaccard(a_tokens, b_tokens) >= JACCARD_DUP_THRESHOLD
+    )
+
+
+def duplicate_rate_for_sample(contents: list[str]) -> float:
+    if not contents:
+        return 0.0
+
+    assigned: set[int] = set()
+    merged = 0
+    for i, content in enumerate(contents):
+        if i in assigned:
+            continue
+        cluster = [i]
+        for j in range(i + 1, len(contents)):
+            if j in assigned:
+                continue
+            if are_structural_duplicates(content, contents[j]):
+                cluster.append(j)
+        if len(cluster) < 2:
+            continue
+        assigned.update(cluster)
+        merged += len(cluster) - 1
+    return merged / len(contents)
+
+
+class DummyOpenAIUpstream(ThreadingHTTPServer):
+    def __init__(self, server_address):
+        super().__init__(server_address, DummyOpenAIHandler)
+        self.captured_requests: list[dict] = []
+
+
+class DummyOpenAIHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # noqa: N802 - stdlib handler naming
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length) if length > 0 else b""
+        body = None
+        if raw:
+            try:
+                body = json.loads(raw.decode("utf-8"))
+            except Exception:
+                body = {"raw": raw.decode("utf-8", errors="replace")}
+
+        self.server.captured_requests.append(  # type: ignore[attr-defined]
+            {
+                "path": self.path,
+                "body": body,
+            }
+        )
+
+        payload = json.dumps(
+            {
+                "id": "chatcmpl-benchmark-upstream",
+                "object": "chat.completion",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {
+                            "role": "assistant",
+                            "content": "benchmark upstream output",
+                        },
+                        "finish_reason": "stop",
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 16,
+                    "completion_tokens": 4,
+                    "total_tokens": 20,
+                },
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(payload)))
+        self.end_headers()
+        self.wfile.write(payload)
+
+    def log_message(self, format: str, *args) -> None:  # noqa: A003 - stdlib signature
+        return
+
+
+def start_dummy_upstream():
+    port = free_port()
+    server = DummyOpenAIUpstream(("127.0.0.1", port))
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return port, server, thread
+
+
+def stop_dummy_upstream(server: DummyOpenAIUpstream, thread: threading.Thread) -> None:
+    server.shutdown()
+    server.server_close()
+    thread.join(timeout=5)
+
+
+def request_has_memory_context(request: dict) -> bool:
+    body = request.get("body") or {}
+    for message in body.get("messages") or []:
+        if message.get("role") != "system":
+            continue
+        content = message.get("content") or ""
+        if isinstance(content, str) and "<memory_context" in content:
+            return True
+    return False
+
+
+def proxy_request(
+    base_url: str,
+    proxy_key: str,
+    query: str,
+    *,
+    timeout: float = 120.0,
+) -> tuple[int, dict | None]:
+    payload = json.dumps(
+        {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": query}],
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{base_url}/proxy/v1/chat/completions",
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {proxy_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
+    )
+    context = ssl._create_unverified_context()
+
+    try:
+        with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+            raw = response.read()
+            body = json.loads(raw.decode("utf-8")) if raw else None
+            return response.status, body
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        body = json.loads(raw.decode("utf-8")) if raw else None
+        return exc.code, body
+
+
 def _fixture_available() -> bool:
     return (
         FIXTURE_DIR.is_dir()
@@ -145,6 +339,7 @@ def main() -> None:
     started = time.time()
     tmp = Path(tempfile.mkdtemp(prefix="memoryoss-bench-"))
     port = free_port()
+    upstream_port, upstream_server, upstream_thread = start_dummy_upstream()
     data_dir = tmp / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
     config_path = tmp / "benchmark.toml"
@@ -171,10 +366,15 @@ namespace = "bench"
 [proxy]
 enabled = true
 passthrough_auth = false
-upstream_url = "https://api.openai.com/v1"
-default_memory_mode = "readonly"
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+default_memory_mode = "full"
 min_recall_score = {THRESHOLD}
 extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "benchmark-proxy-key"
+upstream_key = "upstream-benchmark-key"
+namespace = "bench"
 
 [limits]
 rate_limit_per_sec = 5000
@@ -272,6 +472,28 @@ semantic_dedup_threshold = 0.9999
 
         index_health = wait_for_indexer_sync(base_url, auth_header, timeout=180.0)
         print("[benchmark] indexer synced; starting recall quality checks", flush=True)
+
+        lifecycle_status, lifecycle = http_json_with_retry(
+            "GET",
+            (
+                f"{base_url}/v1/admin/lifecycle"
+                f"?status=active&limit={max(1, min(DUPLICATE_SAMPLE_LIMIT, 100))}"
+            ),
+            headers={"Authorization": auth_header},
+            timeout=120.0,
+            verify_tls=False,
+        )
+        if lifecycle_status != 200:
+            raise RuntimeError(f"lifecycle view failed: {lifecycle_status} {lifecycle}")
+        lifecycle_summary = lifecycle.get("summary") or {}
+        active_sample = lifecycle.get("memories") or []
+        observed_duplicate_rate = duplicate_rate_for_sample(
+            [
+                memory.get("content", "")
+                for memory in active_sample
+                if isinstance(memory.get("content"), str)
+            ]
+        )
 
         signal_hits = 0
         noise_rejected = 0
@@ -383,6 +605,48 @@ semantic_dedup_threshold = 0.9999
             if recall_status != 200:
                 raise RuntimeError(f"recall failed for noise query {i}: {recall_status} {recall}")
 
+        positive_injection_hits = 0
+        negative_false_injections = 0
+        positive_probe_count = min(10, SIGNAL_QUERY_COUNT)
+        negative_probe_count = min(10, NOISE_QUERY_COUNT)
+
+        for i in range(positive_probe_count):
+            before = len(upstream_server.captured_requests)
+            proxy_status, proxy_body = proxy_request(
+                base_url,
+                "benchmark-proxy-key",
+                recall_target_query(i),
+            )
+            if proxy_status != 200:
+                raise RuntimeError(
+                    f"proxy injection probe failed for signal query {i}: {proxy_status} {proxy_body}"
+                )
+            after = len(upstream_server.captured_requests)
+            if after <= before:
+                raise RuntimeError("dummy upstream did not receive signal proxy request")
+            if request_has_memory_context(upstream_server.captured_requests[-1]):
+                positive_injection_hits += 1
+
+        for i in range(negative_probe_count):
+            before = len(upstream_server.captured_requests)
+            proxy_status, proxy_body = proxy_request(
+                base_url,
+                "benchmark-proxy-key",
+                noise_query(i),
+            )
+            if proxy_status != 200:
+                raise RuntimeError(
+                    f"proxy injection probe failed for noise query {i}: {proxy_status} {proxy_body}"
+                )
+            after = len(upstream_server.captured_requests)
+            if after <= before:
+                raise RuntimeError("dummy upstream did not receive noise proxy request")
+            if request_has_memory_context(upstream_server.captured_requests[-1]):
+                negative_false_injections += 1
+
+        positive_injection_rate = positive_injection_hits / positive_probe_count
+        false_positive_injection_rate = negative_false_injections / negative_probe_count
+
         report = {
             "runner": "tests/run_benchmarks.sh",
             "generated_at": iso_now(),
@@ -414,6 +678,21 @@ semantic_dedup_threshold = 0.9999
                 "signal_hit_rate": round(signal_hits / SIGNAL_QUERY_COUNT, 4),
                 "noise_rejection": round(noise_rejected / NOISE_QUERY_COUNT, 4),
                 "threshold": THRESHOLD,
+            },
+            "memory_hygiene": {
+                "active_memory_size": int(lifecycle_summary.get("active", 0)),
+                "candidate_memory_size": int(lifecycle_summary.get("candidate", 0)),
+                "contested_memory_size": int(lifecycle_summary.get("contested", 0)),
+                "stale_memory_size": int(lifecycle_summary.get("stale", 0)),
+                "archived_memory_size": int(lifecycle_summary.get("archived", 0)),
+                "duplicate_rate_before": round(observed_duplicate_rate, 4),
+                "duplicate_sample_size": len(active_sample),
+            },
+            "proxy_quality": {
+                "positive_injection_hit_rate": round(positive_injection_rate, 4),
+                "false_positive_injection_rate": round(false_positive_injection_rate, 4),
+                "positive_probe_count": positive_probe_count,
+                "negative_probe_count": negative_probe_count,
             },
             "latency_ms": {
                 "min": round(min(latency_ms), 2),
@@ -461,6 +740,35 @@ semantic_dedup_threshold = 0.9999
                     "note": format_pct(noise_rejected / NOISE_QUERY_COUNT),
                 },
                 {
+                    "name": "Active memory size",
+                    "status": "pass",
+                    "note": f"{int(lifecycle_summary.get('active', 0)):,} active memories in benchmark namespace",
+                },
+                {
+                    "name": "Observed duplicate rate",
+                    "status": "pass",
+                    "note": (
+                        f"{format_pct(observed_duplicate_rate)} across "
+                        f"{len(active_sample)} sampled active memories"
+                    ),
+                },
+                {
+                    "name": "False-positive injection rate",
+                    "status": "pass" if negative_false_injections == 0 else "warn",
+                    "note": (
+                        f"{format_pct(false_positive_injection_rate)} "
+                        f"across {negative_probe_count} negative proxy probes"
+                    ),
+                },
+                {
+                    "name": "Positive injection hit rate",
+                    "status": "pass" if positive_injection_hits == positive_probe_count else "warn",
+                    "note": (
+                        f"{format_pct(positive_injection_rate)} "
+                        f"across {positive_probe_count} positive proxy probes"
+                    ),
+                },
+                {
                     "name": "Recall latency p50 / p95 / p99",
                     "status": "pass",
                     "note": (
@@ -475,6 +783,7 @@ semantic_dedup_threshold = 0.9999
         print(json.dumps(report["write"], indent=2))
     finally:
         stop_process(process)
+        stop_dummy_upstream(upstream_server, upstream_thread)
 
 
 if __name__ == "__main__":

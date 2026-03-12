@@ -78,7 +78,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
   <div class="hero">
     <h1>Test Results</h1>
     <p>These are real runner results generated from the same automated validation path used for releases.</p>
-    <p>The main public proof set is simple: retention under load, explicit long-memory regression, sustained soak stability, and a compatibility matrix across the supported Claude and Codex flows.</p>
+    <p>The main public proof set is simple: retention under load, explicit long-memory regression, sustained soak stability, compatibility across the supported Claude and Codex flows, and live quality metrics for extraction and injection.</p>
   </div>
 
   <div class="card">
@@ -101,8 +101,12 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
       <div><strong>Compatibility matrix</strong><div class="note">Claude OAuth/API and Codex OAuth/API are tested across the supported MCP and proxy paths rather than left as undocumented assumptions.</div></div>
     </div>
     <div class="test-row">
+      <span class="status pass">QUAL</span>
+      <div><strong>Quality and efficiency metrics</strong><div class="note">The live report below also publishes extraction quality, observed duplicate rate, active memory size, and observed false-positive injection rate from the same benchmark artifacts.</div></div>
+    </div>
+    <div class="test-row">
       <span class="status pass">TOKEN</span>
-      <div><strong>Input-token efficiency</strong><div class="note">In a 10-task Claude benchmark, recalled memory context reduced average input tokens by 44.4% versus replaying full task context. This is evidence for repeated-task context compression, not a universal token-savings guarantee.</div></div>
+      <div><strong>Input-token efficiency</strong><div class="note">In a constrained 10-task Claude benchmark, recalled memory context reduced average input tokens by 44.4% versus replaying full task context. This is evidence for repeated-task context compression, not a universal token-savings guarantee.</div></div>
     </div>
   </div>
 

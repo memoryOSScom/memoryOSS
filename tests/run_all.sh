@@ -13,6 +13,8 @@ BENCHMARK_JSON="${RUN_ALL_BENCHMARK_JSON:-$ROOT_DIR/tests/benchmark-report.json}
 CALIBRATION_JSON="${RUN_ALL_CALIBRATION_JSON:-$ROOT_DIR/tests/calibration-report.json}"
 EXTRACTION_EVAL_JSON="${RUN_ALL_EXTRACTION_EVAL_JSON:-$ROOT_DIR/tests/extraction-eval-report.json}"
 COVERAGE_GAPS_JSON="${RUN_ALL_COVERAGE_GAPS_JSON:-$ROOT_DIR/tests/coverage-gaps-report.json}"
+LONG_MEMORY_JSON="${RUN_ALL_LONG_MEMORY_JSON:-$ROOT_DIR/tests/long-memory-regression-report.json}"
+TOKEN_SAVINGS_JSON="${RUN_ALL_TOKEN_SAVINGS_JSON:-$ROOT_DIR/tests/token-savings-report.json}"
 mkdir -p "$REPORT_DIR"
 
 # Generate report even on early failure (Codex Befund 4)
@@ -30,6 +32,8 @@ generate_report() {
     --calibration-json "$CALIBRATION_JSON" \
     --extraction-eval-json "$EXTRACTION_EVAL_JSON" \
     --coverage-gaps-json "$COVERAGE_GAPS_JSON" \
+    --long-memory-json "$LONG_MEMORY_JSON" \
+    --token-savings-json "$TOKEN_SAVINGS_JSON" \
     --duration "$duration" 2>/dev/null || true
 }
 trap generate_report EXIT
@@ -246,6 +250,8 @@ python3 "$ROOT_DIR/tests/generate_report.py" \
   --calibration-json "$CALIBRATION_JSON" \
   --extraction-eval-json "$EXTRACTION_EVAL_JSON" \
   --coverage-gaps-json "$COVERAGE_GAPS_JSON" \
+  --long-memory-json "$LONG_MEMORY_JSON" \
+  --token-savings-json "$TOKEN_SAVINGS_JSON" \
   --duration "$RUN_DURATION"
 
 printf '\nAll checks passed.\n'

@@ -113,6 +113,23 @@ def load_optional_json(path: str | None):
     return json.loads(file_path.read_text(encoding="utf-8"))
 
 
+def artifact_suffix(report: dict | None, step: dict | None = None) -> str:
+    if not report:
+        return ""
+
+    fragments = []
+    generated_at = report.get("generated_at")
+    if generated_at:
+        try:
+            stamp = dt.datetime.fromisoformat(generated_at.replace("Z", "+00:00"))
+            fragments.append(f"artifact {stamp.date().isoformat()}")
+        except Exception:
+            fragments.append("artifact available")
+    if step and step.get("status") != "pass":
+        fragments.append(f"current run step {step['status']}")
+    return f" ({'; '.join(fragments)})" if fragments else ""
+
+
 def parse_cargo_tests(log_text: str):
     current = None
     unit = []
@@ -161,6 +178,8 @@ def build_sections(
     calibration_report,
     extraction_eval_report=None,
     coverage_gaps_report=None,
+    long_memory_report=None,
+    token_savings_report=None,
 ):
     step_by_slug = {step["slug"]: step for step in steps}
 
@@ -309,6 +328,37 @@ def build_sections(
             }
         )
 
+    if long_memory_report:
+        recall = long_memory_report.get("recall", {})
+        write = long_memory_report.get("write", {})
+        sections.append(
+            {
+                "title": "Long-Memory Regression",
+                "count": len(long_memory_report.get("items", [])) + 2,
+                "items": [
+                    item(
+                        "Corpus growth after sentinel insert",
+                        "pass",
+                        (
+                            f"{write.get('total_memories', 0):,} total memories; "
+                            f"batch p50 {write.get('batch_latency_ms', {}).get('p50', 0):.0f} ms"
+                        ),
+                    ),
+                    item(
+                        "Sentinel retrieval after growth",
+                        "pass" if recall.get("sentinel_top_hit") else "warn",
+                        (
+                            f"rank {recall.get('sentinel_rank', '-')}, "
+                            f"score {recall.get('top_score', 0):.4f}, "
+                            f"recall {recall.get('recall_latency_ms', 0):.2f} ms"
+                            f"{artifact_suffix(long_memory_report)}"
+                        ),
+                    ),
+                    *long_memory_report.get("items", []),
+                ],
+            }
+        )
+
     calibration_step = step_by_slug.get("calibration")
     if calibration_report:
         distribution = calibration_report["score_distribution"]
@@ -406,6 +456,7 @@ def build_sections(
                     f"{summary['dataset_size']} cases "
                     f"({summary['positive_cases']} positive, "
                     f"{summary['negative_cases']} negative)"
+                    f"{artifact_suffix(extraction_eval_report, extraction_eval_step)}"
                 ),
             )
         ]
@@ -521,6 +572,45 @@ def build_sections(
             }
         )
 
+    if token_savings_report:
+        summary = token_savings_report.get("summary", {})
+        sections.append(
+            {
+                "title": "Token Efficiency Benchmark",
+                "count": 4,
+                "items": [
+                    item(
+                        "Benchmark scope",
+                        "pass",
+                        (
+                            f"{token_savings_report.get('total_tasks', 0)} repeated-task prompts, "
+                            f"{token_savings_report.get('runs_per_task', 0)} runs each; "
+                            f"constrained context-compression benchmark"
+                            f"{artifact_suffix(token_savings_report)}"
+                        ),
+                    ),
+                    item(
+                        "Average input tokens",
+                        "pass",
+                        (
+                            f"{summary.get('avg_input_tokens_without_memory', 0)} without memory vs "
+                            f"{summary.get('avg_input_tokens_with_memory', 0)} with memory"
+                        ),
+                    ),
+                    item(
+                        "Average token savings",
+                        "pass",
+                        f"{summary.get('avg_savings_percent', 0):.1f}%",
+                    ),
+                    item(
+                        "Estimated monthly savings at 10k queries",
+                        "pass",
+                        f"${summary.get('estimated_monthly_savings_10k_queries_usd', 0):.1f}",
+                    ),
+                ],
+            }
+        )
+
     coverage_gaps_step = step_by_slug.get("coverage_gaps")
     if coverage_gaps_report:
         for group in coverage_gaps_report.get("groups", []):
@@ -557,6 +647,8 @@ def build_report(
     calibration_report=None,
     extraction_eval_report=None,
     coverage_gaps_report=None,
+    long_memory_report=None,
+    token_savings_report=None,
 ):
     cargo_step = next((step for step in steps if step["slug"] == "cargo_test"), None)
     ts_step = next((step for step in steps if step["slug"] == "typescript_sdk"), None)
@@ -577,6 +669,8 @@ def build_report(
         calibration_report,
         extraction_eval_report,
         coverage_gaps_report,
+        long_memory_report,
+        token_savings_report,
     )
 
     total_checks = sum(
@@ -608,6 +702,14 @@ def build_report(
             "extraction_eval_cases": (
                 extraction_eval_report["summary"]["dataset_size"]
                 if extraction_eval_report
+                else 0
+            ),
+            "long_memory_total_memories": (
+                long_memory_report["write"]["total_memories"] if long_memory_report else 0
+            ),
+            "token_savings_percent": (
+                token_savings_report["summary"]["avg_savings_percent"]
+                if token_savings_report
                 else 0
             ),
         },
@@ -658,6 +760,8 @@ def main():
     parser.add_argument("--calibration-json")
     parser.add_argument("--extraction-eval-json")
     parser.add_argument("--coverage-gaps-json")
+    parser.add_argument("--long-memory-json")
+    parser.add_argument("--token-savings-json")
     parser.add_argument("--duration", required=True, type=int)
     args = parser.parse_args()
 
@@ -667,6 +771,8 @@ def main():
     calibration_report = load_optional_json(args.calibration_json)
     extraction_eval_report = load_optional_json(args.extraction_eval_json)
     coverage_gaps_report = load_optional_json(args.coverage_gaps_json)
+    long_memory_report = load_optional_json(args.long_memory_json)
+    token_savings_report = load_optional_json(args.token_savings_json)
     report = build_report(
         steps,
         args.duration,
@@ -675,6 +781,8 @@ def main():
         calibration_report=calibration_report,
         extraction_eval_report=extraction_eval_report,
         coverage_gaps_report=coverage_gaps_report,
+        long_memory_report=long_memory_report,
+        token_savings_report=token_savings_report,
     )
 
     output_json = Path(args.output_json)

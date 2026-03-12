@@ -8,9 +8,9 @@ memoryOSS is for project context, preferences, prior fixes, and working history 
 
 In internal retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands.
 
-Benchmark highlights are documented on the public tests page: 20k retention, long-memory regression, 2-hour soak stability, and the supported Claude/Codex compatibility matrix.
+The public tests page publishes the current benchmark and quality artifacts: 20k retention, long-memory regression, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix.
 
-In a separate 10-task Claude benchmark, using recalled memory context instead of replaying the full task context reduced average input tokens by 44.4%. We treat this as evidence for repeated-task context compression, not as a universal promise of lower token usage in every workload.
+In a separate constrained 10-task Claude benchmark, using recalled memory context instead of replaying the full task context reduced average input tokens by 44.4%. We treat this as evidence for repeated-task context compression in that workload, not as a universal promise of lower token usage in every workload.
 ## Quickstart
 
 ```bash
