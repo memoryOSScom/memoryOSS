@@ -319,19 +319,16 @@ impl Memory {
             became_stale = true;
         }
 
-        if self.status == MemoryStatus::Active
+        let should_stale_active = self.status == MemoryStatus::Active
             && idle_days >= threshold_days
-            && (low_relevance || negative_outcomes || (low_trust && no_positive_outcomes))
-        {
-            self.status = MemoryStatus::Stale;
-            changed = true;
-            became_stale = true;
-        } else if self.status == MemoryStatus::Candidate
+            && (low_relevance || negative_outcomes || (low_trust && no_positive_outcomes));
+        let should_stale_candidate = self.status == MemoryStatus::Candidate
             && idle_days >= threshold_days
             && self.injection_count > 0
             && self.reuse_count == 0
-            && self.confirm_count == 0
-        {
+            && self.confirm_count == 0;
+
+        if should_stale_active || should_stale_candidate {
             self.status = MemoryStatus::Stale;
             changed = true;
             became_stale = true;
@@ -366,7 +363,7 @@ const CONTRADICTION_STOPWORDS: &[&str] = &[
 ];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct ContradictionSignature {
+pub(crate) struct ContradictionSignature {
     polarity_negative: bool,
     core_tokens: Vec<String>,
 }
@@ -396,7 +393,7 @@ fn contradiction_token(token: &str) -> Option<(String, bool)> {
     Some((mapped.0.to_string(), mapped.1))
 }
 
-fn contradiction_signature(content: &str) -> Option<ContradictionSignature> {
+pub(crate) fn contradiction_signature(content: &str) -> Option<ContradictionSignature> {
     let mut polarity_negative = false;
     let mut core_tokens = Vec::new();
 
@@ -430,6 +427,22 @@ fn contradiction_signature(content: &str) -> Option<ContradictionSignature> {
     })
 }
 
+pub(crate) fn contradiction_signatures_conflict(
+    sig_a: &ContradictionSignature,
+    sig_b: &ContradictionSignature,
+) -> bool {
+    if sig_a.polarity_negative == sig_b.polarity_negative {
+        return false;
+    }
+
+    let set_a: HashSet<&str> = sig_a.core_tokens.iter().map(String::as_str).collect();
+    let set_b: HashSet<&str> = sig_b.core_tokens.iter().map(String::as_str).collect();
+    let shared = set_a.intersection(&set_b).count();
+    let total = set_a.union(&set_b).count();
+
+    shared >= 3 && shared * 100 >= total * 60
+}
+
 pub fn memories_contradict(a: &Memory, b: &Memory) -> bool {
     if a.id == b.id || a.archived || b.archived {
         return false;
@@ -445,16 +458,7 @@ pub fn memories_contradict(a: &Memory, b: &Memory) -> bool {
         return false;
     };
 
-    if sig_a.polarity_negative == sig_b.polarity_negative {
-        return false;
-    }
-
-    let set_a: HashSet<&str> = sig_a.core_tokens.iter().map(String::as_str).collect();
-    let set_b: HashSet<&str> = sig_b.core_tokens.iter().map(String::as_str).collect();
-    let shared = set_a.intersection(&set_b).count();
-    let total = set_a.union(&set_b).count();
-
-    shared >= 3 && shared * 100 >= total * 60
+    contradiction_signatures_conflict(&sig_a, &sig_b)
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

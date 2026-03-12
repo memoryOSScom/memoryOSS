@@ -117,6 +117,29 @@ dependency_audit() {
     --ignore RUSTSEC-2026-0002
 }
 
+run_extraction_eval_step() {
+  local -a env_args
+  env_args=(
+    -u OPENAI_API_KEY
+    -u ANTHROPIC_API_KEY
+    -u OPENAI_BASE_URL
+    -u ANTHROPIC_BASE_URL
+    "EXTRACTION_EVAL_OUTPUT_JSON=$EXTRACTION_EVAL_JSON"
+  )
+
+  if [ -n "${RUN_ALL_EXTRACTION_EVAL_PROVIDER:-}" ]; then
+    env_args+=("EXTRACTION_EVAL_PROVIDER=$RUN_ALL_EXTRACTION_EVAL_PROVIDER")
+  fi
+  if [ -n "${RUN_ALL_EXTRACTION_EVAL_OPENAI_API_KEY:-}" ]; then
+    env_args+=("OPENAI_API_KEY=$RUN_ALL_EXTRACTION_EVAL_OPENAI_API_KEY")
+  fi
+  if [ -n "${RUN_ALL_EXTRACTION_EVAL_ANTHROPIC_API_KEY:-}" ]; then
+    env_args+=("ANTHROPIC_API_KEY=$RUN_ALL_EXTRACTION_EVAL_ANTHROPIC_API_KEY")
+  fi
+
+  env "${env_args[@]}" bash "$ROOT_DIR/tests/run_extraction_eval.sh"
+}
+
 wizard_smoke_test() {
   if ! command -v curl >/dev/null 2>&1; then
     echo "SKIP: curl is not installed"
@@ -205,7 +228,7 @@ run_step "setup wizard smoke test" wizard_smoke wizard_smoke_test
 run_step "setup wizard matrix" wizard_matrix env WIZARD_MATRIX_OUTPUT_JSON="$WIZARD_MATRIX_JSON" bash "$ROOT_DIR/tests/run_wizard_matrix.sh"
 run_step "20k benchmark" benchmark env BENCHMARK_OUTPUT_JSON="$BENCHMARK_JSON" bash "$ROOT_DIR/tests/run_benchmarks.sh"
 run_step "scoring calibration" calibration env CALIBRATION_OUTPUT_JSON="$CALIBRATION_JSON" bash "$ROOT_DIR/tests/run_calibration.sh"
-run_step "extraction quality evaluation" extraction_eval env EXTRACTION_EVAL_OUTPUT_JSON="$EXTRACTION_EVAL_JSON" bash "$ROOT_DIR/tests/run_extraction_eval.sh"
+run_step "extraction quality evaluation" extraction_eval run_extraction_eval_step
 run_step "coverage gaps" coverage_gaps env COVERAGE_GAPS_OUTPUT_JSON="$COVERAGE_GAPS_JSON" bash "$ROOT_DIR/tests/run_coverage_gaps.sh"
 run_step "TypeScript SDK build/test" typescript_sdk typescript_sdk_checks
 run_step "cargo audit (offline if available)" cargo_audit dependency_audit

@@ -27,7 +27,7 @@ use crate::memory::{
     ConsolidateRequest, ConsolidateResponse, ConsolidationGroup, FeedbackRequest, FeedbackResponse,
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction, MemoryStatus,
     RecallRequest, RecallResponse, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
-    memories_contradict,
+    contradiction_signature, contradiction_signatures_conflict, memories_contradict,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -136,19 +136,27 @@ pub(crate) fn apply_contradiction_detection(
     subject: &str,
     skip_ids: &[uuid::Uuid],
 ) -> anyhow::Result<usize> {
-    let mut updates = 0usize;
-    let conflicts: Vec<_> = state
-        .doc_engine
-        .list_all_including_archived(namespace)?
-        .into_iter()
-        .filter(|existing| {
-            existing.id != candidate.id
-                && !skip_ids.contains(&existing.id)
-                && memories_contradict(candidate, existing)
-        })
-        .collect();
+    let Some(candidate_signature) = contradiction_signature(&candidate.content) else {
+        return Ok(0);
+    };
 
-    for mut existing in conflicts {
+    let mut updates = 0usize;
+    for mut existing in state.doc_engine.list_all_including_archived(namespace)? {
+        if existing.id == candidate.id
+            || skip_ids.contains(&existing.id)
+            || existing.archived
+            || existing.superseded_by.is_some()
+        {
+            continue;
+        }
+
+        let Some(existing_signature) = contradiction_signature(&existing.content) else {
+            continue;
+        };
+        if !contradiction_signatures_conflict(&candidate_signature, &existing_signature) {
+            continue;
+        }
+
         if existing.mark_contradicted_by(candidate.id) {
             existing.updated_at = chrono::Utc::now();
             existing.version += 1;
@@ -159,6 +167,44 @@ pub(crate) fn apply_contradiction_detection(
     }
 
     Ok(updates)
+}
+
+fn apply_loaded_contradiction_detection(
+    existing_memories: &mut [Memory],
+    candidate: &mut Memory,
+    skip_ids: &[uuid::Uuid],
+) -> Vec<uuid::Uuid> {
+    let Some(candidate_signature) = contradiction_signature(&candidate.content) else {
+        return Vec::new();
+    };
+
+    let now = chrono::Utc::now();
+    let mut changed_ids = Vec::new();
+    for existing in existing_memories.iter_mut() {
+        if existing.id == candidate.id
+            || skip_ids.contains(&existing.id)
+            || existing.archived
+            || existing.superseded_by.is_some()
+        {
+            continue;
+        }
+
+        let Some(existing_signature) = contradiction_signature(&existing.content) else {
+            continue;
+        };
+        if !contradiction_signatures_conflict(&candidate_signature, &existing_signature) {
+            continue;
+        }
+
+        if existing.mark_contradicted_by(candidate.id) {
+            existing.updated_at = now;
+            existing.version += 1;
+            changed_ids.push(existing.id);
+        }
+        candidate.mark_contradicted_by(existing.id);
+    }
+
+    changed_ids
 }
 
 pub(crate) fn apply_memory_lifecycle(
@@ -499,10 +545,17 @@ fn ensure_no_semantic_duplicate(
         && let Some((existing_id, score)) = nearest.first()
         && (*score as f64) >= threshold
     {
-        return Err(AppError::BadRequest(format!(
-            "semantic duplicate (similarity {:.3} >= {:.3}, matches memory {})",
-            score, threshold, existing_id
-        )));
+        if let Ok(Some(existing)) = state.doc_engine.get(*existing_id, namespace)
+            && let Some(existing_embedding) = existing.embedding.as_ref()
+        {
+            let exact_similarity = cosine_similarity(existing_embedding, embedding);
+            if exact_similarity >= threshold {
+                return Err(AppError::BadRequest(format!(
+                    "semantic duplicate (similarity {:.3} >= {:.3}, matches memory {})",
+                    exact_similarity, threshold, existing_id
+                )));
+            }
+        }
     }
 
     if let Some(dup) = prepared.iter().find(|memory| {
@@ -786,6 +839,16 @@ async fn store_batch(
 
     let mut stored = Vec::with_capacity(items.len());
     let mut prepared_memories = Vec::with_capacity(items.len());
+    let mut existing_by_namespace =
+        std::collections::HashMap::with_capacity(touched_namespaces.len());
+    for item_ns in &touched_namespaces {
+        existing_by_namespace.insert(
+            item_ns.clone(),
+            state.doc_engine.list_all_including_archived(item_ns)?,
+        );
+    }
+    let mut dirty_existing_ids =
+        std::collections::HashMap::<String, std::collections::HashSet<uuid::Uuid>>::new();
     let mut contradiction_updates = 0usize;
 
     for (item, item_ns) in items {
@@ -819,8 +882,17 @@ async fn store_batch(
         }
 
         let skip_ids: Vec<_> = prepared_memories.iter().map(|memory| memory.id).collect();
-        contradiction_updates +=
-            apply_contradiction_detection(&state, &item_ns, &mut memory, &claims.sub, &skip_ids)?;
+        if let Some(existing_memories) = existing_by_namespace.get_mut(&item_ns) {
+            let changed_ids =
+                apply_loaded_contradiction_detection(existing_memories, &mut memory, &skip_ids);
+            contradiction_updates += changed_ids.len();
+            if !changed_ids.is_empty() {
+                dirty_existing_ids
+                    .entry(item_ns.clone())
+                    .or_default()
+                    .extend(changed_ids);
+            }
+        }
         for prepared in prepared_memories
             .iter_mut()
             .filter(|prepared| prepared.namespace.as_deref() == Some(item_ns.as_str()))
@@ -853,6 +925,18 @@ async fn store_batch(
         return Err(AppError::Internal(anyhow::anyhow!(
             "batch embedding generation produced more vectors than expected"
         )));
+    }
+
+    for (namespace, changed_ids) in &dirty_existing_ids {
+        let Some(existing_memories) = existing_by_namespace.get(namespace) else {
+            continue;
+        };
+        for existing in existing_memories
+            .iter()
+            .filter(|existing| changed_ids.contains(&existing.id))
+        {
+            state.doc_engine.replace(existing, &claims.sub)?;
+        }
     }
 
     let batch_items: Vec<(Memory, String)> = prepared_memories

@@ -3853,6 +3853,61 @@ async fn test_gdpr_connections_cover_export_access_and_certified_forget() {
 }
 
 #[tokio::test]
+async fn test_semantic_dedup_is_isolated_per_namespace() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = multi_namespace_test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("semantic-dedup-namespaces.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let mut embedding = vec![0.0f32; 384];
+    embedding[0] = 1.0;
+
+    let alpha_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer alpha-admin-key")
+        .json(&serde_json::json!({
+            "content": "Alpha namespace stores a rollout checklist embedding.",
+            "tags": ["dedup", "alpha"],
+            "zero_knowledge": true,
+            "embedding": embedding.clone(),
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(alpha_store.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let beta_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer beta-admin-key")
+        .json(&serde_json::json!({
+            "content": "Beta namespace stores the same embedding and should still be allowed.",
+            "tags": ["dedup", "beta"],
+            "zero_knowledge": true,
+            "embedding": embedding,
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        beta_store.status(),
+        200,
+        "semantic dedup should not reject identical embeddings from another namespace"
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
 async fn test_key_rotation_connections_cover_rotate_list_revoke_and_read() {
     let port = free_port();
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");

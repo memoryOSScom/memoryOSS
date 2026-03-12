@@ -196,3 +196,65 @@ struct SavedMappings {
     next_key: u64,
     mappings: Vec<(u64, Uuid)>,
 }
+
+#[cfg(test)]
+mod tests {
+    use sha2::{Digest, Sha256};
+    use tempfile::tempdir;
+
+    use super::*;
+
+    fn make_embedding(tokens: &[String]) -> Vec<f32> {
+        let mut values = vec![0.0f32; 384];
+        for token in tokens {
+            let digest = Sha256::digest(token.as_bytes());
+            for (idx, byte) in digest.iter().enumerate() {
+                let pos = (*byte as usize + idx * 17) % values.len();
+                values[pos] += (*byte as f32 / 255.0) - 0.5;
+            }
+        }
+
+        let norm = values.iter().map(|v| v * v).sum::<f32>().sqrt().max(1.0);
+        for value in &mut values {
+            *value /= norm;
+        }
+        values
+    }
+
+    fn long_regression_embedding(i: usize) -> Vec<f32> {
+        make_embedding(&[
+            format!("topic:{}", i % 97),
+            format!("module:{}", i % 41),
+            "theme:background".to_string(),
+            format!("id:{i}"),
+        ])
+    }
+
+    #[test]
+    fn long_regression_embeddings_do_not_hit_semantic_duplicate_threshold() {
+        let tmp = tempdir().unwrap();
+        let engine = VectorEngine::open(tmp.path(), 384).unwrap();
+        let threshold = 0.9999f32;
+        let mut worst = (-1.0f32, 0usize, Uuid::nil());
+
+        for i in 0..800usize {
+            let embedding = long_regression_embedding(i);
+            if let Some((existing_id, similarity)) = engine.search(&embedding, 1).unwrap().first() {
+                if *similarity > worst.0 {
+                    worst = (*similarity, i, *existing_id);
+                }
+                assert!(
+                    *similarity < threshold,
+                    "embedding {i} unexpectedly hit semantic duplicate threshold with similarity {similarity:.6} against {existing_id}",
+                );
+            }
+
+            engine.add(Uuid::now_v7(), &embedding).unwrap();
+        }
+
+        assert!(
+            worst.0 > 0.0,
+            "expected at least one nearest-neighbor comparison"
+        );
+    }
+}
