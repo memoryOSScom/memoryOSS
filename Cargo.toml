@@ -109,8 +109,9 @@ tempfile = "3"
 usearch = "2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-# Windows release builds currently need the portable core without simsimd/fp16lib.
-usearch = { version = "2", default-features = false }
+# Windows release builds must avoid SimSIMD, but still need fp16lib to keep
+# usearch out of the MSVC-incompatible `_Float16` fallback path.
+usearch = { version = "2", default-features = false, features = ["fp16lib"] }
 
 [profile.release]
 lto = true
