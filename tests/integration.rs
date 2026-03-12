@@ -220,6 +220,26 @@ async fn wait_for_proxy_facts_extracted(
     }
 }
 
+async fn wait_for_superseded_by(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    memory_id: &str,
+) -> String {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let body = inspect_memory(client, base, api_key, memory_id).await;
+        if let Some(derived_id) = body["superseded_by"].as_str() {
+            return derived_id.to_string();
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for memory {memory_id} to be superseded"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Start a server command in background, wait for it to be ready, return the child.
 async fn start_server_command(config_path: &str, command: &str) -> tokio::process::Child {
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
@@ -3902,6 +3922,194 @@ async fn test_semantic_dedup_is_isolated_per_namespace() {
         beta_store.status(),
         200,
         "semantic dedup should not reject identical embeddings from another namespace"
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_consolidate_reports_reduction_and_preserves_provenance() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("consolidate.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let source_contents = [
+        "Deployment runbook requires staging approval before production rollout.",
+        "Deployment runbook requires staging approval before production rollout and notifying ops-red.",
+    ];
+    let mut source_ids = Vec::new();
+    for content in source_contents {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&serde_json::json!({
+                "content": content,
+                "tags": ["consolidation", "deploy"]
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        source_ids.push(
+            resp.json::<serde_json::Value>().await.unwrap()["id"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+        );
+    }
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    let consolidate_resp = client
+        .post(format!("{base}/v1/consolidate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "threshold": 0.9,
+            "max_clusters": 10,
+            "dry_run": false
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(consolidate_resp.status(), 200);
+    let consolidate_body: serde_json::Value = consolidate_resp.json().await.unwrap();
+    assert_eq!(consolidate_body["total_merged"].as_u64(), Some(1));
+    assert_eq!(consolidate_body["derived_created"].as_u64(), Some(1));
+    assert_eq!(consolidate_body["active_before"].as_u64(), Some(2));
+    assert_eq!(consolidate_body["active_after"].as_u64(), Some(1));
+    assert_eq!(consolidate_body["active_reduction"].as_u64(), Some(1));
+    assert!(
+        consolidate_body["duplicate_rate_before"]
+            .as_f64()
+            .unwrap_or(0.0)
+            > consolidate_body["duplicate_rate_after"]
+                .as_f64()
+                .unwrap_or(1.0)
+    );
+
+    let group = &consolidate_body["groups"][0];
+    let derived_id = group["derived_id"]
+        .as_str()
+        .expect("derived_id missing after consolidation");
+    assert_eq!(group["source_ids"].as_array().map(|v| v.len()), Some(2));
+
+    let derived = inspect_memory(&client, &base, "test-key-integration", derived_id).await;
+    assert_eq!(derived["status"].as_str(), Some("active"));
+    assert_eq!(derived["derived_from"].as_array().map(|v| v.len()), Some(2));
+
+    for source_id in &source_ids {
+        let source = inspect_memory(&client, &base, "test-key-integration", source_id).await;
+        assert_eq!(source["status"].as_str(), Some("stale"));
+        assert_eq!(source["superseded_by"].as_str(), Some(derived_id));
+    }
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    assert_eq!(export_body["count"].as_u64(), Some(1));
+    assert_eq!(export_body["memories"][0]["id"].as_str(), Some(derived_id));
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_consolidation_worker_runs_automatically() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#,
+        r#"
+[consolidation]
+enabled = true
+interval_minutes = 0
+threshold = 0.9
+max_clusters = 10
+"#,
+    );
+    let config_path = tmp_dir.path().join("consolidation-worker.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Rollback guide requires staging approval before production deploys.",
+            "tags": ["consolidation", "rollback"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_resp.status(), 200);
+    let first_id = first_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let second_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Rollback guide requires staging approval before production deploys and notifying ops-red.",
+            "tags": ["consolidation", "rollback"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_resp.status(), 200);
+    let second_id = second_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let derived_id =
+        wait_for_superseded_by(&client, &base, "test-key-integration", &first_id).await;
+    let second = inspect_memory(&client, &base, "test-key-integration", &second_id).await;
+    assert_eq!(second["superseded_by"].as_str(), Some(derived_id.as_str()));
+
+    let derived = inspect_memory(&client, &base, "test-key-integration", &derived_id).await;
+    assert_eq!(derived["derived_from"].as_array().map(|v| v.len()), Some(2));
+    assert_eq!(derived["status"].as_str(), Some("active"));
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    assert_eq!(export_body["count"].as_u64(), Some(1));
+    assert_eq!(
+        export_body["memories"][0]["id"].as_str(),
+        Some(derived_id.as_str())
     );
 
     child.kill().await.ok();

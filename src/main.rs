@@ -411,6 +411,8 @@ async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
 
     // Noise cleanup: default 14 days, no question needed
     let (decay_enabled, decay_days) = (true, 14);
+    let (consolidation_enabled, consolidation_interval_minutes, consolidation_threshold) =
+        (true, 60, 0.9);
 
     // Everything else is auto-configured
     let bind_host = "127.0.0.1";
@@ -521,12 +523,21 @@ json = false
 enabled = {decay_enabled}
 strategy = "age"
 after_days = {decay_days}
+
+[consolidation]
+enabled = {consolidation_enabled}
+interval_minutes = {consolidation_interval_minutes}
+threshold = {consolidation_threshold}
+max_clusters = 25
 "#,
         timestamp = chrono::Utc::now().format("%Y-%m-%d %H:%M UTC"),
         audit_hmac_secret = audit_hmac_secret,
         extract_model = extract_model,
         extract_provider = extract_provider,
         core_port = core_port,
+        consolidation_enabled = consolidation_enabled,
+        consolidation_interval_minutes = consolidation_interval_minutes,
+        consolidation_threshold = consolidation_threshold,
     );
 
     // Validate generated TOML before writing

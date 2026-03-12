@@ -90,6 +90,8 @@ pub struct Memory {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub superseded_by: Option<Uuid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_from: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub contradicts_with: Vec<Uuid>,
     #[serde(default)]
     pub injection_count: u32,
@@ -139,6 +141,7 @@ impl Memory {
             evidence_count: default_evidence_count(),
             last_verified_at: Some(now),
             superseded_by: None,
+            derived_from: Vec::new(),
             contradicts_with: Vec::new(),
             injection_count: 0,
             reuse_count: 0,
@@ -199,6 +202,15 @@ impl Memory {
 
     pub fn clear_contradictions(&mut self) {
         self.contradicts_with.clear();
+    }
+
+    pub fn mark_consolidated_into(&mut self, derived_id: Uuid) {
+        let now = Utc::now();
+        self.status = MemoryStatus::Stale;
+        self.superseded_by = Some(derived_id);
+        self.archived = true;
+        self.updated_at = now;
+        self.version = self.version.saturating_add(1);
     }
 
     pub fn record_injection(&mut self) {
@@ -769,12 +781,24 @@ pub struct ConsolidationGroup {
     pub merged: Vec<Uuid>,
     /// Average similarity within the group
     pub avg_similarity: f64,
+    /// The derived replacement memory created by consolidation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub derived_id: Option<Uuid>,
+    /// Full source set used to derive the consolidated memory.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub source_ids: Vec<Uuid>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConsolidateResponse {
     pub groups: Vec<ConsolidationGroup>,
     pub total_merged: usize,
+    pub derived_created: usize,
+    pub active_before: usize,
+    pub active_after: usize,
+    pub active_reduction: usize,
+    pub duplicate_rate_before: f64,
+    pub duplicate_rate_after: f64,
     pub dry_run: bool,
 }
 

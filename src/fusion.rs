@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 
-use crate::memory::{ScoreExplainEntry, ScoredMemory};
+use crate::memory::{Memory, MemoryStatus, ScoreExplainEntry, ScoredMemory};
 
 const MIN_SUBSTRING_TOKENS: usize = 5;
 const MIN_JACCARD_TOKENS: usize = 6;
@@ -72,6 +72,16 @@ fn split_sentences(content: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
+    let dot: f32 = a.iter().zip(b.iter()).map(|(x, y)| x * y).sum();
+    let norm_a: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let norm_b: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm_a == 0.0 || norm_b == 0.0 {
+        return 0.0;
+    }
+    (dot / (norm_a * norm_b)) as f64
 }
 
 pub fn are_structural_duplicates(a: &str, b: &str) -> bool {
@@ -291,6 +301,94 @@ pub fn prefer_consolidation_candidate(
             && candidate.updated_at == existing.updated_at
             && candidate.content.len() == existing.content.len()
             && candidate.tags.len() > existing.tags.len())
+}
+
+#[derive(Debug, Clone)]
+pub struct ConsolidationCluster {
+    pub members: Vec<usize>,
+    pub avg_similarity: f64,
+}
+
+fn eligible_for_consolidation(memory: &Memory) -> bool {
+    !memory.archived
+        && memory.superseded_by.is_none()
+        && memory.status != MemoryStatus::Contested
+        && memory.contradicts_with.is_empty()
+}
+
+pub fn count_active_memories(memories: &[Memory]) -> usize {
+    memories
+        .iter()
+        .filter(|memory| memory.status == MemoryStatus::Active && !memory.archived)
+        .count()
+}
+
+pub fn build_consolidation_clusters(
+    memories: &[Memory],
+    threshold: f64,
+    max_clusters: usize,
+) -> Vec<ConsolidationCluster> {
+    let mut assigned = std::collections::HashSet::new();
+    let mut clusters = Vec::new();
+
+    for i in 0..memories.len() {
+        if assigned.contains(&memories[i].id) || !eligible_for_consolidation(&memories[i]) {
+            continue;
+        }
+        if clusters.len() >= max_clusters {
+            break;
+        }
+
+        let mut cluster = vec![i];
+        let mut sims = Vec::new();
+        for j in (i + 1)..memories.len() {
+            if assigned.contains(&memories[j].id) || !eligible_for_consolidation(&memories[j]) {
+                continue;
+            }
+            let sim = match (&memories[i].embedding, &memories[j].embedding) {
+                (Some(a), Some(b)) => Some(cosine_similarity(a, b)),
+                _ => None,
+            };
+            if should_cluster_memories(&memories[i], &memories[j], sim, threshold) {
+                cluster.push(j);
+                sims.push(sim.unwrap_or(1.0));
+            }
+        }
+
+        if cluster.len() < 2 {
+            continue;
+        }
+
+        for &idx in &cluster {
+            assigned.insert(memories[idx].id);
+        }
+
+        let avg_similarity = if sims.is_empty() {
+            1.0
+        } else {
+            sims.iter().sum::<f64>() / sims.len() as f64
+        };
+        clusters.push(ConsolidationCluster {
+            members: cluster,
+            avg_similarity,
+        });
+    }
+
+    clusters
+}
+
+pub fn duplicate_rate_for_active_memories(memories: &[Memory], threshold: f64) -> f64 {
+    let active_count = count_active_memories(memories);
+    if active_count == 0 {
+        return 0.0;
+    }
+
+    let merged = build_consolidation_clusters(memories, threshold, usize::MAX)
+        .into_iter()
+        .map(|cluster| cluster.members.len().saturating_sub(1))
+        .sum::<usize>();
+
+    merged as f64 / active_count as f64
 }
 
 #[cfg(test)]

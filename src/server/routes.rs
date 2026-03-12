@@ -207,6 +207,247 @@ fn apply_loaded_contradiction_detection(
     changed_ids
 }
 
+fn leaf_source_ids(memory: &Memory) -> Vec<uuid::Uuid> {
+    if memory.derived_from.is_empty() {
+        vec![memory.id]
+    } else {
+        memory.derived_from.clone()
+    }
+}
+
+fn aggregate_confidence(memories: &[&Memory]) -> Option<f64> {
+    if memories.iter().any(|memory| memory.confidence.is_none()) {
+        return None;
+    }
+    memories
+        .iter()
+        .filter_map(|memory| memory.confidence)
+        .max_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal))
+}
+
+fn latest_timestamp(
+    memories: &[&Memory],
+    selector: fn(&Memory) -> Option<chrono::DateTime<chrono::Utc>>,
+) -> Option<chrono::DateTime<chrono::Utc>> {
+    memories.iter().filter_map(|memory| selector(memory)).max()
+}
+
+fn build_derived_memory(
+    namespace: &str,
+    kept: &Memory,
+    members: &[&Memory],
+    fused_content: String,
+    fused_embedding: Vec<f32>,
+    source_ids: Vec<uuid::Uuid>,
+) -> Memory {
+    let mut derived = Memory::new(fused_content.clone());
+    let mut all_tags = std::collections::BTreeSet::new();
+    for memory in members {
+        for tag in &memory.tags {
+            all_tags.insert(tag.clone());
+        }
+    }
+
+    derived.namespace = Some(namespace.to_string());
+    derived.memory_type = kept.memory_type;
+    derived.status = kept.status;
+    derived.tags = all_tags.into_iter().collect();
+    derived.agent = kept.agent.clone();
+    derived.session = None;
+    derived.embedding = Some(fused_embedding);
+    derived.content_hash = Some(crate::memory::Memory::compute_hash(&fused_content));
+    derived.source_key = None;
+    derived.confidence = aggregate_confidence(members);
+    derived.evidence_count = members.iter().map(|memory| memory.evidence_count).sum();
+    derived.last_verified_at = latest_timestamp(members, |memory| memory.last_verified_at);
+    derived.derived_from = source_ids;
+    derived.injection_count = members.iter().map(|memory| memory.injection_count).sum();
+    derived.reuse_count = members.iter().map(|memory| memory.reuse_count).sum();
+    derived.confirm_count = members.iter().map(|memory| memory.confirm_count).sum();
+    derived.reject_count = members.iter().map(|memory| memory.reject_count).sum();
+    derived.supersede_count = members.iter().map(|memory| memory.supersede_count).sum();
+    derived.last_injected_at = latest_timestamp(members, |memory| memory.last_injected_at);
+    derived.last_reused_at = latest_timestamp(members, |memory| memory.last_reused_at);
+    derived.last_outcome_at = latest_timestamp(members, |memory| memory.last_outcome_at);
+    derived
+}
+
+pub(crate) async fn run_namespace_consolidation(
+    state: &AppState,
+    namespace: &str,
+    threshold: f64,
+    max_clusters: usize,
+    dry_run: bool,
+    subject: &str,
+) -> anyhow::Result<ConsolidateResponse> {
+    let all_memories = state.doc_engine.search(namespace, None, None, None, &[])?;
+    let active_before = crate::fusion::count_active_memories(&all_memories);
+    let duplicate_rate_before =
+        crate::fusion::duplicate_rate_for_active_memories(&all_memories, threshold);
+
+    if all_memories.len() < 2 {
+        return Ok(ConsolidateResponse {
+            groups: vec![],
+            total_merged: 0,
+            derived_created: 0,
+            active_before,
+            active_after: active_before,
+            active_reduction: 0,
+            duplicate_rate_before,
+            duplicate_rate_after: duplicate_rate_before,
+            dry_run,
+        });
+    }
+
+    let clusters =
+        crate::fusion::build_consolidation_clusters(&all_memories, threshold, max_clusters);
+    if clusters.is_empty() {
+        return Ok(ConsolidateResponse {
+            groups: vec![],
+            total_merged: 0,
+            derived_created: 0,
+            active_before,
+            active_after: active_before,
+            active_reduction: 0,
+            duplicate_rate_before,
+            duplicate_rate_after: duplicate_rate_before,
+            dry_run,
+        });
+    }
+
+    let mut groups = Vec::with_capacity(clusters.len());
+    let mut derived_created = 0usize;
+    let mut outbox_events = 0u64;
+    let mut derived_ids = Vec::new();
+
+    for cluster in clusters {
+        let kept_idx = cluster
+            .members
+            .iter()
+            .copied()
+            .max_by(|&a, &b| {
+                use std::cmp::Ordering;
+                if crate::fusion::prefer_consolidation_candidate(&all_memories[a], &all_memories[b])
+                {
+                    Ordering::Greater
+                } else if crate::fusion::prefer_consolidation_candidate(
+                    &all_memories[b],
+                    &all_memories[a],
+                ) {
+                    Ordering::Less
+                } else {
+                    all_memories[a].id.cmp(&all_memories[b].id)
+                }
+            })
+            .unwrap();
+
+        let kept_id = all_memories[kept_idx].id;
+        let merged_ids: Vec<uuid::Uuid> = cluster
+            .members
+            .iter()
+            .filter(|&&idx| idx != kept_idx)
+            .map(|&idx| all_memories[idx].id)
+            .collect();
+
+        let source_memories: Vec<&Memory> = cluster
+            .members
+            .iter()
+            .map(|&idx| &all_memories[idx])
+            .collect();
+        let mut source_ids = source_memories
+            .iter()
+            .flat_map(|memory| leaf_source_ids(memory))
+            .collect::<Vec<_>>();
+        source_ids.sort_unstable();
+        source_ids.dedup();
+
+        let mut derived_id = None;
+        if !dry_run {
+            let kept_memory = &all_memories[kept_idx];
+            let mut fused_content = kept_memory.content.clone();
+            for memory in &source_memories {
+                if memory.id == kept_memory.id {
+                    continue;
+                }
+                fused_content = crate::fusion::fuse_contents(&fused_content, &memory.content);
+            }
+            let fused_embedding = state.embedding.embed_one(&fused_content).await?;
+            let derived = build_derived_memory(
+                namespace,
+                kept_memory,
+                &source_memories,
+                fused_content,
+                fused_embedding,
+                source_ids.clone(),
+            );
+            derived_id = Some(derived.id);
+            derived_created += 1;
+            derived_ids.push(derived.id);
+            state
+                .doc_engine
+                .store_batch_tx(&[(derived.clone(), subject.to_string())])?;
+            outbox_events += 1;
+
+            for source_id in cluster.members.iter().map(|&idx| all_memories[idx].id) {
+                if let Some(mut source) = state.doc_engine.get(source_id, namespace)? {
+                    source.mark_consolidated_into(derived.id);
+                    state.doc_engine.replace(&source, subject)?;
+                    outbox_events += 1;
+                    if state.doc_engine.archive(source_id, namespace, subject)? {
+                        outbox_events += 1;
+                    }
+                }
+            }
+        }
+
+        groups.push(ConsolidationGroup {
+            kept: kept_id,
+            merged: merged_ids,
+            avg_similarity: cluster.avg_similarity,
+            derived_id,
+            source_ids,
+        });
+    }
+
+    if !dry_run && outbox_events > 0 {
+        state
+            .indexer_state
+            .write_seq
+            .fetch_add(outbox_events, std::sync::atomic::Ordering::Relaxed);
+        state.indexer_state.wake();
+        state.intent_cache.invalidate_namespace(namespace).await;
+        if let Ok(shared_nss) = state.sharing_store.accessible_namespaces(namespace) {
+            for sns in &shared_nss {
+                for derived_id in &derived_ids {
+                    state.sharing_store.fire_webhook(sns, *derived_id);
+                }
+            }
+        }
+    }
+
+    let current_memories = if dry_run {
+        all_memories.clone()
+    } else {
+        state.doc_engine.search(namespace, None, None, None, &[])?
+    };
+    let active_after = crate::fusion::count_active_memories(&current_memories);
+    let duplicate_rate_after =
+        crate::fusion::duplicate_rate_for_active_memories(&current_memories, threshold);
+    let total_merged = groups.iter().map(|group| group.merged.len()).sum();
+
+    Ok(ConsolidateResponse {
+        groups,
+        total_merged,
+        derived_created,
+        active_before,
+        active_after,
+        active_reduction: active_before.saturating_sub(active_after),
+        duplicate_rate_before,
+        duplicate_rate_after,
+        dry_run,
+    })
+}
+
 pub(crate) fn apply_memory_lifecycle(
     state: &AppState,
     namespace: &str,
@@ -1400,160 +1641,16 @@ async fn consolidate(
             "threshold must be between 0.0 and 1.0".into(),
         ));
     }
-
-    // Fetch all memories in namespace
-    let all_memories = state.doc_engine.search(namespace, None, None, None, &[])?;
-
-    if all_memories.len() < 2 {
-        return Ok(Json(ConsolidateResponse {
-            groups: vec![],
-            total_merged: 0,
-            dry_run: req.dry_run,
-        })
-        .into_response());
-    }
-
-    // Greedy clustering: for each memory, find all similar unassigned memories
-    let mut assigned = std::collections::HashSet::new();
-    let mut groups: Vec<ConsolidationGroup> = Vec::new();
-
-    for i in 0..all_memories.len() {
-        if assigned.contains(&all_memories[i].id) {
-            continue;
-        }
-        if groups.len() >= req.max_clusters {
-            break;
-        }
-
-        let mut cluster = vec![i];
-        let mut sims = Vec::new();
-
-        for j in (i + 1)..all_memories.len() {
-            if assigned.contains(&all_memories[j].id) {
-                continue;
-            }
-            let sim = match (&all_memories[i].embedding, &all_memories[j].embedding) {
-                (Some(a), Some(b)) => Some(cosine_similarity(a, b)),
-                _ => None,
-            };
-            if crate::fusion::should_cluster_memories(
-                &all_memories[i],
-                &all_memories[j],
-                sim,
-                req.threshold as f64,
-            ) {
-                cluster.push(j);
-                sims.push(sim.unwrap_or(1.0));
-            }
-        }
-
-        if cluster.len() < 2 {
-            continue; // No duplicates found for this memory
-        }
-
-        // Mark all as assigned
-        for &idx in &cluster {
-            assigned.insert(all_memories[idx].id);
-        }
-
-        // Pick the best memory to keep using confidence, recency, and richness.
-        let kept_idx = cluster
-            .iter()
-            .copied()
-            .max_by(|&a, &b| {
-                use std::cmp::Ordering;
-                if crate::fusion::prefer_consolidation_candidate(&all_memories[a], &all_memories[b])
-                {
-                    Ordering::Greater
-                } else if crate::fusion::prefer_consolidation_candidate(
-                    &all_memories[b],
-                    &all_memories[a],
-                ) {
-                    Ordering::Less
-                } else {
-                    all_memories[a].id.cmp(&all_memories[b].id)
-                }
-            })
-            .unwrap();
-
-        let kept_id = all_memories[kept_idx].id;
-        let merged_ids: Vec<uuid::Uuid> = cluster
-            .iter()
-            .filter(|&&idx| idx != kept_idx)
-            .map(|&idx| all_memories[idx].id)
-            .collect();
-
-        let avg_sim = if sims.is_empty() {
-            1.0
-        } else {
-            sims.iter().sum::<f64>() / sims.len() as f64
-        };
-
-        // If not dry_run, merge tags into kept memory and delete merged ones
-        if !req.dry_run {
-            // Collect tags from all merged memories
-            let mut all_tags = std::collections::HashSet::new();
-            let mut fused_content = all_memories[kept_idx].content.clone();
-            for t in &all_memories[kept_idx].tags {
-                all_tags.insert(t.clone());
-            }
-            for &idx in &cluster {
-                if idx == kept_idx {
-                    continue;
-                }
-                fused_content =
-                    crate::fusion::fuse_contents(&fused_content, &all_memories[idx].content);
-                for t in &all_memories[idx].tags {
-                    all_tags.insert(t.clone());
-                }
-            }
-
-            if let Ok(Some(mut kept_mem)) = state.doc_engine.get(kept_id, namespace) {
-                let fused_embedding = state.embedding.embed_one(&fused_content).await?;
-                kept_mem.tags = all_tags.into_iter().collect();
-                kept_mem.content = fused_content.clone();
-                kept_mem.content_hash = Some(crate::memory::Memory::compute_hash(&fused_content));
-                kept_mem.embedding = Some(fused_embedding);
-                kept_mem.status = MemoryStatus::Active;
-                kept_mem.evidence_count = kept_mem
-                    .evidence_count
-                    .saturating_add(merged_ids.len() as u32);
-                kept_mem.last_verified_at = Some(chrono::Utc::now());
-                let _ = state.doc_engine.replace(&kept_mem, &claims.sub);
-            }
-
-            // Delete merged memories
-            for mid in &merged_ids {
-                if state
-                    .doc_engine
-                    .delete(*mid, namespace, &claims.sub)
-                    .unwrap_or(false)
-                {
-                    state
-                        .indexer_state
-                        .write_seq
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                }
-            }
-            state.indexer_state.wake();
-            state.intent_cache.invalidate_namespace(namespace).await;
-        }
-
-        groups.push(ConsolidationGroup {
-            kept: kept_id,
-            merged: merged_ids,
-            avg_similarity: avg_sim,
-        });
-    }
-
-    let total_merged: usize = groups.iter().map(|g| g.merged.len()).sum();
-
-    Ok(Json(ConsolidateResponse {
-        groups,
-        total_merged,
-        dry_run: req.dry_run,
-    })
-    .into_response())
+    let response = run_namespace_consolidation(
+        &state,
+        namespace,
+        req.threshold as f64,
+        req.max_clusters,
+        req.dry_run,
+        &claims.sub,
+    )
+    .await?;
+    Ok(Json(response).into_response())
 }
 
 fn apply_feedback_to_memory(
@@ -2159,6 +2256,7 @@ async fn inspect_memory(
                 "evidence_count": mem.evidence_count,
                 "last_verified_at": mem.last_verified_at,
                 "superseded_by": mem.superseded_by,
+                "derived_from": mem.derived_from,
                 "contradicts_with": mem.contradicts_with,
                 "contradiction_count": mem.contradicts_with.len(),
                 "conflicts": conflicts,
@@ -2268,6 +2366,7 @@ async fn gdpr_export(
                 "evidence_count": m.evidence_count,
                 "last_verified_at": m.last_verified_at,
                 "superseded_by": m.superseded_by,
+                "derived_from": m.derived_from,
             })
         })
         .collect();
@@ -2859,6 +2958,7 @@ async fn lifecycle_view(
                 "evidence_count": memory.evidence_count,
                 "last_verified_at": memory.last_verified_at,
                 "superseded_by": memory.superseded_by,
+                "derived_from": memory.derived_from,
                 "contradicts_with": memory.contradicts_with,
                 "injection_count": memory.injection_count,
                 "reuse_count": memory.reuse_count,

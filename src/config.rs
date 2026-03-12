@@ -27,6 +27,8 @@ pub struct Config {
     #[serde(default)]
     pub decay: DecayConfig,
     #[serde(default)]
+    pub consolidation: ConsolidationConfig,
+    #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
     pub sharing: crate::sharing::SharingConfig,
@@ -48,6 +50,7 @@ impl Default for Config {
             encryption: EncryptionConfig::default(),
             trust: crate::security::trust::TrustConfig::default(),
             decay: DecayConfig::default(),
+            consolidation: ConsolidationConfig::default(),
             proxy: ProxyConfig::default(),
             sharing: crate::sharing::SharingConfig::default(),
             dev_mode: false,
@@ -83,6 +86,45 @@ fn default_decay_strategy() -> String {
 }
 fn default_decay_after_days() -> u64 {
     90
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConsolidationConfig {
+    /// Whether automatic consolidation is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+    /// Worker interval in minutes. A value of 0 is treated as a 1s test interval.
+    #[serde(default = "default_consolidation_interval_minutes")]
+    pub interval_minutes: u64,
+    /// Similarity threshold for clustering duplicate memories.
+    #[serde(default = "default_consolidation_threshold")]
+    pub threshold: f32,
+    /// Maximum number of clusters to process per sweep.
+    #[serde(default = "default_consolidation_max_clusters")]
+    pub max_clusters: usize,
+}
+
+impl Default for ConsolidationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_minutes: default_consolidation_interval_minutes(),
+            threshold: default_consolidation_threshold(),
+            max_clusters: default_consolidation_max_clusters(),
+        }
+    }
+}
+
+fn default_consolidation_interval_minutes() -> u64 {
+    60
+}
+
+fn default_consolidation_threshold() -> f32 {
+    0.9
+}
+
+fn default_consolidation_max_clusters() -> usize {
+    25
 }
 
 fn default_server() -> ServerConfig {
@@ -650,6 +692,12 @@ impl Config {
         }
         if self.limits.group_commit_batch_size == 0 {
             anyhow::bail!("limits.group_commit_batch_size must be > 0");
+        }
+        if !(0.0..=1.0).contains(&self.consolidation.threshold) {
+            anyhow::bail!("consolidation.threshold must be in [0.0, 1.0]");
+        }
+        if self.consolidation.max_clusters == 0 {
+            anyhow::bail!("consolidation.max_clusters must be > 0");
         }
         if self.proxy.max_memory_pct < 0.0 || self.proxy.max_memory_pct > 1.0 {
             anyhow::bail!("proxy.max_memory_pct must be in [0.0, 1.0]");

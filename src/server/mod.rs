@@ -269,6 +269,60 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         });
     }
 
+    if config.consolidation.enabled {
+        let consolidation_state = state.clone();
+        let interval = if config.consolidation.interval_minutes == 0 {
+            Duration::from_secs(1)
+        } else {
+            Duration::from_secs(config.consolidation.interval_minutes.saturating_mul(60))
+        };
+        let threshold = config.consolidation.threshold as f64;
+        let max_clusters = config.consolidation.max_clusters;
+        tokio::spawn(async move {
+            let mut ticker = time::interval(interval);
+            ticker.set_missed_tick_behavior(time::MissedTickBehavior::Skip);
+            loop {
+                ticker.tick().await;
+                let namespaces = match consolidation_state.doc_engine.list_namespaces() {
+                    Ok(namespaces) => namespaces,
+                    Err(e) => {
+                        tracing::warn!(error = %e, "automatic consolidation failed to list namespaces");
+                        continue;
+                    }
+                };
+                for namespace in namespaces {
+                    match routes::run_namespace_consolidation(
+                        &consolidation_state,
+                        &namespace,
+                        threshold,
+                        max_clusters,
+                        false,
+                        "auto-consolidation",
+                    )
+                    .await
+                    {
+                        Ok(result) if result.total_merged > 0 => {
+                            tracing::info!(
+                                namespace,
+                                total_merged = result.total_merged,
+                                derived_created = result.derived_created,
+                                active_before = result.active_before,
+                                active_after = result.active_after,
+                                duplicate_rate_before = result.duplicate_rate_before,
+                                duplicate_rate_after = result.duplicate_rate_after,
+                                "automatic consolidation sweep merged memories"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            tracing::warn!(namespace, error = %e, "automatic consolidation sweep failed");
+                        }
+                    }
+                }
+            }
+        });
+    }
+
     let bind_addr = config.bind_addr();
     let app = routes::router(state.clone());
     let listener = TcpListener::bind(&bind_addr).await?;
