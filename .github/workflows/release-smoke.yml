@@ -3,6 +3,9 @@
 name: Release Smoke
 
 on:
+  push:
+    branches:
+      - "smoke/**"
   workflow_dispatch:
     inputs:
       push_container:
