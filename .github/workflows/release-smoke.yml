@@ -1,11 +1,25 @@
-name: Release
+# SPDX-License-Identifier: AGPL-3.0-only
+# Copyright (C) 2026 memoryOSS Contributors
+name: Release Smoke
 
 on:
-  push:
-    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      push_container:
+        description: "Push a smoke container image to GHCR"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
-  GHCR_IMAGE: ghcr.io/memoryosscom/memoryoss
+  GHCR_IMAGE_SMOKE: ghcr.io/memoryosscom/memoryoss-smoke
 
 jobs:
   build:
@@ -103,39 +117,11 @@ jobs:
           path: |
             ${{ matrix.archive_name }}
             ${{ matrix.sha_name }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          merge-multiple: true
-
-      - name: Create Release
-        uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
-        with:
-          generate_release_notes: true
-          files: |
-            *.tar.gz
-            *.zip
-            *.sha256
-
-  publish-crate:
-    needs: release
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
-      - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
-        with:
-          toolchain: stable
-      - name: Publish to crates.io
-        run: cargo publish --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          retention-days: 14
 
   publish-container:
     needs: build
+    if: ${{ inputs.push_container }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -146,30 +132,19 @@ jobs:
       - name: Log in to GHCR
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: Build and push container image
+      - name: Build and push smoke container image
         env:
-          VERSION: ${{ github.ref_name }}
-          BUILD_DATE: ${{ github.event.head_commit.timestamp }}
+          VERSION: smoke-${{ github.sha }}
         run: |
-          VERSION="${VERSION#v}"
-          if [ -z "$BUILD_DATE" ]; then
-            BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          fi
-
-          IMAGE="${GHCR_IMAGE}"
-          TAG_ONE="${IMAGE}:${VERSION}"
-          TAG_TWO="${IMAGE}:latest"
+          BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          IMAGE="${GHCR_IMAGE_SMOKE}"
+          TAG="${IMAGE}:${VERSION}"
 
           docker build \
-            --build-arg VERSION="$VERSION" \
+            --build-arg VERSION="${VERSION}" \
             --build-arg VCS_REF="${GITHUB_SHA}" \
-            --build-arg BUILD_DATE="$BUILD_DATE" \
-            -t "${TAG_ONE}" \
+            --build-arg BUILD_DATE="${BUILD_DATE}" \
+            -t "${TAG}" \
             .
 
-          if [ -n "${TAG_TWO}" ]; then
-            docker tag "${TAG_ONE}" "${TAG_TWO}"
-          fi
-
-          docker push "${TAG_ONE}"
-          docker push "${TAG_TWO}"
+          docker push "${TAG}"
