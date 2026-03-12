@@ -23,9 +23,6 @@ include = [
 # Storage (Source of Truth)
 redb = "2"
 
-# Vector Index (async derived)
-usearch = "2"
-
 # Full-Text Search + BM25 (async derived)
 tantivy = "0.25"
 
@@ -106,6 +103,14 @@ zstd = "0.13.3"
 
 [dev-dependencies]
 tempfile = "3"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+# Keep the faster SIMD-enabled defaults on platforms where they already build cleanly.
+usearch = "2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+# Windows release builds currently need the portable core without simsimd/fp16lib.
+usearch = { version = "2", default-features = false }
 
 [profile.release]
 lto = true
