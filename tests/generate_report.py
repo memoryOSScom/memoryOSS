@@ -168,6 +168,158 @@ def item(name: str, status: str = "pass", note: str | None = None):
     return result
 
 
+def format_rate(value: float | None) -> str:
+    if value is None:
+        return "n/a"
+    return f"{value * 100:.1f}%"
+
+
+def format_shadow_delta(metric: str, delta: float) -> str:
+    if metric.startswith("latency_ms"):
+        return f"{delta:+.0f} ms"
+    return f"{delta * 100:+.1f} pp"
+
+
+def extraction_lane_items(label: str, summary: dict) -> list[dict]:
+    prefix = f"{label} " if label else ""
+    items = []
+    if summary.get("project_specific_fact_rate") is not None:
+        items.append(
+            item(
+                f"{prefix}project-specific fact rate",
+                "pass",
+                format_rate(summary["project_specific_fact_rate"]),
+            )
+        )
+    if summary.get("duplicate_fact_rate") is not None:
+        duplicate_note = format_rate(summary["duplicate_fact_rate"])
+        kept_duplicate_rate = summary.get("kept_duplicate_fact_rate")
+        if kept_duplicate_rate is not None:
+            duplicate_note += f" raw, {format_rate(kept_duplicate_rate)} kept"
+        items.append(item(f"{prefix}duplicate fact rate", "pass", duplicate_note))
+    if summary.get("extraction_yield") is not None:
+        items.append(
+            item(
+                f"{prefix}extraction yield",
+                "pass",
+                f"{summary['extraction_yield']:.2f} kept facts per positive case",
+            )
+        )
+    if summary.get("false_positive_case_rate") is not None:
+        items.append(
+            item(
+                f"{prefix}false-positive case rate",
+                "pass",
+                format_rate(summary["false_positive_case_rate"]),
+            )
+        )
+    if summary.get("false_positive_fact_rate") is not None:
+        items.append(
+            item(
+                f"{prefix}false-positive fact rate",
+                "pass",
+                format_rate(summary["false_positive_fact_rate"]),
+            )
+        )
+    recall_key = (
+        "case_recall_after_filter"
+        if summary.get("case_recall_after_filter") is not None
+        else "case_recall"
+    )
+    specificity_key = (
+        "case_specificity_after_filter"
+        if summary.get("case_specificity_after_filter") is not None
+        else "case_specificity"
+    )
+    if summary.get(recall_key) is not None:
+        items.append(
+            item(
+                f"{prefix}positive-case recall",
+                "pass",
+                format_rate(summary[recall_key]),
+            )
+        )
+    if summary.get(specificity_key) is not None:
+        items.append(
+            item(
+                f"{prefix}negative-case specificity",
+                "pass",
+                format_rate(summary[specificity_key]),
+            )
+        )
+    if summary.get("generic_fact_rate") is not None:
+        items.append(
+            item(
+                f"{prefix}generic fact rate",
+                "pass",
+                format_rate(summary["generic_fact_rate"]),
+            )
+        )
+    if summary.get("avg_facts_per_case") is not None:
+        items.append(
+            item(
+                f"{prefix}average facts per case",
+                "pass",
+                f"{summary['avg_facts_per_case']:.2f}",
+            )
+        )
+    items.append(
+        item(
+            f"{prefix}{summary['provider']} / {summary['model']}",
+            "pass",
+            (
+                f"mean {summary['latency_ms_mean']:.0f} ms, "
+                f"p95 {summary['latency_ms_p95']:.0f} ms"
+            ),
+        )
+    )
+    return items
+
+
+def retrieval_injection_lane_items(label: str, summary: dict) -> list[dict]:
+    prefix = f"{label} " if label else ""
+    return [
+        item(
+            f"{prefix}positive injection hit rate",
+            "pass",
+            format_rate(summary.get("positive_injection_hit_rate")),
+        ),
+        item(
+            f"{prefix}wrong injection rate",
+            "pass",
+            format_rate(summary.get("wrong_injection_rate")),
+        ),
+        item(
+            f"{prefix}abstain precision",
+            "pass",
+            format_rate(summary.get("abstain_precision")),
+        ),
+        item(
+            f"{prefix}abstain recall",
+            "pass",
+            format_rate(summary.get("abstain_recall")),
+        ),
+        item(
+            f"{prefix}missed evidence rate",
+            "pass",
+            format_rate(summary.get("missed_evidence_rate")),
+        ),
+    ]
+
+
+def format_shadow_metric_note(metric: dict) -> str:
+    if metric["metric"].startswith("latency_ms"):
+        stable = f"{metric['stable']:.0f} ms"
+        experimental = f"{metric['experimental']:.0f} ms"
+    else:
+        stable = format_rate(metric["stable"])
+        experimental = format_rate(metric["experimental"])
+    return (
+        f"stable {stable}, experimental {experimental}, "
+        f"delta {format_shadow_delta(metric['metric'], metric['delta'])}"
+    )
+
+
 def build_sections(
     steps,
     unit_tests,
@@ -313,6 +465,57 @@ def build_sections(
                 "items": benchmark_report["items"],
             }
         )
+        retrieval_eval = benchmark_report.get("retrieval_injection_eval")
+        if retrieval_eval:
+            stable_lane = retrieval_eval.get("lanes", {}).get("stable")
+            experimental_lane = retrieval_eval.get("lanes", {}).get("experimental")
+            comparison = retrieval_eval.get("comparison")
+            dataset_size = (
+                stable_lane.get("summary", {}).get("dataset_size", 0) if stable_lane else 0
+            )
+            expected_inject = (
+                stable_lane.get("summary", {}).get("expected_inject_cases", 0)
+                if stable_lane
+                else 0
+            )
+            expected_abstain = (
+                stable_lane.get("summary", {}).get("expected_abstain_cases", 0)
+                if stable_lane
+                else 0
+            )
+            items = [
+                item(
+                    "Probe dataset coverage",
+                    "pass",
+                    (
+                        f"{dataset_size} cases "
+                        f"({expected_inject} inject, {expected_abstain} abstain)"
+                        f"{artifact_suffix(benchmark_report, benchmark_step)}"
+                    ),
+                )
+            ]
+            if stable_lane:
+                items.extend(retrieval_injection_lane_items("Stable", stable_lane["summary"]))
+            if experimental_lane:
+                items.extend(
+                    retrieval_injection_lane_items("Experimental", experimental_lane["summary"])
+                )
+            if comparison:
+                for metric in comparison.get("metrics", []):
+                    items.append(
+                        item(
+                            f"Shadow delta: {metric['metric']}",
+                            "warn" if metric.get("regression") else "pass",
+                            format_shadow_metric_note(metric),
+                        )
+                    )
+            sections.append(
+                {
+                    "title": "Retrieval & Injection Evaluation",
+                    "count": len(items),
+                    "items": items,
+                }
+            )
     elif benchmark_step:
         sections.append(
             {
@@ -447,7 +650,11 @@ def build_sections(
 
     extraction_eval_step = step_by_slug.get("extraction_eval")
     if extraction_eval_report:
-        summary = extraction_eval_report["summary"]
+        stable_lane = extraction_eval_report.get("lanes", {}).get("stable")
+        experimental_lane = extraction_eval_report.get("lanes", {}).get("experimental")
+        comparison = extraction_eval_report.get("comparison")
+        summary = stable_lane["summary"] if stable_lane else extraction_eval_report["summary"]
+        dataset_meta = extraction_eval_report.get("dataset_meta", {})
         items = [
             item(
                 "Dataset coverage",
@@ -455,101 +662,27 @@ def build_sections(
                 (
                     f"{summary['dataset_size']} cases "
                     f"({summary['positive_cases']} positive, "
-                    f"{summary['negative_cases']} negative)"
+                    f"{summary['negative_cases']} negative; "
+                    f"{dataset_meta.get('base_cases', 0)} base + {dataset_meta.get('template_cases', 0)} template)"
                     f"{artifact_suffix(extraction_eval_report, extraction_eval_step)}"
                 ),
             )
         ]
-        if summary.get("project_specific_fact_rate") is not None:
-            items.append(
-                item(
-                    "Project-specific fact rate",
-                    "pass",
-                    f"{summary['project_specific_fact_rate'] * 100:.1f}%",
+        if stable_lane:
+            items.extend(extraction_lane_items("Stable", stable_lane["summary"]))
+        else:
+            items.extend(extraction_lane_items("", summary))
+        if experimental_lane:
+            items.extend(extraction_lane_items("Experimental", experimental_lane["summary"]))
+        if comparison:
+            for metric in comparison.get("metrics", []):
+                items.append(
+                    item(
+                        f"Shadow delta: {metric['metric']}",
+                        "warn" if metric.get("regression") else "pass",
+                        format_shadow_metric_note(metric),
+                    )
                 )
-            )
-        if summary.get("duplicate_fact_rate") is not None:
-            duplicate_note = f"{summary['duplicate_fact_rate'] * 100:.1f}%"
-            kept_duplicate_rate = summary.get("kept_duplicate_fact_rate")
-            if kept_duplicate_rate is not None:
-                duplicate_note += f" raw, {kept_duplicate_rate * 100:.1f}% kept"
-            items.append(item("Duplicate fact rate", "pass", duplicate_note))
-        if summary.get("extraction_yield") is not None:
-            items.append(
-                item(
-                    "Extraction yield",
-                    "pass",
-                    f"{summary['extraction_yield']:.2f} kept facts per positive case",
-                )
-            )
-        if summary.get("false_positive_case_rate") is not None:
-            items.append(
-                item(
-                    "False-positive case rate",
-                    "pass",
-                    f"{summary['false_positive_case_rate'] * 100:.1f}%",
-                )
-            )
-        if summary.get("false_positive_fact_rate") is not None:
-            items.append(
-                item(
-                    "False-positive fact rate",
-                    "pass",
-                    f"{summary['false_positive_fact_rate'] * 100:.1f}%",
-                )
-            )
-        recall_key = (
-            "case_recall_after_filter"
-            if summary.get("case_recall_after_filter") is not None
-            else "case_recall"
-        )
-        specificity_key = (
-            "case_specificity_after_filter"
-            if summary.get("case_specificity_after_filter") is not None
-            else "case_specificity"
-        )
-        if summary.get(recall_key) is not None:
-            items.append(
-                item(
-                    "Positive-case recall",
-                    "pass",
-                    f"{summary[recall_key] * 100:.1f}%",
-                )
-            )
-        if summary.get(specificity_key) is not None:
-            items.append(
-                item(
-                    "Negative-case specificity",
-                    "pass",
-                    f"{summary[specificity_key] * 100:.1f}%",
-                )
-            )
-        if summary.get("generic_fact_rate") is not None:
-            items.append(
-                item(
-                    "Generic fact rate",
-                    "pass",
-                    f"{summary['generic_fact_rate'] * 100:.1f}%",
-                )
-            )
-        if summary.get("avg_facts_per_case") is not None:
-            items.append(
-                item(
-                    "Average facts per case",
-                    "pass",
-                    f"{summary['avg_facts_per_case']:.2f}",
-                )
-            )
-        items.append(
-            item(
-                f"{summary['provider']} / {summary['model']}",
-                "pass",
-                (
-                    f"mean {summary['latency_ms_mean']:.0f} ms, "
-                    f"p95 {summary['latency_ms_p95']:.0f} ms"
-                ),
-            )
-        )
         sections.append(
             {
                 "title": "Extraction Quality Evaluation",

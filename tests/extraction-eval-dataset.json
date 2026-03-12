@@ -1,139 +1,362 @@
-[
-  {
-    "id": "E01",
-    "category": "decision",
-    "expect_extract": true,
-    "transcript": "User: For memoryOSS, keep redb as the source of truth and use tantivy only for BM25 and full-text search. We do not want tantivy to become the canonical store.\nAssistant: Understood. redb remains canonical storage, tantivy stays a derived index for search only.",
-    "expected_facts": [
-      ["redb", "source of truth"],
-      ["tantivy", "bm25"]
-    ]
-  },
-  {
-    "id": "E02",
-    "category": "preference",
-    "expect_extract": true,
-    "transcript": "User: Please keep my answers concise. No bullets unless I ask for them.\nAssistant: Got it. I will keep replies concise and avoid bullets unless requested.",
-    "expected_facts": [
-      ["concise"],
-      ["no bullets"]
-    ]
-  },
-  {
-    "id": "E03",
-    "category": "incident",
-    "expect_extract": true,
-    "transcript": "User: We found the release blocker. Migration 006 used the wrong down_revision and pointed to 005_add_self_assessments instead of 005_self_assessments.\nAssistant: I fixed migration 006 so it points to 005_self_assessments.",
-    "expected_facts": [
-      ["migration 006", "down_revision"],
-      ["005_self_assessments"]
-    ]
-  },
-  {
-    "id": "E04",
-    "category": "rule",
-    "expect_extract": true,
-    "transcript": "User: If production deploy metrics regress, roll back within 15 minutes and notify ops-red immediately.\nAssistant: Understood. Regression after deploy means rollback within 15 minutes and notify ops-red.",
-    "expected_facts": [
-      ["rollback", "15", "ops-red"]
-    ]
-  },
-  {
-    "id": "E05",
-    "category": "architecture",
-    "expect_extract": true,
-    "transcript": "User: Codex OAuth should stay MCP-first. We should not present proxy mode as the default for Codex OAuth.\nAssistant: Agreed. Codex OAuth remains MCP-first and proxy mode is not the default.",
-    "expected_facts": [
-      ["codex", "oauth", "mcp-first"]
-    ]
-  },
-  {
-    "id": "E06",
-    "category": "workflow",
-    "expect_extract": true,
-    "transcript": "User: If the auth setup changes later from OAuth to API key or back, we should tell users to rerun memoryoss setup.\nAssistant: Yes. Rerun memoryoss setup after auth mode changes so the integration path updates safely.",
-    "expected_facts": [
-      ["rerun", "memoryoss setup"],
-      ["auth", "changes"]
-    ]
-  },
-  {
-    "id": "E07",
-    "category": "convention",
-    "expect_extract": true,
-    "transcript": "User: For this repo, name feature branches feat/<ticket>-<slug> and bugfix branches fix/<ticket>-<slug>.\nAssistant: Okay, feature branches use feat/<ticket>-<slug> and bugfix branches use fix/<ticket>-<slug>.",
-    "expected_facts": [
-      ["feat", "ticket"],
-      ["fix", "ticket"]
-    ]
-  },
-  {
-    "id": "E08",
-    "category": "deployment",
-    "expect_extract": true,
-    "transcript": "User: On this host the stable binary path is /usr/local/bin/memoryoss and systemd should point to /root/memoryoss.toml.\nAssistant: Confirmed. The stable binary is /usr/local/bin/memoryoss and the service should use /root/memoryoss.toml.",
-    "expected_facts": [
-      ["/usr/local/bin/memoryoss"],
-      ["/root/memoryoss.toml"]
-    ]
-  },
-  {
-    "id": "E09",
-    "category": "generic_knowledge",
-    "expect_extract": false,
-    "transcript": "User: Rust ownership helps prevent data races and memory bugs.\nAssistant: Yes, Rust's ownership model provides strong memory-safety guarantees.",
-    "expected_facts": []
-  },
-  {
-    "id": "E10",
-    "category": "greeting",
-    "expect_extract": false,
-    "transcript": "User: Hey, how are you?\nAssistant: I'm doing well. How can I help today?",
-    "expected_facts": []
-  },
-  {
-    "id": "E11",
-    "category": "generic_advice",
-    "expect_extract": false,
-    "transcript": "User: What are some general ways to improve database performance?\nAssistant: Use indexes, reduce unnecessary queries, and profile slow statements.",
-    "expected_facts": []
-  },
-  {
-    "id": "E12",
-    "category": "ephemeral_meta",
-    "expect_extract": false,
-    "transcript": "User: I am going to grab coffee and will be back in ten minutes.\nAssistant: Sounds good, I'll be here when you return.",
-    "expected_facts": []
-  },
-  {
-    "id": "E13",
-    "category": "generic_product_description",
-    "expect_extract": false,
-    "transcript": "User: memoryOSS is a local memory layer for AI agents.\nAssistant: Correct, it helps preserve context across sessions.",
-    "expected_facts": []
-  },
-  {
-    "id": "E14",
-    "category": "one_off_status",
-    "expect_extract": false,
-    "transcript": "User: The current CI run is still in progress.\nAssistant: Understood. I'll wait for the run to finish.",
-    "expected_facts": []
-  },
-  {
-    "id": "E15",
-    "category": "support_meta",
-    "expect_extract": false,
-    "transcript": "User: Thanks, that solved it.\nAssistant: Glad that helped.",
-    "expected_facts": []
-  },
-  {
-    "id": "E16",
-    "category": "mixed_preference",
-    "expect_extract": true,
-    "transcript": "User: Please never show raw MemoryOSS entries to me unless I explicitly ask. Short summaries or counts are enough.\nAssistant: Understood. I will avoid raw MemoryOSS entries unless you explicitly ask for full details.",
-    "expected_facts": [
-      ["do not display", "raw memoryoss"],
-      ["short summaries"]
-    ]
-  }
-]
+{
+  "version": 2,
+  "cases": [
+    {
+      "id": "E01",
+      "category": "decision",
+      "expect_extract": true,
+      "transcript": "User: For memoryOSS, keep redb as the source of truth and use tantivy only for BM25 and full-text search. We do not want tantivy to become the canonical store.\nAssistant: Understood. redb remains canonical storage, tantivy stays a derived index for search only.",
+      "expected_facts": [
+        ["redb", "source of truth"],
+        ["tantivy", "bm25"]
+      ]
+    },
+    {
+      "id": "E02",
+      "category": "preference",
+      "expect_extract": true,
+      "transcript": "User: Please keep my answers concise. No bullets unless I ask for them.\nAssistant: Got it. I will keep replies concise and avoid bullets unless requested.",
+      "expected_facts": [
+        ["concise"],
+        ["no bullets"]
+      ]
+    },
+    {
+      "id": "E03",
+      "category": "incident",
+      "expect_extract": true,
+      "transcript": "User: We found the release blocker. Migration 006 used the wrong down_revision and pointed to 005_add_self_assessments instead of 005_self_assessments.\nAssistant: I fixed migration 006 so it points to 005_self_assessments.",
+      "expected_facts": [
+        ["migration 006", "down_revision"],
+        ["005_self_assessments"]
+      ]
+    },
+    {
+      "id": "E04",
+      "category": "rule",
+      "expect_extract": true,
+      "transcript": "User: If production deploy metrics regress, roll back within 15 minutes and notify ops-red immediately.\nAssistant: Understood. Regression after deploy means rollback within 15 minutes and notify ops-red.",
+      "expected_facts": [
+        ["rollback", "15", "ops-red"]
+      ]
+    },
+    {
+      "id": "E05",
+      "category": "architecture",
+      "expect_extract": true,
+      "transcript": "User: Codex OAuth should stay MCP-first. We should not present proxy mode as the default for Codex OAuth.\nAssistant: Agreed. Codex OAuth remains MCP-first and proxy mode is not the default.",
+      "expected_facts": [
+        ["codex", "oauth", "mcp-first"]
+      ]
+    },
+    {
+      "id": "E06",
+      "category": "workflow",
+      "expect_extract": true,
+      "transcript": "User: If the auth setup changes later from OAuth to API key or back, we should tell users to rerun memoryoss setup.\nAssistant: Yes. Rerun memoryoss setup after auth mode changes so the integration path updates safely.",
+      "expected_facts": [
+        ["rerun", "memoryoss setup"],
+        ["auth", "changes"]
+      ]
+    },
+    {
+      "id": "E07",
+      "category": "convention",
+      "expect_extract": true,
+      "transcript": "User: For this repo, name feature branches feat/<ticket>-<slug> and bugfix branches fix/<ticket>-<slug>.\nAssistant: Okay, feature branches use feat/<ticket>-<slug> and bugfix branches use fix/<ticket>-<slug>.",
+      "expected_facts": [
+        ["feat", "ticket"],
+        ["fix", "ticket"]
+      ]
+    },
+    {
+      "id": "E08",
+      "category": "deployment",
+      "expect_extract": true,
+      "transcript": "User: On this host the stable binary path is /usr/local/bin/memoryoss and systemd should point to /root/memoryoss.toml.\nAssistant: Confirmed. The stable binary is /usr/local/bin/memoryoss and the service should use /root/memoryoss.toml.",
+      "expected_facts": [
+        ["/usr/local/bin/memoryoss"],
+        ["/root/memoryoss.toml"]
+      ]
+    },
+    {
+      "id": "E09",
+      "category": "generic_knowledge",
+      "expect_extract": false,
+      "transcript": "User: Rust ownership helps prevent data races and memory bugs.\nAssistant: Yes, Rust's ownership model provides strong memory-safety guarantees.",
+      "expected_facts": []
+    },
+    {
+      "id": "E10",
+      "category": "greeting",
+      "expect_extract": false,
+      "transcript": "User: Hey, how are you?\nAssistant: I'm doing well. How can I help today?",
+      "expected_facts": []
+    },
+    {
+      "id": "E11",
+      "category": "generic_advice",
+      "expect_extract": false,
+      "transcript": "User: What are some general ways to improve database performance?\nAssistant: Use indexes, reduce unnecessary queries, and profile slow statements.",
+      "expected_facts": []
+    },
+    {
+      "id": "E12",
+      "category": "ephemeral_meta",
+      "expect_extract": false,
+      "transcript": "User: I am going to grab coffee and will be back in ten minutes.\nAssistant: Sounds good, I'll be here when you return.",
+      "expected_facts": []
+    },
+    {
+      "id": "E13",
+      "category": "generic_product_description",
+      "expect_extract": false,
+      "transcript": "User: memoryOSS is a local memory layer for AI agents.\nAssistant: Correct, it helps preserve context across sessions.",
+      "expected_facts": []
+    },
+    {
+      "id": "E14",
+      "category": "one_off_status",
+      "expect_extract": false,
+      "transcript": "User: The current CI run is still in progress.\nAssistant: Understood. I'll wait for the run to finish.",
+      "expected_facts": []
+    },
+    {
+      "id": "E15",
+      "category": "support_meta",
+      "expect_extract": false,
+      "transcript": "User: Thanks, that solved it.\nAssistant: Glad that helped.",
+      "expected_facts": []
+    },
+    {
+      "id": "E16",
+      "category": "mixed_preference",
+      "expect_extract": true,
+      "transcript": "User: Please never show raw MemoryOSS entries to me unless I explicitly ask. Short summaries or counts are enough.\nAssistant: Understood. I will avoid raw MemoryOSS entries unless you explicitly ask for full details.",
+      "expected_facts": [
+        ["do not display", "raw memoryoss"],
+        ["short summaries"]
+      ]
+    }
+  ],
+  "templates": [
+    {
+      "id_prefix": "PXA",
+      "category": "decision",
+      "expect_extract": true,
+      "vars": ["project", "canonical", "derived", "secondary", "secondary_keyword"],
+      "transcript_template": "User: For {project}, keep {canonical} as the source of truth and use {derived} only for {secondary}. Do not let {derived} become the canonical store.\nAssistant: Understood. {canonical} remains canonical and {derived} stays limited to {secondary}.",
+      "expected_facts_template": [
+        ["{canonical}", "source of truth"],
+        ["{derived}", "{secondary_keyword}"]
+      ],
+      "rows": [
+        ["memoryOSS", "redb", "tantivy", "BM25 and full-text search", "bm25"],
+        ["gateway", "postgres", "sqlite", "local cache lookups", "sqlite"],
+        ["search-service", "postgres", "elastic", "query acceleration", "elastic"],
+        ["control-plane", "redb", "tantivy", "BM25 ranking", "bm25"],
+        ["dashboard", "postgres", "duckdb", "analytics snapshots", "duckdb"],
+        ["billing-service", "mysql", "redis", "hot cache reads", "redis"],
+        ["ingest-worker", "s3", "parquet", "offline analytics", "parquet"],
+        ["agent-hub", "sqlite", "qdrant", "semantic retrieval", "qdrant"],
+        ["cli-state", "filesystem", "sqlite", "local lookup", "sqlite"],
+        ["audit-trail", "redb", "tantivy", "full-text lookup", "tantivy"]
+      ]
+    },
+    {
+      "id_prefix": "PXB",
+      "category": "rule",
+      "expect_extract": true,
+      "vars": ["environment", "minutes", "symptom", "channel"],
+      "transcript_template": "User: If {environment} deploy {symptom}, roll back within {minutes} minutes and notify {channel} immediately.\nAssistant: Understood. {environment} regressions mean rollback within {minutes} minutes and notify {channel}.",
+      "expected_facts_template": [
+        ["rollback", "{minutes}", "{channel}"]
+      ],
+      "rows": [
+        ["production", "15", "metrics regress", "ops-red"],
+        ["staging", "20", "latency spikes", "ops-stage"],
+        ["eu-west", "10", "error rates jump", "sre-eu"],
+        ["us-east", "12", "queue depth explodes", "sre-us"],
+        ["billing", "30", "checkout failures rise", "payments-ops"],
+        ["search", "18", "relevance drops hard", "search-ops"],
+        ["api", "8", "5xx rates climb", "api-ops"],
+        ["worker", "25", "job retries surge", "jobs-ops"],
+        ["admin", "14", "auth failures spike", "auth-ops"],
+        ["proxy", "16", "upstream timeouts climb", "proxy-ops"]
+      ]
+    },
+    {
+      "id_prefix": "PXC",
+      "category": "workflow",
+      "expect_extract": true,
+      "vars": ["from_mode", "to_mode", "surface"],
+      "transcript_template": "User: If the auth setup changes from {from_mode} to {to_mode} for {surface}, tell users to rerun memoryoss setup so the integration path updates safely.\nAssistant: Yes. After auth changes on {surface}, users should rerun memoryoss setup.",
+      "expected_facts_template": [
+        ["rerun", "memoryoss setup"],
+        ["auth", "changes"]
+      ],
+      "rows": [
+        ["OAuth", "API key", "Codex"],
+        ["API key", "OAuth", "Codex"],
+        ["OAuth", "API key", "Claude Desktop"],
+        ["API key", "OAuth", "Claude Desktop"],
+        ["OAuth", "API key", "the local proxy"],
+        ["API key", "OAuth", "the local proxy"],
+        ["OAuth", "API key", "the MCP sidecar"],
+        ["API key", "OAuth", "the MCP sidecar"],
+        ["OAuth", "API key", "the CLI wizard"],
+        ["API key", "OAuth", "the CLI wizard"]
+      ]
+    },
+    {
+      "id_prefix": "PXD",
+      "category": "convention",
+      "expect_extract": true,
+      "vars": ["repo"],
+      "transcript_template": "User: For the {repo} repo, name feature branches feat/<ticket>-<slug> and bugfix branches fix/<ticket>-<slug>.\nAssistant: Okay. {repo} uses feat/<ticket>-<slug> for features and fix/<ticket>-<slug> for bugfixes.",
+      "expected_facts_template": [
+        ["feat", "ticket"],
+        ["fix", "ticket"]
+      ],
+      "rows": [
+        ["memoryoss"],
+        ["memory-passport"],
+        ["bundle-reader"],
+        ["memory-hud"],
+        ["time-machine"],
+        ["policy-firewall"],
+        ["agent-gateway"],
+        ["desktop-connector"],
+        ["sync-fabric"],
+        ["task-compiler"]
+      ]
+    },
+    {
+      "id_prefix": "PXE",
+      "category": "mixed_preference",
+      "expect_extract": true,
+      "vars": ["ask_phrase", "summary_phrase"],
+      "transcript_template": "User: Please never show raw MemoryOSS entries to me unless {ask_phrase}. {summary_phrase} are enough.\nAssistant: Understood. I will avoid raw MemoryOSS entries unless you ask for full details.",
+      "expected_facts_template": [
+        ["do not display", "raw memoryoss"],
+        ["short summaries"]
+      ],
+      "rows": [
+        ["I explicitly ask", "Short summaries or counts"],
+        ["I ask directly", "Short summaries"],
+        ["I explicitly request them", "Short summaries or totals"],
+        ["I request raw details", "Short summaries"],
+        ["I ask for the full record", "Short summaries or counts"],
+        ["I ask for the raw entries", "Short summaries"],
+        ["I clearly request them", "Short summaries or counts"],
+        ["I request the complete dump", "Short summaries"],
+        ["I ask for verbatim entries", "Short summaries or counts"],
+        ["I explicitly ask for them", "Short summaries"]
+      ]
+    },
+    {
+      "id_prefix": "NXA",
+      "category": "generic_product_description",
+      "expect_extract": false,
+      "vars": ["descriptor", "benefit"],
+      "transcript_template": "User: memoryOSS is {descriptor}.\nAssistant: Right, it {benefit}.",
+      "expected_facts_template": [],
+      "rows": [
+        ["a local memory layer for AI agents", "helps preserve context across sessions"],
+        ["a local-first memory runtime for assistants", "maintains context across sessions"],
+        ["a shared memory service for coding agents", "keeps agent context available across sessions"],
+        ["a local memory system for AI tools", "preserves context over time"],
+        ["a portable memory layer for agent workflows", "helps maintain shared context"],
+        ["a context persistence layer for AI assistants", "keeps context available across sessions"],
+        ["a local runtime for agent memory", "preserves long-lived context"],
+        ["a memory layer for copilots", "maintains cross-session context"],
+        ["a context layer for agent apps", "helps preserve context between sessions"],
+        ["a memory utility for AI systems", "keeps context persistent"],
+        ["a local context runtime for agents", "preserves shared context across sessions"],
+        ["a shared memory layer for assistant tools", "helps maintain context across runs"]
+      ]
+    },
+    {
+      "id_prefix": "NXB",
+      "category": "generic_advice",
+      "expect_extract": false,
+      "vars": ["question", "advice"],
+      "transcript_template": "User: {question}\nAssistant: {advice}",
+      "expected_facts_template": [],
+      "rows": [
+        ["What are good general ways to improve database performance?", "Use indexes, profile slow queries, and reduce unnecessary joins."],
+        ["How do I debug a flaky test in general?", "Reproduce reliably, isolate the failing dependency, and add logging."],
+        ["What are common ways to reduce API latency?", "Cache hot paths, reduce round trips, and compress responses."],
+        ["How should I design a clean CLI?", "Keep commands orthogonal, document examples, and provide clear help text."],
+        ["What are general principles for good logging?", "Log structured data, include request ids, and avoid sensitive fields."],
+        ["How can I improve search relevance in general?", "Tune ranking features, inspect queries, and collect feedback."],
+        ["What are typical caching best practices?", "Set sensible TTLs, avoid cache stampedes, and measure hit rate."],
+        ["How do I improve onboarding docs generally?", "Start with quick wins, add examples, and remove jargon."],
+        ["What are useful code review habits?", "Focus on correctness first, ask precise questions, and keep comments actionable."],
+        ["How can I make background jobs safer?", "Use idempotency, retries with backoff, and alert on failure."],
+        ["What are generic approaches to schema migrations?", "Make them reversible, apply them incrementally, and test on staging."],
+        ["How do teams usually improve incident response?", "Define owners, write runbooks, and practice drills."]
+      ]
+    },
+    {
+      "id_prefix": "NXC",
+      "category": "support_meta",
+      "expect_extract": false,
+      "vars": ["user_line", "assistant_line"],
+      "transcript_template": "User: {user_line}\nAssistant: {assistant_line}",
+      "expected_facts_template": [],
+      "rows": [
+        ["Thanks, that worked perfectly.", "Glad that helped."],
+        ["Nice, that solves my issue.", "Happy to hear it."],
+        ["Cool, we can stop here.", "Sounds good."],
+        ["I appreciate the quick answer.", "Any time."],
+        ["That was exactly what I needed.", "Great."],
+        ["Perfect, no more questions.", "Understood."],
+        ["Awesome, I am good now.", "Happy to help."],
+        ["Thanks again.", "You are welcome."],
+        ["That clears it up.", "Glad it is clearer now."],
+        ["All set on my side.", "Okay, we can move on anytime."]
+      ]
+    },
+    {
+      "id_prefix": "NXD",
+      "category": "ephemeral_meta",
+      "expect_extract": false,
+      "vars": ["user_line", "assistant_line"],
+      "transcript_template": "User: {user_line}\nAssistant: {assistant_line}",
+      "expected_facts_template": [],
+      "rows": [
+        ["The CI run is still going, so let us wait a bit.", "Okay, I will wait for it to finish."],
+        ["I am stepping out for lunch for 20 minutes.", "No problem, I will be here."],
+        ["I have a meeting now and will be back later.", "Understood, talk later."],
+        ["The deploy is still running, so do not change anything yet.", "Got it, I will hold."],
+        ["I need a coffee break before we continue.", "Sounds good."],
+        ["I am rebooting the laptop and will reconnect after that.", "Okay, I will wait."],
+        ["Let us pause until tomorrow morning.", "Understood."],
+        ["I am reviewing another PR right now.", "No rush."],
+        ["The upstream service is warming up, give it a minute.", "Okay, I will wait a minute."],
+        ["I will send the logs after dinner.", "Fine, send them when ready."]
+      ]
+    },
+    {
+      "id_prefix": "NXE",
+      "category": "domain_shift_generic",
+      "expect_extract": false,
+      "vars": ["question", "answer"],
+      "transcript_template": "User: {question}\nAssistant: {answer}",
+      "expected_facts_template": [],
+      "rows": [
+        ["What are the main symptoms of dehydration?", "Common symptoms include thirst, dizziness, dark urine, and fatigue."],
+        ["How do treasury yields affect stock valuations generally?", "Higher yields often pressure valuations by raising discount rates."],
+        ["What makes a strong product launch message?", "Clarity, differentiation, and a simple value proposition matter most."],
+        ["How should someone prepare for a job interview in general?", "Practice examples, research the company, and prepare questions."],
+        ["What are good ways to learn a new language?", "Consistent practice, immersion, and spaced repetition help a lot."],
+        ["How do photographers usually improve composition?", "Use framing, leading lines, and careful control of negative space."],
+        ["What makes a restaurant menu easier to scan?", "Clear grouping, concise wording, and restrained visual hierarchy."],
+        ["How can a team run better retrospectives?", "Keep them blameless, specific, and action oriented."],
+        ["What are common reasons mobile apps feel slow?", "Cold starts, too much work on the main thread, and large assets."],
+        ["How do people usually reduce stress before public speaking?", "Rehearsal, breathing control, and familiarity with the material help."]
+      ]
+    }
+  ]
+}
