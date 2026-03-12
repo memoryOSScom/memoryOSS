@@ -1,6 +1,9 @@
 # memoryoss configuration (example)
 # Copy to memoryoss.toml and fill in your keys:
 #   cp memoryoss.toml.example memoryoss.toml
+# On Windows PowerShell:
+#   Copy-Item memoryoss.toml.example memoryoss.toml
+# Keep this file in a user-only directory. On Windows, protect it with NTFS ACLs.
 
 [server]
 host = "127.0.0.1"
@@ -11,6 +14,7 @@ enabled = true
 auto_generate = true
 
 [auth]
+# Use long random secrets. Anyone who can read this file can impersonate your local memory service.
 jwt_secret = "replace-with-a-32+-char-secret"
 audit_hmac_secret = "replace-with-a-32+-char-secret"
 
@@ -22,6 +26,8 @@ namespace = "default"
 jwt_expiry_secs = 3600
 
 [storage]
+# On Windows, prefer a user-local path such as:
+# data_dir = 'C:\Users\you\AppData\Local\memoryoss\data'
 data_dir = "data"
 
 [proxy]

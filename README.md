@@ -73,6 +73,39 @@ volumes:
   memoryoss-data:
 ```
 
+## Windows
+
+Official GitHub Releases also publish a Windows archive with `memoryoss.exe`:
+
+- `memoryoss-windows-x86_64.zip`
+
+### Minimal PowerShell install
+
+```powershell
+Invoke-WebRequest `
+  https://github.com/memoryOSScom/memoryOSS/releases/latest/download/memoryoss-windows-x86_64.zip `
+  -OutFile memoryoss-windows-x86_64.zip
+Expand-Archive .\memoryoss-windows-x86_64.zip -DestinationPath .\memoryoss
+Invoke-WebRequest `
+  https://raw.githubusercontent.com/memoryOSScom/memoryOSS/main/memoryoss.toml.example `
+  -OutFile .\memoryoss\memoryoss.toml
+cd .\memoryoss
+.\memoryoss.exe setup
+```
+
+Or, if you already have a config:
+
+```powershell
+.\memoryoss.exe -c .\memoryoss.toml serve
+```
+
+Windows-specific notes:
+
+- keep `memoryoss.toml`, `memoryoss.key`, and the data directory in a user-only location such as `%LOCALAPPDATA%\memoryoss`
+- use NTFS ACLs to protect secrets instead of Unix-style `chmod 600`
+- if you set an absolute Windows `data_dir`, use a TOML-safe path such as `'C:\Users\you\AppData\Local\memoryoss\data'`
+- if you need remote access from outside the machine, change `[server].host` to `0.0.0.0`; otherwise keep the default loopback host
+
 The setup wizard auto-detects your environment, registers MCP for Claude/Codex, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
 If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup` again so memoryOSS can safely update the integration path.
@@ -332,7 +365,7 @@ memoryOSS uses the same local stdio MCP path Anthropic documents for Claude Desk
 Current packaging gaps are explicit:
 
 - `rmcp 0.1.5` does not yet serialize MCP spec-era `title`, `readOnlyHint`, and `destructiveHint` fields on the live `tools/list` response, so memoryOSS is not claiming directory-ready wire compatibility yet.
-- A portable `.mcpb` artifact and Windows release path are follow-up packaging work; the current documented install path is source/binary based.
+- A portable `.mcpb` artifact is still follow-up packaging work; current documented install paths cover source/binary installs plus GitHub Release archives for Windows x86_64.
 
 ### Current install path
 
