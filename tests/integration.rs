@@ -122,6 +122,104 @@ fn test_client() -> reqwest::Client {
         .unwrap()
 }
 
+async fn inspect_memory(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    memory_id: &str,
+) -> serde_json::Value {
+    let resp = client
+        .get(format!("{base}/v1/inspect/{memory_id}"))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "inspect failed for memory {memory_id}");
+    resp.json().await.unwrap()
+}
+
+async fn assert_contested_pair(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    first_id: &str,
+    second_id: &str,
+) {
+    let first = inspect_memory(client, base, api_key, first_id).await;
+    assert_eq!(first["status"].as_str(), Some("contested"));
+    assert_eq!(first["eligible_for_injection"].as_bool(), Some(false));
+    assert_eq!(first["contradiction_count"].as_u64(), Some(1));
+    assert!(
+        first["contradicts_with"]
+            .as_array()
+            .map(|ids| ids.iter().any(|id| id.as_str() == Some(second_id)))
+            .unwrap_or(false),
+        "first memory should reference second as contradiction"
+    );
+    assert!(
+        first["conflicts"]
+            .as_array()
+            .map(|conflicts| {
+                conflicts
+                    .iter()
+                    .any(|conflict| conflict["id"].as_str() == Some(second_id))
+            })
+            .unwrap_or(false),
+        "first memory should expose second in conflicts"
+    );
+
+    let second = inspect_memory(client, base, api_key, second_id).await;
+    assert_eq!(second["status"].as_str(), Some("contested"));
+    assert_eq!(second["eligible_for_injection"].as_bool(), Some(false));
+    assert_eq!(second["contradiction_count"].as_u64(), Some(1));
+    assert!(
+        second["contradicts_with"]
+            .as_array()
+            .map(|ids| ids.iter().any(|id| id.as_str() == Some(first_id)))
+            .unwrap_or(false),
+        "second memory should reference first as contradiction"
+    );
+    assert!(
+        second["conflicts"]
+            .as_array()
+            .map(|conflicts| {
+                conflicts
+                    .iter()
+                    .any(|conflict| conflict["id"].as_str() == Some(first_id))
+            })
+            .unwrap_or(false),
+        "second memory should expose first in conflicts"
+    );
+}
+
+async fn wait_for_proxy_facts_extracted(
+    client: &reqwest::Client,
+    base: &str,
+    proxy_key: &str,
+    expected: u64,
+) -> serde_json::Value {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let resp = client
+            .get(format!("{base}/proxy/v1/debug/stats"))
+            .header("Authorization", format!("Bearer {proxy_key}"))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200, "proxy debug stats request failed");
+        let body: serde_json::Value = resp.json().await.unwrap();
+        let extracted = body["metrics"]["facts_extracted"].as_u64().unwrap_or(0);
+        if extracted >= expected {
+            return body;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for proxy extracted facts: expected >= {expected}, got {extracted}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Start a server command in background, wait for it to be ready, return the child.
 async fn start_server_command(config_path: &str, command: &str) -> tokio::process::Child {
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
@@ -357,7 +455,21 @@ async fn dummy_anthropic(
     headers: HeaderMap,
     Json(body): Json<serde_json::Value>,
 ) -> Json<serde_json::Value> {
-    record_upstream_request(&state, "/v1/messages", &headers, Some(body));
+    record_upstream_request(&state, "/v1/messages", &headers, Some(body.clone()));
+    if body["model"].as_str() == Some("claude-test-extract") {
+        return Json(serde_json::json!({
+            "id": "msg_extract",
+            "type": "message",
+            "role": "assistant",
+            "model": "claude-test-extract",
+            "stop_reason": "end_turn",
+            "content": [{
+                "type": "text",
+                "text": "[{\"content\":\"Production deploys do not require staging approval before rollout.\",\"tags\":[\"deploy\",\"approval\"]}]"
+            }],
+            "usage": { "input_tokens": 1, "output_tokens": 1 }
+        }));
+    }
     Json(serde_json::json!({
         "id": "msg_test",
         "type": "message",
@@ -1085,6 +1197,316 @@ async fn test_contradiction_detection_marks_memories_contested() {
     }));
 
     child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_batch_contradiction_detection_against_existing_memory() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("test.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_store.status(), 200);
+    let first_id = first_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let batch_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [{
+                "content": "Production deploys do not require staging approval before rollout.",
+                "tags": ["deploy", "approval"]
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(batch_resp.status(), 200);
+    let batch_body: serde_json::Value = batch_resp.json().await.unwrap();
+    let second_id = batch_body["stored"][0]["id"]
+        .as_str()
+        .expect("batch store id missing")
+        .to_string();
+
+    assert_contested_pair(
+        &client,
+        &base,
+        "test-key-integration",
+        &first_id,
+        &second_id,
+    )
+    .await;
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_batch_contradiction_detection_within_same_batch() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("test.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let batch_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Production deploys require staging approval before rollout.",
+                    "tags": ["deploy", "approval"]
+                },
+                {
+                    "content": "Production deploys do not require staging approval before rollout.",
+                    "tags": ["deploy", "approval"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(batch_resp.status(), 200);
+    let batch_body: serde_json::Value = batch_resp.json().await.unwrap();
+    let stored = batch_body["stored"]
+        .as_array()
+        .expect("stored array missing");
+    assert_eq!(stored.len(), 2);
+    let first_id = stored[0]["id"].as_str().expect("first batch id missing");
+    let second_id = stored[1]["id"].as_str().expect("second batch id missing");
+
+    assert_contested_pair(&client, &base, "test-key-integration", first_id, second_id).await;
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_update_recomputes_contradictions_when_content_changes() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("test.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_store.status(), 200);
+    let first_id = first_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let second_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys require smoke tests before rollout.",
+            "tags": ["deploy", "smoke"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_store.status(), 200);
+    let second_id = second_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let update_resp = client
+        .patch(format!("{base}/v1/update"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": second_id,
+            "content": "Production deploys do not require staging approval before rollout."
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(update_resp.status(), 200);
+    let update_body: serde_json::Value = update_resp.json().await.unwrap();
+    assert_eq!(update_body["status"].as_str(), Some("contested"));
+    assert_eq!(update_body["eligible_for_injection"].as_bool(), Some(false));
+    assert!(
+        update_body["contradicts_with"]
+            .as_array()
+            .map(|ids| ids.iter().any(|id| id.as_str() == Some(first_id.as_str())))
+            .unwrap_or(false),
+        "updated memory should reference the original contradictory memory"
+    );
+
+    assert_contested_pair(
+        &client,
+        &base,
+        "test-key-integration",
+        &first_id,
+        &second_id,
+    )
+    .await;
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_proxy_extraction_marks_existing_and_extracted_memories_contested() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = true
+extract_provider = "claude"
+extract_model = "claude-test-extract"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-extraction.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_store.status(), 200);
+    let first_id = first_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Summarize the current deployment policy."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    let proxy_body: serde_json::Value = proxy_resp.json().await.unwrap();
+    assert_eq!(
+        proxy_body["content"][0]["text"].as_str(),
+        Some("dummy anthropic output")
+    );
+
+    let stats = wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 1).await;
+    assert_eq!(stats["metrics"]["facts_extracted"].as_u64(), Some(1));
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    let memories = export_body["memories"]
+        .as_array()
+        .expect("memories missing");
+    let extracted = memories
+        .iter()
+        .find(|memory| {
+            memory["content"].as_str()
+                == Some("Production deploys do not require staging approval before rollout.")
+        })
+        .expect("proxy-extracted contradictory memory missing");
+    let second_id = extracted["id"]
+        .as_str()
+        .expect("proxy-extracted memory id missing");
+
+    assert_contested_pair(&client, &base, "test-key-integration", &first_id, second_id).await;
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| { request["body"]["model"].as_str() == Some("claude-test-extract") }),
+        "dummy upstream should receive a dedicated extraction request"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
 }
 
 #[tokio::test]
