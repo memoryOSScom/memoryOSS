@@ -1316,6 +1316,8 @@ async fn recall_inner(
         }
     }
 
+    let task_context = crate::scoring::detect_task_context(&req.query);
+
     // Intent cache: check for cached results (canonical query matching)
     if req.cursor.is_none()
         && let Some(cached) = state
@@ -1326,6 +1328,7 @@ async fn recall_inner(
                 namespace,
                 req.agent.as_deref(),
                 &req.tags,
+                task_context.as_ref().map(|ctx| ctx.label()),
             )
             .await
     {
@@ -1503,6 +1506,7 @@ async fn recall_inner(
         limit: req.limit.min(100) * 2, // overfetch for post-filtering
         agent_filter: req.agent.clone(),
         diversity_factor: state.config.proxy.diversity_factor.unwrap_or(0.0),
+        task_context: task_context.clone(),
     };
 
     let mut scored = crate::scoring::score_and_merge(
@@ -1608,6 +1612,7 @@ async fn recall_inner(
                 namespace,
                 req.agent.as_deref(),
                 &req.tags,
+                task_context.as_ref().map(|ctx| ctx.label()),
                 scored.clone(),
             )
             .await;
@@ -2099,6 +2104,7 @@ async fn query_explain(
     let idf_boost = crate::scoring::compute_idf_boost(&state.idf_index, &req.query);
     let min_channel_score = state.config.proxy.min_channel_score.unwrap_or(0.0);
     let diversity_factor = state.config.proxy.diversity_factor.unwrap_or(0.0);
+    let task_context = crate::scoring::detect_task_context(&req.query);
 
     let options = crate::scoring::MergeOptions {
         weights: weights.clone(),
@@ -2110,6 +2116,7 @@ async fn query_explain(
         limit: req.limit * 2,
         agent_filter: req.agent.clone(),
         diversity_factor,
+        task_context: task_context.clone(),
     };
 
     let mut explained = crate::scoring::score_and_explain(
@@ -2177,6 +2184,10 @@ async fn query_explain(
         "consistency": if eventual { "eventual" } else { "strong" },
         "candidate_filter_count": candidate_ids.as_ref().map(|ids| ids.len()),
         "identifiers": identifiers,
+        "task_context": task_context.as_ref().map(|ctx| json!({
+            "kind": ctx.label(),
+            "matched_terms": ctx.matched_terms,
+        })),
         "idf_boost": idf_boost,
         "min_channel_score": min_channel_score,
         "diversity_factor": diversity_factor,

@@ -919,6 +919,296 @@ async fn test_query_explain_returns_real_score_breakdown() {
 }
 
 #[tokio::test]
+async fn test_query_explain_prioritizes_task_context_for_deploy_bugfix_and_review() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("test.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Payment deploy rule: staging approval and smoke tests are required before production rollout.",
+                    "tags": ["deploy", "approval", "smoke"]
+                },
+                {
+                    "content": "Payment incident fix: a stale feature flag caused rollout errors; clear flags before retrying the job.",
+                    "tags": ["bugfix", "incident", "feature-flag"]
+                },
+                {
+                    "content": "Checkout incident root cause: stale cart cache triggered 500 errors; fix by invalidating cache on retry.",
+                    "tags": ["bugfix", "incident", "root-cause"]
+                },
+                {
+                    "content": "Checkout deployment checklist: validate the cart cache before production release.",
+                    "tags": ["deploy", "checklist"]
+                },
+                {
+                    "content": "Auth review checklist: require tests and security review before merging sensitive changes.",
+                    "tags": ["review", "security", "checklist"]
+                },
+                {
+                    "content": "Auth hotfix note: merge the rollback patch only after flushing the token cache.",
+                    "tags": ["bugfix", "hotfix"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let deploy_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Need the payment rollout steps and staging approval before production deploy.",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(deploy_resp.status(), 200);
+    let deploy_body: serde_json::Value = deploy_resp.json().await.unwrap();
+    assert_eq!(deploy_body["task_context"]["kind"].as_str(), Some("deploy"));
+    let deploy_results = deploy_body["final_results"].as_array().unwrap();
+    assert!(
+        deploy_results[0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("staging approval"),
+        "deploy query should prioritize deployment guidance"
+    );
+    let deploy_provenance = deploy_results[0]["provenance"].as_array().unwrap();
+    assert!(
+        deploy_provenance
+            .iter()
+            .any(|entry| entry.as_str() == Some("task_context:deploy"))
+    );
+    assert!(deploy_provenance.iter().any(|entry| {
+        entry
+            .as_str()
+            .map(|value| value.starts_with("task_match:"))
+            .unwrap_or(false)
+    }));
+
+    let bugfix_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Debug the checkout regression and find the root cause of the 500 error.",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bugfix_resp.status(), 200);
+    let bugfix_body: serde_json::Value = bugfix_resp.json().await.unwrap();
+    assert_eq!(bugfix_body["task_context"]["kind"].as_str(), Some("bugfix"));
+    let bugfix_results = bugfix_body["final_results"].as_array().unwrap();
+    assert!(
+        bugfix_results[0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("root cause"),
+        "bugfix query should prioritize incident/root-cause memory"
+    );
+    let bugfix_provenance = bugfix_results[0]["provenance"].as_array().unwrap();
+    assert!(
+        bugfix_provenance
+            .iter()
+            .any(|entry| entry.as_str() == Some("task_context:bugfix"))
+    );
+
+    let review_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Review the auth changes before merge and audit anything risky.",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(review_resp.status(), 200);
+    let review_body: serde_json::Value = review_resp.json().await.unwrap();
+    assert_eq!(review_body["task_context"]["kind"].as_str(), Some("review"));
+    let review_results = review_body["final_results"].as_array().unwrap();
+    assert!(
+        review_results[0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("security review"),
+        "review query should prioritize review checklist memory"
+    );
+    let review_provenance = review_results[0]["provenance"].as_array().unwrap();
+    assert!(
+        review_provenance
+            .iter()
+            .any(|entry| entry.as_str() == Some("task_context:review"))
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_proxy_injection_prefers_review_context_memory() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+default_memory_mode = "full"
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-review.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Auth review checklist: require tests and security review before merging sensitive changes.",
+                    "tags": ["review", "security", "checklist"]
+                },
+                {
+                    "content": "Auth hotfix note: merge the rollback patch only after flushing the token cache.",
+                    "tags": ["bugfix", "hotfix"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let query = "Review the auth changes before merge and audit anything risky.";
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": query,
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["task_context"]["kind"].as_str(),
+        Some("review")
+    );
+    let explain_results = explain_body["final_results"].as_array().unwrap();
+    assert!(
+        explain_results[0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("security review"),
+        "review explain path should rank checklist memory first"
+    );
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": query}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    assert!(
+        proxy_resp
+            .headers()
+            .get("x-memory-injected-count")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+            >= 1,
+        "proxy should inject at least one contextual memory"
+    );
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    let upstream_req = requests
+        .iter()
+        .find(|req| {
+            req["path"].as_str() == Some("/v1/chat/completions")
+                && req["body"]["messages"][0]["role"].as_str() == Some("system")
+        })
+        .expect("missing upstream chat request with injected system prompt");
+    let system_content = upstream_req["body"]["messages"][0]["content"]
+        .as_str()
+        .expect("system content missing");
+    let review_memory = "Auth review checklist: require tests and security review before merging sensitive changes.";
+    let bugfix_memory =
+        "Auth hotfix note: merge the rollback patch only after flushing the token cache.";
+    assert!(
+        system_content.contains(review_memory),
+        "review memory should be present in injected context"
+    );
+    if system_content.contains(bugfix_memory) {
+        let review_pos = system_content.find(review_memory).unwrap();
+        let bugfix_pos = system_content.find(bugfix_memory).unwrap();
+        assert!(
+            review_pos < bugfix_pos,
+            "review-context memory should appear before bugfix distractor"
+        );
+    }
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn test_feedback_updates_memory_lifecycle() {
     let port = free_port();
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");

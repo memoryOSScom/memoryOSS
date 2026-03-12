@@ -25,6 +25,267 @@ struct ChannelScores {
     provenance: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TaskContextKind {
+    Deploy,
+    Bugfix,
+    Review,
+    Style,
+}
+
+impl TaskContextKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Deploy => "deploy",
+            Self::Bugfix => "bugfix",
+            Self::Review => "review",
+            Self::Style => "style",
+        }
+    }
+
+    fn query_hints(self) -> &'static [&'static str] {
+        match self {
+            Self::Deploy => &[
+                "deploy",
+                "deployment",
+                "release",
+                "rollout",
+                "staging",
+                "production",
+                "prod",
+                "ship",
+                "shipping",
+                "launch",
+                "rollback",
+                "canary",
+                "migrate",
+                "migration",
+            ],
+            Self::Bugfix => &[
+                "bug",
+                "bugfix",
+                "fix",
+                "debug",
+                "debugging",
+                "incident",
+                "issue",
+                "failure",
+                "failing",
+                "error",
+                "crash",
+                "exception",
+                "regression",
+                "workaround",
+                "root cause",
+                "patch",
+            ],
+            Self::Review => &[
+                "review",
+                "audit",
+                "inspect",
+                "analysis",
+                "analyze",
+                "assess",
+                "evaluate",
+                "diff",
+                "pull request",
+                "pr",
+                "security",
+                "lint",
+                "checklist",
+                "qa",
+            ],
+            Self::Style => &[
+                "style",
+                "tone",
+                "wording",
+                "phrasing",
+                "format",
+                "formatting",
+                "rewrite",
+                "rephrase",
+                "concise",
+                "verbosity",
+                "bullet",
+                "bullets",
+                "display",
+                "summary",
+                "summaries",
+            ],
+        }
+    }
+
+    fn memory_hints(self) -> &'static [&'static str] {
+        match self {
+            Self::Deploy => &[
+                "deploy",
+                "deployment",
+                "release",
+                "rollout",
+                "staging",
+                "production",
+                "approval",
+                "smoke",
+                "migration",
+                "rollback",
+                "runbook",
+            ],
+            Self::Bugfix => &[
+                "bug",
+                "bugfix",
+                "fix",
+                "incident",
+                "issue",
+                "failure",
+                "error",
+                "exception",
+                "regression",
+                "workaround",
+                "root cause",
+                "postmortem",
+                "rollback",
+            ],
+            Self::Review => &[
+                "review",
+                "audit",
+                "security",
+                "checklist",
+                "tests",
+                "lint",
+                "approval",
+                "diff",
+                "merge",
+                "pr",
+            ],
+            Self::Style => &[
+                "style",
+                "tone",
+                "wording",
+                "format",
+                "bullet",
+                "verbosity",
+                "display",
+                "summary",
+                "response",
+                "rewrite",
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskContext {
+    pub kind: TaskContextKind,
+    pub matched_terms: Vec<String>,
+}
+
+impl TaskContext {
+    pub fn label(&self) -> &'static str {
+        self.kind.as_str()
+    }
+}
+
+fn normalize_task_text(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch.is_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
+fn collect_context_hits(text: &str, hints: &[&str]) -> Vec<String> {
+    let normalized = normalize_task_text(text);
+    let padded = format!(" {normalized} ");
+    let mut hits = Vec::new();
+
+    for hint in hints {
+        let normalized_hint = normalize_task_text(hint).trim().to_string();
+        if normalized_hint.is_empty() {
+            continue;
+        }
+        let pattern = format!(" {normalized_hint} ");
+        if padded.contains(&pattern)
+            || (normalized_hint.len() > 4 && normalized.contains(&normalized_hint))
+        {
+            hits.push(normalized_hint);
+        }
+    }
+
+    hits.sort_unstable();
+    hits.dedup();
+    hits
+}
+
+pub fn detect_task_context(query: &str) -> Option<TaskContext> {
+    let mut candidates = [
+        TaskContextKind::Deploy,
+        TaskContextKind::Bugfix,
+        TaskContextKind::Review,
+        TaskContextKind::Style,
+    ]
+    .into_iter()
+    .map(|kind| (kind, collect_context_hits(query, kind.query_hints())))
+    .collect::<Vec<_>>();
+
+    candidates.sort_by(|a, b| b.1.len().cmp(&a.1.len()));
+    let (kind, matched_terms) = candidates.first()?.clone();
+    if matched_terms.is_empty() {
+        return None;
+    }
+    if candidates
+        .get(1)
+        .is_some_and(|(_, hits)| hits.len() == matched_terms.len())
+    {
+        return None;
+    }
+
+    Some(TaskContext {
+        kind,
+        matched_terms,
+    })
+}
+
+fn task_context_boost(
+    memory: &crate::memory::Memory,
+    task_context: &TaskContext,
+    max_channel: f64,
+    base_score: f64,
+) -> (f64, Vec<String>) {
+    let tag_text = memory.tags.join(" ");
+    let tag_hits = collect_context_hits(&tag_text, task_context.kind.memory_hints());
+    let content_hits = collect_context_hits(&memory.content, task_context.kind.memory_hints());
+
+    if tag_hits.is_empty() && content_hits.is_empty() {
+        return (0.0, Vec::new());
+    }
+
+    // Fail closed: task context is only allowed to re-rank plausible candidates,
+    // not to resurrect semantically irrelevant memories from weak retrieval noise.
+    if max_channel < 0.05 && base_score < 0.05 && tag_hits.is_empty() {
+        return (0.0, Vec::new());
+    }
+
+    let boost = (tag_hits.len() as f64 * 0.08 + content_hits.len() as f64 * 0.035).min(0.18);
+    let mut provenance = vec![format!("task_context:{}", task_context.label())];
+    provenance.extend(
+        tag_hits
+            .into_iter()
+            .map(|hit| format!("task_match:tag:{hit}")),
+    );
+    provenance.extend(
+        content_hits
+            .into_iter()
+            .map(|hit| format!("task_match:content:{hit}")),
+    );
+
+    (boost, provenance)
+}
+
 /// Options for score_and_merge — configurable per caller.
 #[derive(Debug, Clone)]
 pub struct MergeOptions {
@@ -45,6 +306,8 @@ pub struct MergeOptions {
     pub agent_filter: Option<String>,
     /// Diversity factor: 0.0 = pure relevance, >0 = spread across agents/tags.
     pub diversity_factor: f64,
+    /// Optional lightweight task context classifier used for re-ranking.
+    pub task_context: Option<TaskContext>,
 }
 
 impl Default for MergeOptions {
@@ -59,6 +322,7 @@ impl Default for MergeOptions {
             limit: 10,
             agent_filter: None,
             diversity_factor: 0.0,
+            task_context: None,
         }
     }
 }
@@ -303,6 +567,7 @@ pub fn score_and_explain(
             }
 
             // Weighted score
+            let mut provenance = channels.provenance.clone();
             let base_score = channels.vector * weights.vector
                 + channels.fts * weights.fts
                 + channels.exact * weights.exact;
@@ -311,7 +576,21 @@ pub fn score_and_explain(
             let age_hours = (chrono::Utc::now() - memory.created_at).num_hours().max(0) as f64;
             let recency = (1.0 / (1.0 + age_hours / 168.0)) * weights.recency;
 
-            let mut final_score = base_score + recency;
+            let mut task_boost = 0.0;
+            if let Some(task_context) = options.task_context.as_ref() {
+                let (boost, task_provenance) =
+                    task_context_boost(&memory, task_context, max_channel, base_score);
+                if boost > 0.0 {
+                    task_boost = boost;
+                    for signal in task_provenance {
+                        if !provenance.contains(&signal) {
+                            provenance.push(signal);
+                        }
+                    }
+                }
+            }
+
+            let mut final_score = base_score + recency + task_boost;
 
             // P4: Quadratic confidence penalty (harsher on low-confidence proxy-extracted memories)
             // conf=0.3 → 0.363 (was 0.65), conf=0.7 → 0.643, conf=1.0 → 1.0
@@ -384,7 +663,7 @@ pub fn score_and_explain(
 
             explained.push(ScoreExplainEntry {
                 memory,
-                provenance: channels.provenance,
+                provenance,
                 channels: ScoreChannels {
                     vector: channels.vector,
                     fts: channels.fts,
@@ -506,4 +785,52 @@ fn apply_diversity_explained(
     }
 
     selected
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_detect_task_context_prefers_deploy_keywords() {
+        let context = detect_task_context(
+            "Need the staging approval and rollout steps before production deploy",
+        )
+        .expect("expected deploy task context");
+        assert_eq!(context.label(), "deploy");
+        assert!(context.matched_terms.iter().any(|term| term == "staging"));
+    }
+
+    #[test]
+    fn test_detect_task_context_fails_closed_on_ambiguous_query() {
+        let context = detect_task_context("Review the rollout and debug the production issue");
+        assert!(
+            context.is_none(),
+            "ambiguous query should not force a task context"
+        );
+    }
+
+    #[test]
+    fn test_task_context_boost_prefers_matching_tags() {
+        let context = TaskContext {
+            kind: TaskContextKind::Review,
+            matched_terms: vec!["review".to_string()],
+        };
+        let mut memory =
+            crate::memory::Memory::new("Require tests and security review before merge.".into());
+        memory.tags = vec!["review".into(), "security".into()];
+
+        let (boost, provenance) = task_context_boost(&memory, &context, 0.12, 0.15);
+        assert!(boost > 0.0);
+        assert!(
+            provenance
+                .iter()
+                .any(|entry| entry == "task_context:review")
+        );
+        assert!(
+            provenance
+                .iter()
+                .any(|entry| entry == "task_match:tag:review")
+        );
+    }
 }

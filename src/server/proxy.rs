@@ -1399,6 +1399,7 @@ async fn recall_for_proxy(
     query: &str,
 ) -> anyhow::Result<Vec<ScoredMemory>> {
     let limit = 10;
+    let task_context = crate::scoring::detect_task_context(query);
 
     // RLM: Heuristic decomposition for large namespaces (no LLM call — latency safe)
     let decompose_config = crate::config::DecomposeConfig {
@@ -1481,6 +1482,7 @@ async fn recall_for_proxy(
         limit: limit * 2,
         agent_filter: None,
         diversity_factor: diversity,
+        task_context,
     };
 
     let mut scored = crate::scoring::score_and_merge(

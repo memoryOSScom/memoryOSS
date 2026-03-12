@@ -71,6 +71,7 @@ fn cache_key(
     canonical: &str,
     agent: Option<&str>,
     tags: &[String],
+    task_context: Option<&str>,
 ) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
@@ -79,6 +80,7 @@ fn cache_key(
     canonical.hash(&mut hasher);
     agent.hash(&mut hasher);
     tags.hash(&mut hasher);
+    task_context.hash(&mut hasher);
     hasher.finish()
 }
 
@@ -118,13 +120,14 @@ impl IntentCache {
         namespace: &str,
         agent: Option<&str>,
         tags: &[String],
+        task_context: Option<&str>,
     ) -> Option<Vec<ScoredMemory>> {
         let canonical = canonicalize(query);
         if canonical.is_empty() {
             return None; // All-stopword queries bypass cache
         }
 
-        let key = cache_key(session, namespace, &canonical, agent, tags);
+        let key = cache_key(session, namespace, &canonical, agent, tags, task_context);
         let mut map = self.entries.lock().await;
 
         if let Some(entry) = map.get(&key) {
@@ -147,6 +150,7 @@ impl IntentCache {
         namespace: &str,
         agent: Option<&str>,
         tags: &[String],
+        task_context: Option<&str>,
         results: Vec<ScoredMemory>,
     ) {
         let canonical = canonicalize(query);
@@ -154,7 +158,7 @@ impl IntentCache {
             return;
         }
 
-        let key = cache_key(session, namespace, &canonical, agent, tags);
+        let key = cache_key(session, namespace, &canonical, agent, tags, task_context);
         let mut map = self.entries.lock().await;
 
         // Evict expired entries if at capacity
@@ -279,20 +283,35 @@ mod tests {
         // Miss
         assert!(
             cache
-                .get("deploy service", None, "ns", None, &[])
+                .get("deploy service", None, "ns", None, &[], None)
                 .await
                 .is_none()
         );
 
         // Put
         cache
-            .put("deploy service", None, "ns", None, &[], results.clone())
+            .put(
+                "deploy service",
+                None,
+                "ns",
+                None,
+                &[],
+                Some("deploy"),
+                results.clone(),
+            )
             .await;
 
         // Hit (same canonical form)
         assert!(
             cache
-                .get("How do I deploy the service?", None, "ns", None, &[])
+                .get(
+                    "How do I deploy the service?",
+                    None,
+                    "ns",
+                    None,
+                    &[],
+                    Some("deploy"),
+                )
                 .await
                 .is_some()
         );
@@ -300,7 +319,7 @@ mod tests {
         // Miss (different namespace)
         assert!(
             cache
-                .get("deploy service", None, "other", None, &[])
+                .get("deploy service", None, "other", None, &[], Some("deploy"))
                 .await
                 .is_none()
         );
@@ -312,13 +331,21 @@ mod tests {
         let results = vec![];
 
         cache
-            .put("deploy", Some("s1"), "ns", None, &[], results.clone())
+            .put(
+                "deploy",
+                Some("s1"),
+                "ns",
+                None,
+                &[],
+                Some("deploy"),
+                results.clone(),
+            )
             .await;
 
         // Hit with same session
         assert!(
             cache
-                .get("deploy", Some("s1"), "ns", None, &[])
+                .get("deploy", Some("s1"), "ns", None, &[], Some("deploy"))
                 .await
                 .is_some()
         );
@@ -326,7 +353,7 @@ mod tests {
         // Miss with different session
         assert!(
             cache
-                .get("deploy", Some("s2"), "ns", None, &[])
+                .get("deploy", Some("s2"), "ns", None, &[], Some("deploy"))
                 .await
                 .is_none()
         );
@@ -335,10 +362,51 @@ mod tests {
     #[tokio::test]
     async fn test_cache_invalidation() {
         let cache = IntentCache::new(60, 100);
-        cache.put("deploy", None, "ns", None, &[], vec![]).await;
+        cache
+            .put("deploy", None, "ns", None, &[], Some("deploy"), vec![])
+            .await;
 
-        assert!(cache.get("deploy", None, "ns", None, &[]).await.is_some());
+        assert!(
+            cache
+                .get("deploy", None, "ns", None, &[], Some("deploy"))
+                .await
+                .is_some()
+        );
         cache.invalidate_namespace("ns").await;
-        assert!(cache.get("deploy", None, "ns", None, &[]).await.is_none());
+        assert!(
+            cache
+                .get("deploy", None, "ns", None, &[], Some("deploy"))
+                .await
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn test_cache_task_context_isolation() {
+        let cache = IntentCache::new(60, 100);
+        cache
+            .put(
+                "check release",
+                None,
+                "ns",
+                None,
+                &[],
+                Some("deploy"),
+                vec![],
+            )
+            .await;
+
+        assert!(
+            cache
+                .get("check release", None, "ns", None, &[], Some("deploy"))
+                .await
+                .is_some()
+        );
+        assert!(
+            cache
+                .get("check release", None, "ns", None, &[], Some("review"))
+                .await
+                .is_none()
+        );
     }
 }
