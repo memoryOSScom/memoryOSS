@@ -6,6 +6,7 @@ on:
 
 env:
   GHCR_IMAGE: ghcr.io/memoryosscom/memoryoss
+  GHCR_IMAGE_SMOKE: ghcr.io/memoryosscom/memoryoss-smoke
 
 jobs:
   build:
@@ -69,6 +70,7 @@ jobs:
   release:
     needs: build
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-smoke') }}
     permissions:
       contents: write
     steps:
@@ -87,6 +89,7 @@ jobs:
   publish-crate:
     needs: release
     runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-smoke') }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
@@ -96,7 +99,7 @@ jobs:
         run: cargo publish --locked --token ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
   publish-container:
-    needs: release
+    needs: build
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -117,13 +120,28 @@ jobs:
             BUILD_DATE="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           fi
 
+          if [[ "${GITHUB_REF_NAME}" == *"-smoke" ]]; then
+            IMAGE="${GHCR_IMAGE_SMOKE}"
+            TAG_ONE="${IMAGE}:${VERSION}"
+            TAG_TWO=""
+          else
+            IMAGE="${GHCR_IMAGE}"
+            TAG_ONE="${IMAGE}:${VERSION}"
+            TAG_TWO="${IMAGE}:latest"
+          fi
+
           docker build \
             --build-arg VERSION="$VERSION" \
             --build-arg VCS_REF="${GITHUB_SHA}" \
             --build-arg BUILD_DATE="$BUILD_DATE" \
-            -t "${GHCR_IMAGE}:${VERSION}" \
-            -t "${GHCR_IMAGE}:latest" \
+            -t "${TAG_ONE}" \
             .
 
-          docker push "${GHCR_IMAGE}:${VERSION}"
-          docker push "${GHCR_IMAGE}:latest"
+          if [ -n "${TAG_TWO}" ]; then
+            docker tag "${TAG_ONE}" "${TAG_TWO}"
+          fi
+
+          docker push "${TAG_ONE}"
+          if [ -n "${TAG_TWO}" ]; then
+            docker push "${TAG_TWO}"
+          fi
