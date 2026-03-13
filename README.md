@@ -376,6 +376,8 @@ Explicitly outside the stable runtime contract for now:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/export` | GET | Data export (all memories) |
+| `/v1/passport/export` | GET | Selective portable memory passport bundle export |
+| `/v1/passport/import` | POST | Dry-run or apply a portable memory passport bundle |
 | `/v1/runtime/contract` | GET | Versioned portable memory runtime contract |
 | `/v1/memories` | GET | Data access (list memories) |
 | `/v1/forget/certified` | DELETE | Certified deletion with audit trail |
@@ -510,6 +512,8 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss review confirm --namespace test --item 1` | Confirm a queue item by inbox position |
 | `memoryoss review reject --namespace test --item 2` | Reject a queue item by inbox position |
 | `memoryoss review supersede --namespace test --item 1 --with-item 2` | Supersede one queue item with another by inbox position |
+| `memoryoss passport export --namespace test --scope project -o passport.json` | Export a selective portable memory passport bundle |
+| `memoryoss passport import passport.json --namespace test --dry-run` | Preview merge/conflict results before applying a bundle |
 | `memoryoss inspect <id>` | Inspect a memory |
 | `memoryoss backup -o backup.tar.zst` | Backup all data |
 | `memoryoss restore <path>` | Restore from backup |

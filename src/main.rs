@@ -96,6 +96,11 @@ enum Commands {
         #[command(subcommand)]
         command: ReviewCommands,
     },
+    /// Export or import portable memory passport bundles
+    Passport {
+        #[command(subcommand)]
+        command: PassportCommands,
+    },
     /// Inspect a memory by ID
     Inspect {
         /// Memory UUID
@@ -190,6 +195,33 @@ enum ReviewCommands {
         /// 1-based queue position that should replace the target
         #[arg(long = "with-item")]
         with_item: usize,
+    },
+}
+
+#[derive(Subcommand)]
+enum PassportCommands {
+    /// Export a selective portable memory passport bundle to disk
+    Export {
+        /// Namespace to export
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Passport scope: all, personal, project, or team
+        #[arg(long, default_value = "project")]
+        scope: String,
+        /// Output path for bundle JSON
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Import a portable memory passport bundle from disk
+    Import {
+        /// Path to bundle JSON
+        path: PathBuf,
+        /// Override target namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Preview changes without applying them
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -801,6 +833,86 @@ fn run_review_action(
         );
     }
 
+    Ok(())
+}
+
+fn run_passport_export(
+    config: &config::Config,
+    namespace_filter: Option<&str>,
+    scope: crate::memory::PassportScope,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let namespaces = if let Some(namespace) = namespace_filter {
+        vec![namespace.to_string()]
+    } else {
+        decay_namespaces(config, doc_engine.list_namespaces()?)
+    };
+
+    let namespace = namespaces
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no namespace available for passport export"))?;
+    let memories = doc_engine.list_all_including_archived(&namespace)?;
+    let bundle = crate::memory::build_memory_passport_bundle(&namespace, scope, &memories);
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let output_path = output.unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "memoryoss-passport-{}-{}-{timestamp}.json",
+            namespace, scope
+        ))
+    });
+    std::fs::write(&output_path, serde_json::to_vec_pretty(&bundle)?)?;
+    println!(
+        "Exported passport bundle {} (scope={} memories={})",
+        output_path.display(),
+        scope,
+        bundle.memories.len()
+    );
+    Ok(())
+}
+
+fn run_passport_import(
+    config: &config::Config,
+    path: &Path,
+    namespace_override: Option<&str>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let bundle: crate::memory::MemoryPassportBundle =
+        serde_json::from_slice(&std::fs::read(path)?)?;
+    if !crate::memory::verify_memory_passport_bundle(&bundle) {
+        anyhow::bail!("passport bundle integrity check failed");
+    }
+    let target_namespace = namespace_override
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| bundle.namespace.clone());
+    let existing = doc_engine.list_all_including_archived(&target_namespace)?;
+    let plan = crate::memory::plan_memory_passport_import(&target_namespace, &bundle, &existing);
+
+    if dry_run {
+        println!(
+            "Passport import dry-run for {}: create={} merge={} conflict={}",
+            target_namespace,
+            plan.preview.create_count,
+            plan.preview.merge_count,
+            plan.preview.conflict_count
+        );
+        for item in plan.preview.items.iter().take(10) {
+            println!("- [{}] {} ({})", item.decision, item.preview, item.reason);
+        }
+        return Ok(());
+    }
+
+    let mut imported = 0usize;
+    for memory in &plan.staged_memories {
+        doc_engine.store(memory, "passport-import-cli")?;
+        imported += 1;
+    }
+    println!(
+        "Imported passport bundle into {}: imported={} merge={} conflict={}",
+        target_namespace, imported, plan.preview.merge_count, plan.preview.conflict_count
+    );
     Ok(())
 }
 
@@ -1804,7 +1916,10 @@ async fn main() -> anyhow::Result<()> {
     let command = cli.command.unwrap_or(Commands::Serve);
     let operator_command = matches!(
         &command,
-        Commands::Status { .. } | Commands::Doctor | Commands::Recent { .. }
+        Commands::Status { .. }
+            | Commands::Doctor
+            | Commands::Recent { .. }
+            | Commands::Passport { .. }
     );
 
     if operator_command && !cli.config.exists() {
@@ -1939,6 +2054,25 @@ async fn main() -> anyhow::Result<()> {
                     crate::memory::MemoryFeedbackAction::Supersede,
                     Some(with_item),
                 )?;
+            }
+        },
+        Commands::Passport { command } => match command {
+            PassportCommands::Export {
+                namespace,
+                scope,
+                output,
+            } => {
+                let scope = scope
+                    .parse::<crate::memory::PassportScope>()
+                    .map_err(anyhow::Error::msg)?;
+                run_passport_export(&config, namespace.as_deref(), scope, output)?;
+            }
+            PassportCommands::Import {
+                path,
+                namespace,
+                dry_run,
+            } => {
+                run_passport_import(&config, &path, namespace.as_deref(), dry_run)?;
             }
         },
         Commands::Inspect { id } => {

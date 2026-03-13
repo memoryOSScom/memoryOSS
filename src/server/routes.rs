@@ -25,10 +25,12 @@ use crate::intent_cache::IntentCache;
 use crate::memory::{
     BatchRecallRequest, BatchRecallResponse, BatchStoreRequest, BatchStoreResponse,
     ConsolidateRequest, ConsolidateResponse, ConsolidationGroup, FeedbackRequest, FeedbackResponse,
-    ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction, MemoryStatus,
-    RecallRequest, RecallResponse, ReviewQueueKind, ScoredMemory, StoreRequest, StoreResponse,
-    UpdateRequest, contradiction_signature, contradiction_signatures_conflict, memories_contradict,
-    runtime_contract_document, runtime_contract_export_metadata,
+    ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction,
+    MemoryPassportBundle, MemoryStatus, PassportImportPlan, PassportScope, RecallRequest,
+    RecallResponse, ReviewQueueKind, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
+    build_memory_passport_bundle, contradiction_signature, contradiction_signatures_conflict,
+    memories_contradict, plan_memory_passport_import, runtime_contract_document,
+    runtime_contract_export_metadata, verify_memory_passport_bundle,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -559,6 +561,8 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/v1/sharing/accessible", get(accessible_shared_ns))
         .route("/v1/export", get(gdpr_export))
+        .route("/v1/passport/export", get(passport_export))
+        .route("/v1/passport/import", post(passport_import))
         .route("/v1/runtime/contract", get(runtime_contract))
         .route("/v1/memories", get(gdpr_access))
         .route("/v1/forget/certified", delete(gdpr_forget_certified))
@@ -2868,6 +2872,132 @@ async fn runtime_contract(
 #[derive(Deserialize)]
 struct GdprExportParams {
     namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PassportExportParams {
+    namespace: Option<String>,
+    scope: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct PassportImportRequest {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+    bundle: MemoryPassportBundle,
+}
+
+#[derive(Serialize)]
+struct PassportImportResponse {
+    dry_run: bool,
+    imported: usize,
+    preview: crate::memory::PassportImportPreview,
+    imported_ids: Vec<uuid::Uuid>,
+}
+
+/// GET /v1/passport/export?scope=project — selective portable memory passport bundle.
+async fn passport_export(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<PassportExportParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let scope = params
+        .scope
+        .as_deref()
+        .unwrap_or("project")
+        .parse::<PassportScope>()
+        .map_err(AppError::BadRequest)?;
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    Ok(Json(build_memory_passport_bundle(namespace, scope, &memories)).into_response())
+}
+
+fn resolve_passport_import_namespace(
+    claims: &Claims,
+    requested_namespace: Option<&str>,
+    bundle_namespace: &str,
+) -> Result<String, AppError> {
+    if let Some(namespace) = requested_namespace {
+        return Ok(enforce_namespace(claims, Some(namespace))?.to_string());
+    }
+    Ok(enforce_namespace(claims, Some(bundle_namespace))?.to_string())
+}
+
+fn apply_passport_import_plan(
+    state: &AppState,
+    namespace: &str,
+    plan: &PassportImportPlan,
+    subject: &str,
+) -> Result<Vec<uuid::Uuid>, AppError> {
+    let mut imported_ids = Vec::new();
+    for memory in &plan.staged_memories {
+        state
+            .doc_engine
+            .store(memory, subject)
+            .map_err(AppError::Internal)?;
+        imported_ids.push(memory.id);
+    }
+
+    if !imported_ids.is_empty() {
+        refresh_review_queue_summary(state, namespace).map_err(AppError::Internal)?;
+    }
+
+    Ok(imported_ids)
+}
+
+/// POST /v1/passport/import — import a portable memory passport bundle with dry-run preview.
+async fn passport_import(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<PassportImportRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_store(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions for store"));
+    }
+    if let Err(retry_ms) = state.rate_limiter.check(&claims.sub) {
+        return Err(AppError::RateLimited(retry_ms));
+    }
+    if state.indexer_state.lag() > BACKPRESSURE_THRESHOLD {
+        return Err(AppError::RateLimited(1000));
+    }
+
+    if !verify_memory_passport_bundle(&req.bundle) {
+        return Err(AppError::BadRequest(
+            "passport bundle integrity check failed".to_string(),
+        ));
+    }
+
+    let target_namespace = resolve_passport_import_namespace(
+        &claims,
+        req.namespace.as_deref(),
+        &req.bundle.namespace,
+    )?;
+    let existing = state
+        .doc_engine
+        .list_all_including_archived(&target_namespace)?;
+    let plan = plan_memory_passport_import(&target_namespace, &req.bundle, &existing);
+    let imported_ids = if req.dry_run {
+        Vec::new()
+    } else {
+        apply_passport_import_plan(&state, &target_namespace, &plan, "passport-import-api")?
+    };
+
+    Ok(Json(PassportImportResponse {
+        dry_run: req.dry_run,
+        imported: imported_ids.len(),
+        preview: plan.preview,
+        imported_ids,
+    })
+    .into_response())
 }
 
 /// GET /v1/memories?agent=X — Right to access (GDPR Art. 15).

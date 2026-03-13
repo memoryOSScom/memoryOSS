@@ -505,6 +505,153 @@ pub fn runtime_contract_export_metadata() -> RuntimeContractExportMetadata {
     }
 }
 
+pub const MEMORY_PASSPORT_BUNDLE_VERSION: &str = "memoryoss.passport.v1alpha1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassportScope {
+    All,
+    Personal,
+    Project,
+    Team,
+}
+
+impl std::fmt::Display for PassportScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::All => write!(f, "all"),
+            Self::Personal => write!(f, "personal"),
+            Self::Project => write!(f, "project"),
+            Self::Team => write!(f, "team"),
+        }
+    }
+}
+
+impl std::str::FromStr for PassportScope {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "all" => Ok(Self::All),
+            "personal" => Ok(Self::Personal),
+            "project" => Ok(Self::Project),
+            "team" => Ok(Self::Team),
+            other => Err(format!("unsupported passport scope: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassportBundleIntegrity {
+    pub algorithm: String,
+    pub payload_sha256: String,
+    pub signed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassportBundleProvenance {
+    pub exported_from_namespace: String,
+    pub source_key_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPassportEntry {
+    pub id: Uuid,
+    pub content: String,
+    pub tags: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub original_namespace: Option<String>,
+    pub memory_type: MemoryType,
+    pub status: MemoryStatus,
+    pub version: u64,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confidence: Option<f64>,
+    #[serde(default)]
+    pub evidence_count: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_verified_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_from: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contradicts_with: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_events: Vec<MemoryReviewEvent>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPassportBundle {
+    pub bundle_version: String,
+    pub passport_id: Uuid,
+    pub runtime_contract: RuntimeContractExportMetadata,
+    pub scope: PassportScope,
+    pub namespace: String,
+    pub exported_at: DateTime<Utc>,
+    pub provenance: PassportBundleProvenance,
+    pub integrity: PassportBundleIntegrity,
+    pub memories: Vec<MemoryPassportEntry>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PassportImportDecision {
+    Create,
+    Merge,
+    Conflict,
+}
+
+impl std::fmt::Display for PassportImportDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Create => write!(f, "create"),
+            Self::Merge => write!(f, "merge"),
+            Self::Conflict => write!(f, "conflict"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassportImportPreviewItem {
+    pub incoming_id: Uuid,
+    pub decision: PassportImportDecision,
+    pub reason: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub existing_id: Option<Uuid>,
+    pub preview: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub content_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PassportImportPreview {
+    pub target_namespace: String,
+    pub scope: PassportScope,
+    pub integrity_valid: bool,
+    pub create_count: usize,
+    pub merge_count: usize,
+    pub conflict_count: usize,
+    pub items: Vec<PassportImportPreviewItem>,
+}
+
+#[derive(Debug, Clone)]
+pub struct PassportImportPlan {
+    pub preview: PassportImportPreview,
+    pub staged_memories: Vec<Memory>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ReviewQueueKind {
@@ -951,6 +1098,296 @@ impl Memory {
             changed,
             archive: should_archive,
         }
+    }
+}
+
+fn memory_preview(content: &str) -> String {
+    let mut preview = String::new();
+    for ch in content.chars() {
+        if preview.chars().count() >= 96 {
+            break;
+        }
+        preview.push(ch);
+    }
+    if preview.chars().count() < content.chars().count() {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn memory_has_any_tag(memory: &Memory, tags: &[&str]) -> bool {
+    memory.tags.iter().any(|tag| {
+        tags.iter()
+            .any(|candidate| tag.eq_ignore_ascii_case(candidate))
+    })
+}
+
+pub fn memory_matches_passport_scope(memory: &Memory, scope: PassportScope) -> bool {
+    match scope {
+        PassportScope::All => true,
+        PassportScope::Personal => {
+            memory.agent.is_some()
+                || memory.session.is_some()
+                || memory_has_any_tag(
+                    memory,
+                    &[
+                        "preference",
+                        "user-preference",
+                        "display",
+                        "verbosity",
+                        "style",
+                        "personal",
+                    ],
+                )
+        }
+        PassportScope::Team => memory_has_any_tag(
+            memory,
+            &[
+                "team",
+                "policy",
+                "shared",
+                "security",
+                "review",
+                "runbook",
+                "compliance",
+            ],
+        ),
+        PassportScope::Project => {
+            !memory_matches_passport_scope(memory, PassportScope::Personal)
+                && !memory_matches_passport_scope(memory, PassportScope::Team)
+                || memory_has_any_tag(
+                    memory,
+                    &[
+                        "decision",
+                        "incident",
+                        "project",
+                        "rule",
+                        "deploy",
+                        "bugfix",
+                        "constraint",
+                    ],
+                )
+        }
+    }
+}
+
+impl MemoryPassportEntry {
+    pub fn from_memory(memory: &Memory) -> Self {
+        Self {
+            id: memory.id,
+            content: memory.content.clone(),
+            tags: memory.tags.clone(),
+            agent: memory.agent.clone(),
+            session: memory.session.clone(),
+            original_namespace: memory.namespace.clone(),
+            memory_type: memory.memory_type,
+            status: memory.status,
+            version: memory.version,
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
+            source_key_id: memory.source_key.clone(),
+            content_hash: memory.content_hash.clone(),
+            archived: memory.archived,
+            confidence: memory.confidence,
+            evidence_count: memory.evidence_count,
+            last_verified_at: memory.last_verified_at,
+            superseded_by: memory.superseded_by,
+            derived_from: memory.derived_from.clone(),
+            contradicts_with: memory.contradicts_with.clone(),
+            review_events: memory.review_events.clone(),
+        }
+    }
+
+    pub fn to_memory_for_namespace(&self, namespace: &str) -> Memory {
+        Memory {
+            id: self.id,
+            content: self.content.clone(),
+            embedding: None,
+            tags: self.tags.clone(),
+            agent: self.agent.clone(),
+            session: self.session.clone(),
+            namespace: Some(namespace.to_string()),
+            memory_type: self.memory_type,
+            status: self.status,
+            version: self.version,
+            created_at: self.created_at,
+            updated_at: self.updated_at,
+            source_key: self.source_key_id.clone(),
+            content_hash: Some(
+                self.content_hash
+                    .clone()
+                    .unwrap_or_else(|| Memory::compute_hash(&self.content)),
+            ),
+            archived: self.archived,
+            confidence: self.confidence,
+            evidence_count: self.evidence_count,
+            last_verified_at: self.last_verified_at,
+            superseded_by: self.superseded_by,
+            derived_from: self.derived_from.clone(),
+            contradicts_with: self.contradicts_with.clone(),
+            injection_count: 0,
+            reuse_count: 0,
+            confirm_count: 0,
+            reject_count: 0,
+            supersede_count: 0,
+            last_injected_at: None,
+            last_reused_at: None,
+            last_outcome_at: None,
+            review_events: self.review_events.clone(),
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct MemoryPassportIntegrityPayload<'a> {
+    bundle_version: &'a str,
+    passport_id: Uuid,
+    runtime_contract: &'a RuntimeContractExportMetadata,
+    scope: PassportScope,
+    namespace: &'a str,
+    exported_at: DateTime<Utc>,
+    provenance: &'a PassportBundleProvenance,
+    memories: &'a [MemoryPassportEntry],
+}
+
+fn memory_passport_payload_sha256(bundle: &MemoryPassportBundle) -> String {
+    use sha2::{Digest, Sha256};
+    let payload = MemoryPassportIntegrityPayload {
+        bundle_version: &bundle.bundle_version,
+        passport_id: bundle.passport_id,
+        runtime_contract: &bundle.runtime_contract,
+        scope: bundle.scope,
+        namespace: &bundle.namespace,
+        exported_at: bundle.exported_at,
+        provenance: &bundle.provenance,
+        memories: &bundle.memories,
+    };
+    let bytes = serde_json::to_vec(&payload).expect("passport payload should serialize");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    hex::encode(hasher.finalize())
+}
+
+pub fn build_memory_passport_bundle(
+    namespace: &str,
+    scope: PassportScope,
+    memories: &[Memory],
+) -> MemoryPassportBundle {
+    let selected: Vec<MemoryPassportEntry> = memories
+        .iter()
+        .filter(|memory| !memory.archived)
+        .filter(|memory| memory_matches_passport_scope(memory, scope))
+        .map(MemoryPassportEntry::from_memory)
+        .collect();
+    let source_key_ids = {
+        let mut keys: Vec<String> = selected
+            .iter()
+            .filter_map(|entry| entry.source_key_id.clone())
+            .collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys
+    };
+    let mut bundle = MemoryPassportBundle {
+        bundle_version: MEMORY_PASSPORT_BUNDLE_VERSION.to_string(),
+        passport_id: Uuid::now_v7(),
+        runtime_contract: runtime_contract_export_metadata(),
+        scope,
+        namespace: namespace.to_string(),
+        exported_at: Utc::now(),
+        provenance: PassportBundleProvenance {
+            exported_from_namespace: namespace.to_string(),
+            source_key_ids,
+        },
+        integrity: PassportBundleIntegrity {
+            algorithm: "sha256".to_string(),
+            payload_sha256: String::new(),
+            signed: false,
+        },
+        memories: selected,
+    };
+    bundle.integrity.payload_sha256 = memory_passport_payload_sha256(&bundle);
+    bundle
+}
+
+pub fn verify_memory_passport_bundle(bundle: &MemoryPassportBundle) -> bool {
+    bundle.integrity.algorithm.eq_ignore_ascii_case("sha256")
+        && bundle.integrity.payload_sha256 == memory_passport_payload_sha256(bundle)
+}
+
+pub fn plan_memory_passport_import(
+    target_namespace: &str,
+    bundle: &MemoryPassportBundle,
+    existing: &[Memory],
+) -> PassportImportPlan {
+    let mut known = existing.to_vec();
+    let mut staged_memories = Vec::new();
+    let mut items = Vec::new();
+    let integrity_valid = verify_memory_passport_bundle(bundle);
+    let mut create_count = 0usize;
+    let mut merge_count = 0usize;
+    let mut conflict_count = 0usize;
+
+    for entry in &bundle.memories {
+        let imported = entry.to_memory_for_namespace(target_namespace);
+        let duplicate = known.iter().find(|memory| {
+            memory.id == imported.id
+                || memory.content_hash == imported.content_hash
+                || crate::fusion::are_structural_duplicates(&memory.content, &imported.content)
+        });
+        if let Some(existing_memory) = duplicate {
+            merge_count += 1;
+            items.push(PassportImportPreviewItem {
+                incoming_id: entry.id,
+                decision: PassportImportDecision::Merge,
+                reason: "existing memory already matches content or semantic identity".to_string(),
+                existing_id: Some(existing_memory.id),
+                preview: memory_preview(&entry.content),
+                content_hash: imported.content_hash.clone(),
+            });
+            continue;
+        }
+
+        if let Some(conflict_memory) = known
+            .iter()
+            .find(|memory| memories_contradict(memory, &imported))
+        {
+            conflict_count += 1;
+            items.push(PassportImportPreviewItem {
+                incoming_id: entry.id,
+                decision: PassportImportDecision::Conflict,
+                reason: "incoming memory contradicts existing memory".to_string(),
+                existing_id: Some(conflict_memory.id),
+                preview: memory_preview(&entry.content),
+                content_hash: imported.content_hash.clone(),
+            });
+            continue;
+        }
+
+        create_count += 1;
+        items.push(PassportImportPreviewItem {
+            incoming_id: entry.id,
+            decision: PassportImportDecision::Create,
+            reason: "new memory will be created".to_string(),
+            existing_id: None,
+            preview: memory_preview(&entry.content),
+            content_hash: imported.content_hash.clone(),
+        });
+        known.push(imported.clone());
+        staged_memories.push(imported);
+    }
+
+    PassportImportPlan {
+        preview: PassportImportPreview {
+            target_namespace: target_namespace.to_string(),
+            scope: bundle.scope,
+            integrity_valid,
+            create_count,
+            merge_count,
+            conflict_count,
+            items,
+        },
+        staged_memories,
     }
 }
 
@@ -1432,9 +1869,11 @@ pub struct ConsolidateResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        MEMORY_RUNTIME_CONTRACT_ID, MEMORY_RUNTIME_CONTRACT_VERSION, Memory, MemoryFeedbackAction,
-        MemoryStatus, ReviewQueueKind, RuntimeSupportLevel, memories_contradict,
-        runtime_contract_document,
+        MEMORY_PASSPORT_BUNDLE_VERSION, MEMORY_RUNTIME_CONTRACT_ID,
+        MEMORY_RUNTIME_CONTRACT_VERSION, Memory, MemoryFeedbackAction, MemoryStatus,
+        PassportImportDecision, PassportScope, ReviewQueueKind, RuntimeSupportLevel,
+        build_memory_passport_bundle, memories_contradict, plan_memory_passport_import,
+        runtime_contract_document, verify_memory_passport_bundle,
     };
 
     #[test]
@@ -1615,6 +2054,95 @@ mod tests {
                 .known_gaps
                 .iter()
                 .any(|entry| entry.area == "replay")
+        );
+    }
+
+    #[test]
+    fn test_memory_passport_bundle_filters_scope_and_computes_integrity() {
+        let mut personal = Memory::new("Never show raw entries; summaries are enough.".to_string());
+        personal.tags = vec!["user-preference".to_string(), "display".to_string()];
+        personal.agent = Some("claude".to_string());
+        personal.namespace = Some("teamspace".to_string());
+
+        let mut team = Memory::new("Security review is mandatory before merge.".to_string());
+        team.tags = vec!["team".to_string(), "policy".to_string()];
+        team.namespace = Some("teamspace".to_string());
+
+        let bundle = build_memory_passport_bundle(
+            "teamspace",
+            PassportScope::Personal,
+            &[personal.clone(), team],
+        );
+        assert_eq!(bundle.bundle_version, MEMORY_PASSPORT_BUNDLE_VERSION);
+        assert_eq!(bundle.scope, PassportScope::Personal);
+        assert_eq!(bundle.memories.len(), 1);
+        assert_eq!(bundle.memories[0].content, personal.content);
+        assert!(verify_memory_passport_bundle(&bundle));
+    }
+
+    #[test]
+    fn test_memory_passport_import_plan_reports_create_merge_and_conflict() {
+        let mut existing_duplicate =
+            Memory::new("Use feat/<ticket>-slug for feature branches.".to_string());
+        existing_duplicate.namespace = Some("target".to_string());
+        let duplicate_hash = existing_duplicate.content_hash.clone();
+
+        let mut existing_conflict =
+            Memory::new("Production deploys require staging approval.".to_string());
+        existing_conflict.namespace = Some("target".to_string());
+
+        let mut incoming_duplicate =
+            Memory::new("Use feat/<ticket>-slug for feature branches.".to_string());
+        incoming_duplicate.namespace = Some("source".to_string());
+        incoming_duplicate.content_hash = duplicate_hash;
+
+        let mut incoming_conflict =
+            Memory::new("Production deploys do not require staging approval.".to_string());
+        incoming_conflict.namespace = Some("source".to_string());
+
+        let mut incoming_create =
+            Memory::new("Project decision: keep MCP-first auth as the default.".to_string());
+        incoming_create.namespace = Some("source".to_string());
+        incoming_create.tags = vec!["decision".to_string()];
+
+        let bundle = build_memory_passport_bundle(
+            "source",
+            PassportScope::All,
+            &[
+                incoming_duplicate.clone(),
+                incoming_conflict.clone(),
+                incoming_create.clone(),
+            ],
+        );
+        let plan = plan_memory_passport_import(
+            "target",
+            &bundle,
+            &[existing_duplicate.clone(), existing_conflict.clone()],
+        );
+
+        assert!(plan.preview.integrity_valid);
+        assert_eq!(plan.preview.create_count, 1);
+        assert_eq!(plan.preview.merge_count, 1);
+        assert_eq!(plan.preview.conflict_count, 1);
+        assert_eq!(plan.staged_memories.len(), 1);
+        assert_eq!(plan.staged_memories[0].namespace.as_deref(), Some("target"));
+        assert!(
+            plan.preview
+                .items
+                .iter()
+                .any(|item| item.decision == PassportImportDecision::Merge)
+        );
+        assert!(
+            plan.preview
+                .items
+                .iter()
+                .any(|item| item.decision == PassportImportDecision::Conflict)
+        );
+        assert!(
+            plan.preview
+                .items
+                .iter()
+                .any(|item| item.decision == PassportImportDecision::Create)
         );
     }
 }

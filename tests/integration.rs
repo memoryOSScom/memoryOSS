@@ -6038,3 +6038,268 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     assert!(broken_stdout.contains("[error] auth: no admin API key configured"));
     assert!(broken_stdout.contains("Doctor FAILED"));
 }
+
+#[tokio::test]
+async fn test_passport_api_export_import_roundtrip_with_dry_run_preview() {
+    let source_port = free_port();
+    let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
+    let source_data_dir = source_tmp.path().join("data");
+    std::fs::create_dir_all(&source_data_dir).unwrap();
+    let source_config = test_config_http(source_port, source_data_dir.to_str().unwrap());
+    let source_config_path = source_tmp.path().join("passport-source.toml");
+    std::fs::write(&source_config_path, &source_config).unwrap();
+
+    let mut source_child = start_server(source_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let source_base = format!("http://127.0.0.1:{source_port}");
+
+    for payload in [
+        serde_json::json!({
+            "content": "Never show raw entries; short summaries are enough.",
+            "tags": ["user-preference", "display"],
+            "agent": "claude"
+        }),
+        serde_json::json!({
+            "content": "Project decision: keep MCP-first auth as the default path.",
+            "tags": ["decision", "project"]
+        }),
+        serde_json::json!({
+            "content": "Team policy: security review is mandatory before merge.",
+            "tags": ["team", "policy"]
+        }),
+    ] {
+        let resp = client
+            .post(format!("{source_base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    let bundle_resp = client
+        .get(format!("{source_base}/v1/passport/export?scope=project"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_resp.status(), 200);
+    let bundle: serde_json::Value = bundle_resp.json().await.unwrap();
+    assert_eq!(bundle["scope"].as_str(), Some("project"));
+    assert_eq!(bundle["memories"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        bundle["memories"][0]["content"].as_str(),
+        Some("Project decision: keep MCP-first auth as the default path.")
+    );
+    let source_key_id = bundle["memories"][0]["source_key_id"]
+        .as_str()
+        .expect("bundle should preserve source key id")
+        .to_string();
+
+    source_child.kill().await.ok();
+    source_child.wait().await.ok();
+
+    let target_port = free_port();
+    let target_tmp = tempfile::tempdir().expect("failed to create target temp dir");
+    let target_data_dir = target_tmp.path().join("data");
+    std::fs::create_dir_all(&target_data_dir).unwrap();
+    let target_config = test_config_http(target_port, target_data_dir.to_str().unwrap());
+    let target_config_path = target_tmp.path().join("passport-target.toml");
+    std::fs::write(&target_config_path, &target_config).unwrap();
+
+    let mut target_child = start_server(target_config_path.to_str().unwrap()).await;
+    let target_base = format!("http://127.0.0.1:{target_port}");
+
+    let dry_run_resp = client
+        .post(format!("{target_base}/v1/passport/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "dry_run": true,
+            "bundle": bundle.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dry_run_resp.status(), 200);
+    let dry_run_body: serde_json::Value = dry_run_resp.json().await.unwrap();
+    assert_eq!(dry_run_body["dry_run"].as_bool(), Some(true));
+    assert_eq!(dry_run_body["imported"].as_u64(), Some(0));
+    assert_eq!(
+        dry_run_body["preview"]["integrity_valid"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(dry_run_body["preview"]["create_count"].as_u64(), Some(1));
+    assert_eq!(dry_run_body["preview"]["merge_count"].as_u64(), Some(0));
+    assert_eq!(dry_run_body["preview"]["conflict_count"].as_u64(), Some(0));
+
+    let import_resp = client
+        .post(format!("{target_base}/v1/passport/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "bundle": bundle
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(import_resp.status(), 200);
+    let import_body: serde_json::Value = import_resp.json().await.unwrap();
+    assert_eq!(import_body["dry_run"].as_bool(), Some(false));
+    assert_eq!(import_body["imported"].as_u64(), Some(1));
+
+    let export_resp = client
+        .get(format!("{target_base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    assert_eq!(export_body["count"].as_u64(), Some(1));
+    assert_eq!(
+        export_body["memories"][0]["content"].as_str(),
+        Some("Project decision: keep MCP-first auth as the default path.")
+    );
+    assert_eq!(
+        export_body["memories"][0]["tags"].as_array().unwrap().len(),
+        2
+    );
+    assert_eq!(
+        export_body["memories"][0]["source_key_id"].as_str(),
+        Some(source_key_id.as_str())
+    );
+
+    target_child.kill().await.ok();
+    target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_passport_export_and_import_roundtrip() {
+    let source_port = free_port();
+    let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
+    let source_data_dir = source_tmp.path().join("data");
+    std::fs::create_dir_all(&source_data_dir).unwrap();
+    let source_config = test_config_http(source_port, source_data_dir.to_str().unwrap());
+    let source_config_path = source_tmp.path().join("passport-cli-source.toml");
+    std::fs::write(&source_config_path, &source_config).unwrap();
+
+    let mut source_child = start_server(source_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let source_base = format!("http://127.0.0.1:{source_port}");
+
+    let store_resp = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Team policy: security review is mandatory before merge.",
+            "tags": ["team", "policy"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    source_child.kill().await.ok();
+    source_child.wait().await.ok();
+
+    let bundle_path = source_tmp.path().join("team-passport.json");
+    let export = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            source_config_path.to_str().unwrap(),
+            "passport",
+            "export",
+            "--namespace",
+            "test",
+            "--scope",
+            "team",
+            "--output",
+            bundle_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run passport export");
+    assert!(
+        export.status.success(),
+        "passport export failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&export.stdout),
+        String::from_utf8_lossy(&export.stderr)
+    );
+    assert!(bundle_path.exists());
+    let bundle_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&bundle_path).unwrap()).unwrap();
+    assert_eq!(bundle_json["scope"].as_str(), Some("team"));
+    assert_eq!(bundle_json["memories"].as_array().unwrap().len(), 1);
+
+    let target_port = free_port();
+    let target_tmp = tempfile::tempdir().expect("failed to create target temp dir");
+    let target_data_dir = target_tmp.path().join("data");
+    std::fs::create_dir_all(&target_data_dir).unwrap();
+    let target_config = test_config_http(target_port, target_data_dir.to_str().unwrap());
+    let target_config_path = target_tmp.path().join("passport-cli-target.toml");
+    std::fs::write(&target_config_path, &target_config).unwrap();
+
+    let dry_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            target_config_path.to_str().unwrap(),
+            "passport",
+            "import",
+            bundle_path.to_str().unwrap(),
+            "--namespace",
+            "test",
+            "--dry-run",
+        ])
+        .output()
+        .await
+        .expect("failed to run passport import dry-run");
+    assert!(
+        dry_run.status.success(),
+        "passport import dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let dry_run_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    assert!(dry_run_stdout.contains("create=1 merge=0 conflict=0"));
+
+    let import = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            target_config_path.to_str().unwrap(),
+            "passport",
+            "import",
+            bundle_path.to_str().unwrap(),
+            "--namespace",
+            "test",
+        ])
+        .output()
+        .await
+        .expect("failed to run passport import");
+    assert!(
+        import.status.success(),
+        "passport import failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&import.stdout),
+        String::from_utf8_lossy(&import.stderr)
+    );
+    let import_stdout = String::from_utf8_lossy(&import.stdout);
+    assert!(import_stdout.contains("Imported passport bundle into test: imported=1"));
+
+    let mut target_child = start_server(target_config_path.to_str().unwrap()).await;
+    let target_base = format!("http://127.0.0.1:{target_port}");
+    let export_resp = client
+        .get(format!("{target_base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    assert_eq!(export_body["count"].as_u64(), Some(1));
+    assert_eq!(
+        export_body["memories"][0]["content"].as_str(),
+        Some("Team policy: security review is mandatory before merge.")
+    );
+
+    target_child.kill().await.ok();
+    target_child.wait().await.ok();
+}
