@@ -1,0 +1,133 @@
+{
+  "bundle_version": "memoryoss.history.v1alpha1",
+  "history_id": "44444444-4444-7444-8444-444444444444",
+  "root_id": "33333333-3333-7333-8333-333333333333",
+  "runtime_contract": {
+    "contract_id": "memoryoss.runtime.v1alpha1",
+    "version": "2026-03-13",
+    "document_route": "/v1/runtime/contract",
+    "stable_semantics": [
+      "namespace_scope",
+      "provenance",
+      "portable_export"
+    ],
+    "experimental_layers_excluded": [
+      "retrieval_confidence_gate",
+      "identifier_first_routing",
+      "summary_evidence_recall"
+    ]
+  },
+  "namespace": "demo",
+  "exported_at": "2026-03-13T09:00:00Z",
+  "memories": [
+    {
+      "id": "22222222-2222-7222-8222-222222222222",
+      "content": "Deploy API through /v1/proxy only after staging signoff.",
+      "tags": [
+        "project",
+        "deploy"
+      ],
+      "agent": "release-bot",
+      "session": "deploy-session",
+      "original_namespace": "demo",
+      "memory_type": "procedural",
+      "status": "stale",
+      "version": 2,
+      "created_at": "2026-03-10T09:00:00Z",
+      "updated_at": "2026-03-12T18:00:00Z",
+      "source_key_id": "key_demo_1234",
+      "content_hash": "0a4595f791ad63f6db1b58782798abe0a9acd5dde68493d0daeb695843a0b235",
+      "archived": false,
+      "confidence": 0.94,
+      "evidence_count": 2,
+      "last_verified_at": "2026-03-12T18:00:00Z",
+      "superseded_by": "33333333-3333-7333-8333-333333333333",
+      "review_events": [
+        {
+          "at": "2026-03-12T18:00:00Z",
+          "actor": "operator",
+          "action": "supersede",
+          "via": "review_queue",
+          "queue_kind": "contested",
+          "superseded_by": "33333333-3333-7333-8333-333333333333"
+        }
+      ]
+    },
+    {
+      "id": "33333333-3333-7333-8333-333333333333",
+      "content": "Review queue items stay candidate until an operator confirms them.",
+      "tags": [
+        "project",
+        "review"
+      ],
+      "agent": "review-bot",
+      "session": "review-session",
+      "original_namespace": "demo",
+      "memory_type": "semantic",
+      "status": "active",
+      "version": 3,
+      "created_at": "2026-03-11T10:00:00Z",
+      "updated_at": "2026-03-13T08:30:00Z",
+      "source_key_id": "key_demo_1234",
+      "content_hash": "2fb427ac5aafdf60e9fb5e23bb0f4ed8cc4c4ea559dd989e74453af2c104541e",
+      "archived": false,
+      "confidence": 0.99,
+      "evidence_count": 1,
+      "last_verified_at": "2026-03-13T08:30:00Z",
+      "review_events": [
+        {
+          "at": "2026-03-13T08:30:00Z",
+          "actor": "operator",
+          "action": "confirm",
+          "via": "review_queue",
+          "queue_kind": "candidate"
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "from": "22222222-2222-7222-8222-222222222222",
+      "to": "33333333-3333-7333-8333-333333333333",
+      "kind": "superseded_by"
+    }
+  ],
+  "timeline": [
+    {
+      "at": "2026-03-10T09:00:00Z",
+      "memory_id": "22222222-2222-7222-8222-222222222222",
+      "kind": "created",
+      "summary": "source memory created",
+      "to_status": "candidate",
+      "actor": "release-bot",
+      "via": "store"
+    },
+    {
+      "at": "2026-03-12T18:00:00Z",
+      "memory_id": "22222222-2222-7222-8222-222222222222",
+      "kind": "superseded",
+      "summary": "source memory superseded by reviewed rule",
+      "from_status": "contested",
+      "to_status": "stale",
+      "actor": "operator",
+      "via": "review_queue",
+      "related_ids": [
+        "33333333-3333-7333-8333-333333333333"
+      ]
+    },
+    {
+      "at": "2026-03-13T08:30:00Z",
+      "memory_id": "33333333-3333-7333-8333-333333333333",
+      "kind": "review",
+      "summary": "replacement memory confirmed",
+      "from_status": "candidate",
+      "to_status": "active",
+      "actor": "operator",
+      "via": "review_queue"
+    }
+  ],
+  "integrity": {
+    "algorithm": "sha256",
+    "payload_sha256": "177c0368416da1a6dd6d307f8453ff3da816baa43b2dce0d5147d62ca04c2c54"
+  }
+}

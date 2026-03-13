@@ -90,6 +90,9 @@ export interface RecallResult {
   cursor?: string;
 }
 
+export type { ConformanceArtifactKind } from "./conformance";
+export { normalizeConformanceArtifact } from "./conformance";
+
 export class MemoryOSSError extends Error {
   status: number;
   constructor(status: number, message: string) {

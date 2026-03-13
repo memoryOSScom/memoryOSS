@@ -1,0 +1,95 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "memoryOSS History Bundle",
+  "type": "object",
+  "required": [
+    "bundle_version",
+    "history_id",
+    "root_id",
+    "runtime_contract",
+    "namespace",
+    "exported_at",
+    "memories",
+    "edges",
+    "timeline",
+    "integrity"
+  ],
+  "properties": {
+    "bundle_version": { "type": "string" },
+    "history_id": { "type": "string", "format": "uuid" },
+    "root_id": { "type": "string", "format": "uuid" },
+    "runtime_contract": { "$ref": "passport-bundle.schema.json#/$defs/runtime_export_metadata" },
+    "namespace": { "type": "string" },
+    "exported_at": { "type": "string", "format": "date-time" },
+    "memories": {
+      "type": "array",
+      "items": { "$ref": "passport-bundle.schema.json#/$defs/passport_memory" }
+    },
+    "edges": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/history_edge" }
+    },
+    "timeline": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/history_event" }
+    },
+    "integrity": { "$ref": "#/$defs/history_integrity" }
+  },
+  "$defs": {
+    "history_edge": {
+      "type": "object",
+      "required": ["from", "to", "kind"],
+      "properties": {
+        "from": { "type": "string", "format": "uuid" },
+        "to": { "type": "string", "format": "uuid" },
+        "kind": {
+          "type": "string",
+          "enum": ["derived_from", "superseded_by", "contradicts_with"]
+        }
+      }
+    },
+    "history_event": {
+      "type": "object",
+      "required": ["at", "memory_id", "kind", "summary"],
+      "properties": {
+        "at": { "type": "string", "format": "date-time" },
+        "memory_id": { "type": "string", "format": "uuid" },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "created",
+            "derived",
+            "contradicted",
+            "review",
+            "superseded",
+            "archived",
+            "state_snapshot"
+          ]
+        },
+        "summary": { "type": "string" },
+        "from_status": {
+          "type": "string",
+          "enum": ["candidate", "active", "contested", "stale"]
+        },
+        "to_status": {
+          "type": "string",
+          "enum": ["candidate", "active", "contested", "stale"]
+        },
+        "actor": { "type": "string" },
+        "via": { "type": "string" },
+        "related_ids": {
+          "type": "array",
+          "items": { "type": "string", "format": "uuid" }
+        }
+      }
+    },
+    "history_integrity": {
+      "type": "object",
+      "required": ["algorithm", "payload_sha256"],
+      "properties": {
+        "algorithm": { "type": "string" },
+        "payload_sha256": { "type": "string" }
+      }
+    }
+  }
+}

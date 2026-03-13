@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "memoryOSS Runtime Contract",
+  "type": "object",
+  "required": [
+    "contract_id",
+    "version",
+    "runtime_name",
+    "stable_semantics",
+    "experimental_layers",
+    "object_model",
+    "guarantees",
+    "api_mappings",
+    "known_gaps"
+  ],
+  "properties": {
+    "contract_id": {
+      "type": "string"
+    },
+    "version": {
+      "type": "string"
+    },
+    "runtime_name": {
+      "type": "string"
+    },
+    "stable_semantics": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/runtime_semantic"
+      }
+    },
+    "experimental_layers": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/experimental_layer"
+      }
+    },
+    "object_model": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/object_model_entry"
+      }
+    },
+    "guarantees": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/named_description"
+      }
+    },
+    "api_mappings": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/api_mapping"
+      }
+    },
+    "known_gaps": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/runtime_gap"
+      }
+    }
+  },
+  "$defs": {
+    "runtime_semantic": {
+      "type": "object",
+      "required": [
+        "name",
+        "guarantee",
+        "current_surfaces"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "guarantee": { "type": "string" },
+        "current_surfaces": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "experimental_layer": {
+      "type": "object",
+      "required": [
+        "name",
+        "description",
+        "current_surfaces",
+        "excluded_from_contract"
+      ],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" },
+        "current_surfaces": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "excluded_from_contract": { "type": "boolean" }
+      }
+    },
+    "object_model_entry": {
+      "type": "object",
+      "required": [
+        "kind",
+        "support_level",
+        "description",
+        "current_mapping"
+      ],
+      "properties": {
+        "kind": { "type": "string" },
+        "support_level": {
+          "type": "string",
+          "enum": ["stable", "partial", "planned"]
+        },
+        "description": { "type": "string" },
+        "current_mapping": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "known_gaps": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "named_description": {
+      "type": "object",
+      "required": ["name", "description"],
+      "properties": {
+        "name": { "type": "string" },
+        "description": { "type": "string" }
+      }
+    },
+    "api_mapping": {
+      "type": "object",
+      "required": [
+        "runtime_operation",
+        "routes",
+        "data_model_fields"
+      ],
+      "properties": {
+        "runtime_operation": { "type": "string" },
+        "routes": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "data_model_fields": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "runtime_gap": {
+      "type": "object",
+      "required": ["area", "status", "note"],
+      "properties": {
+        "area": { "type": "string" },
+        "status": {
+          "type": "string",
+          "enum": ["stable", "partial", "planned"]
+        },
+        "note": { "type": "string" }
+      }
+    }
+  }
+}

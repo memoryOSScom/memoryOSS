@@ -6646,3 +6646,53 @@ async fn test_cli_history_branch_into_empty_namespace() {
     branch_child.kill().await.ok();
     branch_child.wait().await.ok();
 }
+
+#[tokio::test]
+async fn test_conformance_cli_normalizes_canonical_fixtures() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let cases = [
+        (
+            "runtime_contract",
+            root.join("conformance/fixtures/runtime-contract.json"),
+        ),
+        (
+            "passport",
+            root.join("conformance/fixtures/passport-bundle.json"),
+        ),
+        (
+            "history",
+            root.join("conformance/fixtures/history-bundle.json"),
+        ),
+    ];
+
+    for (kind, input) in cases {
+        let tmp = tempfile::tempdir().expect("failed to create conformance temp dir");
+        let output = tmp.path().join(format!("{kind}.normalized.json"));
+        let result = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "conformance",
+                "normalize",
+                "--kind",
+                kind,
+                "--input",
+                input.to_str().unwrap(),
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .await
+            .expect("failed to run conformance normalize");
+        assert!(
+            result.status.success(),
+            "conformance normalize failed for {kind}: stdout={} stderr={}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+
+        let fixture: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&input).unwrap()).unwrap();
+        let normalized: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
+        assert_eq!(normalized, fixture, "normalized {kind} fixture diverged");
+    }
+}

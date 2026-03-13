@@ -1,0 +1,114 @@
+{
+  "contract_id": "memoryoss.runtime.v1alpha1",
+  "version": "2026-03-13",
+  "runtime_name": "memoryoss",
+  "stable_semantics": [
+    {
+      "name": "namespace_scope",
+      "guarantee": "Every stored memory stays scoped to a namespace boundary on read, write, export, and replay surfaces.",
+      "current_surfaces": [
+        "Memory.namespace",
+        "/v1/store",
+        "/v1/recall",
+        "/v1/export"
+      ]
+    },
+    {
+      "name": "portable_export",
+      "guarantee": "Portable exports preserve semantic identity, provenance, and lineage without embeddings.",
+      "current_surfaces": [
+        "/v1/export",
+        "/v1/passport/export",
+        "/v1/history/{id}/bundle"
+      ]
+    }
+  ],
+  "experimental_layers": [
+    {
+      "name": "summary_evidence_recall",
+      "description": "Compact summary and evidence rendering may evolve independently from stored runtime state.",
+      "current_surfaces": [
+        "/v1/recall",
+        "/v1/admin/query-explain",
+        "/proxy/*"
+      ],
+      "excluded_from_contract": true
+    }
+  ],
+  "object_model": [
+    {
+      "kind": "project_memory",
+      "support_level": "stable",
+      "description": "Canonical durable runtime record for project-specific facts and operator rules.",
+      "current_mapping": [
+        "Memory",
+        "/v1/store",
+        "/v1/recall",
+        "/v1/export"
+      ]
+    },
+    {
+      "kind": "passport",
+      "support_level": "stable",
+      "description": "Portable subset of visible runtime state for transfer between tools.",
+      "current_mapping": [
+        "MemoryPassportBundle",
+        "/v1/passport/export",
+        "/v1/passport/import"
+      ]
+    },
+    {
+      "kind": "history",
+      "support_level": "partial",
+      "description": "Deterministic lineage bundle for replay and branch workflows.",
+      "current_mapping": [
+        "MemoryHistoryBundle",
+        "/v1/history/{id}/bundle",
+        "/v1/history/replay"
+      ],
+      "known_gaps": [
+        "Replay is intentionally fail-closed to empty target namespaces."
+      ]
+    }
+  ],
+  "guarantees": [
+    {
+      "name": "lineage_preservation",
+      "description": "Supersede and merge operations preserve lineage instead of destructive overwrite."
+    },
+    {
+      "name": "contract_tagged_export",
+      "description": "Portable exports carry runtime contract metadata so downstream readers can reason about semantics and gaps."
+    }
+  ],
+  "api_mappings": [
+    {
+      "runtime_operation": "portability_export",
+      "routes": [
+        "/v1/export",
+        "/v1/passport/export"
+      ],
+      "data_model_fields": [
+        "Memory without embedding",
+        "runtime_contract metadata"
+      ]
+    },
+    {
+      "runtime_operation": "history_replay",
+      "routes": [
+        "/v1/history/replay"
+      ],
+      "data_model_fields": [
+        "MemoryHistoryBundle",
+        "Memory without embedding"
+      ]
+    }
+  ],
+  "known_gaps": [
+    {
+      "area": "typed_policy_objects",
+      "status": "planned",
+      "note": "Policy semantics exist today, but are not yet first-class typed runtime objects."
+    }
+  ]
+}

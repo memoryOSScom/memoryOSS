@@ -32,6 +32,7 @@ mod validation;
 
 use clap::{Parser, Subcommand};
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(
@@ -72,6 +73,11 @@ enum Commands {
     },
     /// Start MCP server (stdio)
     McpServer,
+    /// Read and re-write canonical runtime conformance fixtures
+    Conformance {
+        #[command(subcommand)]
+        command: ConformanceCommands,
+    },
     /// Start in dev mode (mock embeddings, no TLS, relaxed auth)
     Dev,
     /// Show namespace health, lifecycle counts, worker state, and index health
@@ -276,6 +282,42 @@ enum HistoryCommands {
         #[arg(long)]
         dry_run: bool,
     },
+}
+
+#[derive(Subcommand)]
+enum ConformanceCommands {
+    /// Read and re-write a canonical runtime artifact
+    Normalize {
+        /// Artifact kind: runtime_contract, passport, or history
+        #[arg(long)]
+        kind: String,
+        /// Input fixture JSON path
+        #[arg(long)]
+        input: PathBuf,
+        /// Output JSON path
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConformanceArtifactKind {
+    RuntimeContract,
+    Passport,
+    History,
+}
+
+impl FromStr for ConformanceArtifactKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "runtime_contract" => Ok(Self::RuntimeContract),
+            "passport" => Ok(Self::Passport),
+            "history" => Ok(Self::History),
+            other => Err(format!("unsupported conformance artifact kind: {other}")),
+        }
+    }
 }
 
 fn append_backup_tree<W: std::io::Write>(
@@ -1153,6 +1195,36 @@ fn run_history_branch(
         target_namespace,
         plan.staged_memories.len()
     );
+    Ok(())
+}
+
+fn run_conformance_normalize(
+    kind: ConformanceArtifactKind,
+    input: &Path,
+    output: &Path,
+) -> anyhow::Result<()> {
+    let bytes = std::fs::read(input)?;
+    let normalized = match kind {
+        ConformanceArtifactKind::RuntimeContract => {
+            let artifact: crate::memory::RuntimeContractDocument = serde_json::from_slice(&bytes)?;
+            serde_json::to_vec_pretty(&artifact)?
+        }
+        ConformanceArtifactKind::Passport => {
+            let artifact: crate::memory::MemoryPassportBundle = serde_json::from_slice(&bytes)?;
+            if !crate::memory::verify_memory_passport_bundle(&artifact) {
+                anyhow::bail!("passport fixture integrity check failed");
+            }
+            serde_json::to_vec_pretty(&artifact)?
+        }
+        ConformanceArtifactKind::History => {
+            let artifact: crate::memory::MemoryHistoryBundle = serde_json::from_slice(&bytes)?;
+            if !crate::memory::verify_memory_history_bundle(&artifact) {
+                anyhow::bail!("history fixture integrity check failed");
+            }
+            serde_json::to_vec_pretty(&artifact)?
+        }
+    };
+    std::fs::write(output, normalized)?;
     Ok(())
 }
 
@@ -2154,6 +2226,22 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let command = cli.command.unwrap_or(Commands::Serve);
+    if let Commands::Conformance { command } = &command {
+        match command {
+            ConformanceCommands::Normalize {
+                kind,
+                input,
+                output,
+            } => {
+                let kind = kind
+                    .parse::<ConformanceArtifactKind>()
+                    .map_err(anyhow::Error::msg)?;
+                run_conformance_normalize(kind, input, output)?;
+                return Ok(());
+            }
+        }
+    }
+
     let operator_command = matches!(
         &command,
         Commands::Status { .. }
@@ -2247,6 +2335,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::McpServer => {
             mcp::run_mcp_server(config, cli.config).await?;
+        }
+        Commands::Conformance { .. } => {
+            unreachable!("conformance commands are handled before config loading");
         }
         Commands::Dev => {
             config.dev_mode = true;

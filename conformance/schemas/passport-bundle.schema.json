@@ -1,0 +1,153 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "memoryOSS Passport Bundle",
+  "type": "object",
+  "required": [
+    "bundle_version",
+    "passport_id",
+    "runtime_contract",
+    "scope",
+    "namespace",
+    "exported_at",
+    "provenance",
+    "integrity",
+    "memories"
+  ],
+  "properties": {
+    "bundle_version": { "type": "string" },
+    "passport_id": { "type": "string", "format": "uuid" },
+    "runtime_contract": { "$ref": "#/$defs/runtime_export_metadata" },
+    "scope": {
+      "type": "string",
+      "enum": ["all", "personal", "project", "team"]
+    },
+    "namespace": { "type": "string" },
+    "exported_at": { "type": "string", "format": "date-time" },
+    "provenance": { "$ref": "#/$defs/passport_provenance" },
+    "integrity": { "$ref": "#/$defs/passport_integrity" },
+    "memories": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/passport_memory" }
+    }
+  },
+  "$defs": {
+    "runtime_export_metadata": {
+      "type": "object",
+      "required": [
+        "contract_id",
+        "version",
+        "document_route",
+        "stable_semantics",
+        "experimental_layers_excluded"
+      ],
+      "properties": {
+        "contract_id": { "type": "string" },
+        "version": { "type": "string" },
+        "document_route": { "type": "string" },
+        "stable_semantics": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "experimental_layers_excluded": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "passport_provenance": {
+      "type": "object",
+      "required": ["exported_from_namespace", "source_key_ids"],
+      "properties": {
+        "exported_from_namespace": { "type": "string" },
+        "source_key_ids": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "passport_integrity": {
+      "type": "object",
+      "required": ["algorithm", "payload_sha256", "signed"],
+      "properties": {
+        "algorithm": { "type": "string" },
+        "payload_sha256": { "type": "string" },
+        "signed": { "type": "boolean" }
+      }
+    },
+    "review_event": {
+      "type": "object",
+      "required": ["at", "actor", "action", "via"],
+      "properties": {
+        "at": { "type": "string", "format": "date-time" },
+        "actor": { "type": "string" },
+        "action": {
+          "type": "string",
+          "enum": ["confirm", "reject", "supersede"]
+        },
+        "via": { "type": "string" },
+        "queue_kind": {
+          "type": "string",
+          "enum": ["candidate", "contested", "rejected"]
+        },
+        "superseded_by": { "type": "string", "format": "uuid" }
+      }
+    },
+    "passport_memory": {
+      "type": "object",
+      "required": [
+        "id",
+        "content",
+        "tags",
+        "memory_type",
+        "status",
+        "version",
+        "created_at",
+        "updated_at",
+        "archived",
+        "evidence_count",
+        "review_events"
+      ],
+      "properties": {
+        "id": { "type": "string", "format": "uuid" },
+        "content": { "type": "string" },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "agent": { "type": "string" },
+        "session": { "type": "string" },
+        "original_namespace": { "type": "string" },
+        "memory_type": {
+          "type": "string",
+          "enum": ["episodic", "semantic", "procedural", "working"]
+        },
+        "status": {
+          "type": "string",
+          "enum": ["candidate", "active", "contested", "stale"]
+        },
+        "version": { "type": "integer", "minimum": 1 },
+        "created_at": { "type": "string", "format": "date-time" },
+        "updated_at": { "type": "string", "format": "date-time" },
+        "source_key_id": { "type": "string" },
+        "content_hash": { "type": "string" },
+        "archived": { "type": "boolean" },
+        "confidence": { "type": "number" },
+        "evidence_count": { "type": "integer", "minimum": 0 },
+        "last_verified_at": { "type": "string", "format": "date-time" },
+        "superseded_by": { "type": "string", "format": "uuid" },
+        "derived_from": {
+          "type": "array",
+          "items": { "type": "string", "format": "uuid" }
+        },
+        "contradicts_with": {
+          "type": "array",
+          "items": { "type": "string", "format": "uuid" }
+        },
+        "review_events": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/review_event" }
+        }
+      }
+    }
+  }
+}

@@ -359,6 +359,30 @@ Explicitly outside the stable runtime contract for now:
 - broad replay/branch semantics beyond the current safe empty-target scope
 - first-class typed policy and evidence objects with full import/export fidelity
 
+### Runtime Conformance Kit
+
+The runtime contract is now backed by a versioned conformance kit in [conformance/](conformance/README.md).
+
+It ships:
+- JSON Schemas for the current runtime contract, passport bundle, and history bundle lines
+- canonical fixtures for `memoryoss.runtime.v1alpha1`, `memoryoss.passport.v1alpha1`, and `memoryoss.history.v1alpha1`
+- reference reader/writer paths in Rust, Python, and TypeScript
+- an automated compatibility harness in `python3 tests/run_conformance_kit.py`
+
+Reference commands:
+
+```bash
+memoryoss conformance normalize --kind runtime_contract --input conformance/fixtures/runtime-contract.json --output /tmp/runtime.json
+python3 tests/reference_conformance.py --kind passport --input conformance/fixtures/passport-bundle.json --output /tmp/passport.json
+node sdk/typescript/dist/conformance.js --kind history --input conformance/fixtures/history-bundle.json --output /tmp/history.json
+```
+
+Compatibility policy:
+- published artifact lines are immutable; breaking wire changes require a new `contract_id` or `bundle_version`
+- readers must ignore unknown additive fields inside a published line
+- once a successor line ships, memoryOSS keeps reader compatibility for the previous published line for at least two minor releases
+- the conformance harness is the authoritative pass/fail gate for published lines
+
 ### Sharing (cross-namespace collaboration)
 
 | Endpoint | Method | Description |
@@ -521,6 +545,7 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss history export <id> --namespace test -o history.json` | Export a deterministic history replay bundle |
 | `memoryoss history replay history.json --namespace test --dry-run` | Preview a safe replay into an empty target namespace |
 | `memoryoss history branch <id> --namespace test --target-namespace branch --dry-run` | Preview a branch-from-here into a new empty namespace |
+| `memoryoss conformance normalize --kind passport --input passport.json --output normalized.json` | Reference reader/writer for published runtime fixtures |
 | `memoryoss inspect <id>` | Inspect a memory |
 | `memoryoss backup -o backup.tar.zst` | Backup all data |
 | `memoryoss restore <path>` | Restore from backup |
