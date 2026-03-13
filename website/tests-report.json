@@ -1,13 +1,13 @@
 {
   "runner": "tests/run_all.sh",
-  "generated_at": "2026-03-13T21:23:02.893762+00:00",
-  "duration_seconds": 1121,
+  "generated_at": "2026-03-13T23:03:43.697602+00:00",
+  "duration_seconds": 1082,
   "summary": {
     "status": "pass",
-    "total_checks_passed": 228,
+    "total_checks_passed": 231,
     "sections": 21,
-    "rust_unit_tests": 76,
-    "rust_integration_tests": 56,
+    "rust_unit_tests": 78,
+    "rust_integration_tests": 57,
     "typescript_tests": 6,
     "wizard_assertions": 186,
     "wizard_scenarios": 13,
@@ -22,7 +22,7 @@
       "slug": "cargo_fmt",
       "label": "cargo fmt --check",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/cargo_fmt.log"
     },
     {
@@ -36,7 +36,7 @@
       "slug": "cargo_test",
       "label": "cargo test",
       "status": "pass",
-      "duration_seconds": 59,
+      "duration_seconds": 61,
       "log_path": "tests/.last-run/cargo_test.log"
     },
     {
@@ -64,14 +64,14 @@
       "slug": "benchmark",
       "label": "20k benchmark",
       "status": "pass",
-      "duration_seconds": 221,
+      "duration_seconds": 209,
       "log_path": "tests/.last-run/benchmark.log"
     },
     {
       "slug": "calibration",
       "label": "scoring calibration",
       "status": "pass",
-      "duration_seconds": 768,
+      "duration_seconds": 741,
       "log_path": "tests/.last-run/calibration.log"
     },
     {
@@ -92,21 +92,21 @@
       "slug": "typescript_sdk",
       "label": "TypeScript SDK build/test",
       "status": "pass",
-      "duration_seconds": 4,
+      "duration_seconds": 3,
       "log_path": "tests/.last-run/typescript_sdk.log"
     },
     {
       "slug": "conformance_kit",
       "label": "runtime conformance kit",
       "status": "pass",
-      "duration_seconds": 0,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/conformance_kit.log"
     },
     {
       "slug": "cargo_audit",
       "label": "cargo audit (offline if available)",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/cargo_audit.log"
     }
   ],
@@ -118,7 +118,7 @@
         {
           "name": "cargo fmt --check",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         },
         {
           "name": "cargo clippy -- -D warnings",
@@ -128,7 +128,7 @@
         {
           "name": "cargo test",
           "status": "pass",
-          "note": "59s"
+          "note": "61s"
         },
         {
           "name": "cargo build",
@@ -139,18 +139,10 @@
     },
     {
       "title": "Rust Unit Tests",
-      "count": 76,
+      "count": 78,
       "items": [
         {
-          "name": "Fusion recall collapse merges structural duplicates",
-          "status": "pass"
-        },
-        {
           "name": "engines::fts::tests::sanitize_user_query_removes_angle_brackets",
-          "status": "pass"
-        },
-        {
-          "name": "Fusion explain collapse merges structural duplicates",
           "status": "pass"
         },
         {
@@ -158,19 +150,23 @@
           "status": "pass"
         },
         {
-          "name": "fusion::tests::test_render_task_state_xml_emits_explicit_sections",
-          "status": "pass"
-        },
-        {
           "name": "Content fusion preserves unique sentences",
           "status": "pass"
         },
         {
-          "name": "Structural duplicate detection handles containment",
+          "name": "Fusion recall collapse merges structural duplicates",
           "status": "pass"
         },
         {
           "name": "fusion::tests::test_compile_scored_task_state_separates_constraints_actions_and_questions",
+          "status": "pass"
+        },
+        {
+          "name": "Fusion explain collapse merges structural duplicates",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache hit/miss behavior",
           "status": "pass"
         },
         {
@@ -182,23 +178,7 @@
           "status": "pass"
         },
         {
-          "name": "fusion::tests::test_identifier_route_collapse_merges_shared_endpoint_anchor_without_literal_query",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache hit/miss behavior",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache keeps meaningful query terms",
-          "status": "pass"
-        },
-        {
           "name": "intent_cache::tests::test_cache_task_context_isolation",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache canonicalization normalizes basic queries",
           "status": "pass"
         },
         {
@@ -206,7 +186,11 @@
           "status": "pass"
         },
         {
-          "name": "Intent cache strips punctuation",
+          "name": "fusion::tests::test_render_task_state_xml_emits_explicit_sections",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache canonicalization normalizes basic queries",
           "status": "pass"
         },
         {
@@ -214,19 +198,15 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_apply_lifecycle_policy_archives_old_stale_memory",
+          "name": "fusion::tests::test_identifier_route_collapse_merges_shared_endpoint_anchor_without_literal_query",
           "status": "pass"
         },
         {
-          "name": "mcp::tests::marketplace_tool_metadata_covers_every_tool",
+          "name": "Intent cache strips punctuation",
           "status": "pass"
         },
         {
-          "name": "Superseded stale memories do not revive automatically",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_confirm_from_signal_keeps_contested_memory_contested_while_conflicted",
+          "name": "Intent cache keeps meaningful query terms",
           "status": "pass"
         },
         {
@@ -234,7 +214,15 @@
           "status": "pass"
         },
         {
+          "name": "Structural duplicate detection handles containment",
+          "status": "pass"
+        },
+        {
           "name": "memory::tests::test_apply_lifecycle_policy_stales_low_relevance_active_memory",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_apply_lifecycle_policy_archives_old_stale_memory",
           "status": "pass"
         },
         {
@@ -242,7 +230,7 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memory_history_view_includes_lineage_contradictions_and_review_chain",
+          "name": "memory::tests::test_confirm_from_signal_keeps_contested_memory_contested_while_conflicted",
           "status": "pass"
         },
         {
@@ -250,15 +238,11 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_record_reuse_signal_promotes_candidate_and_tracks_outcome",
+          "name": "Superseded stale memories do not revive automatically",
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memory_history_bundle_and_replay_plan_require_empty_target_namespace",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_review_queue_kind_distinguishes_candidate_contested_and_rejected",
+          "name": "memory::tests::test_memory_history_view_includes_lineage_contradictions_and_review_chain",
           "status": "pass"
         },
         {
@@ -266,7 +250,31 @@
           "status": "pass"
         },
         {
+          "name": "memory::tests::test_memory_passport_import_plan_reports_create_merge_and_conflict",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_review_queue_kind_distinguishes_candidate_contested_and_rejected",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_memory_history_bundle_and_replay_plan_require_empty_target_namespace",
+          "status": "pass"
+        },
+        {
           "name": "memory::tests::test_runtime_contract_document_exposes_stable_semantics_and_known_gaps",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_record_reuse_signal_promotes_candidate_and_tracks_outcome",
+          "status": "pass"
+        },
+        {
+          "name": "mcp::tests::marketplace_tool_metadata_covers_every_tool",
+          "status": "pass"
+        },
+        {
+          "name": "Prefetch session tracking avoids duplicate warmups",
           "status": "pass"
         },
         {
@@ -278,15 +286,7 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memory_passport_import_plan_reports_create_merge_and_conflict",
-          "status": "pass"
-        },
-        {
-          "name": "Prefetch ring buffer evicts oldest entries",
-          "status": "pass"
-        },
-        {
-          "name": "Prefetch session tracking avoids duplicate warmups",
+          "name": "scoring::tests::test_detect_identifier_route_finds_runtime_contract_queries",
           "status": "pass"
         },
         {
@@ -294,23 +294,7 @@
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_detect_identifier_route_finds_runtime_contract_queries",
-          "status": "pass"
-        },
-        {
-          "name": "scoring::tests::test_retrieval_confidence_gate_abstains_without_plausible_candidate",
-          "status": "pass"
-        },
-        {
-          "name": "scoring::tests::test_retrieval_confidence_gate_injects_on_strong_candidate",
-          "status": "pass"
-        },
-        {
           "name": "scoring::tests::test_detect_task_context_prefers_deploy_keywords",
-          "status": "pass"
-        },
-        {
-          "name": "scoring::tests::test_retrieval_confidence_gate_needs_more_evidence_when_top_candidates_are_close",
           "status": "pass"
         },
         {
@@ -318,7 +302,15 @@
           "status": "pass"
         },
         {
-          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
+          "name": "scoring::tests::test_retrieval_confidence_gate_abstains_without_plausible_candidate",
+          "status": "pass"
+        },
+        {
+          "name": "Prefetch ring buffer evicts oldest entries",
+          "status": "pass"
+        },
+        {
+          "name": "scoring::tests::test_shared_query_anchor_between_candidates_detects_smoke_phrase",
           "status": "pass"
         },
         {
@@ -326,15 +318,15 @@
           "status": "pass"
         },
         {
-          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
+          "name": "scoring::tests::test_retrieval_confidence_gate_injects_on_strong_candidate",
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::build_memory_injection_uses_summary_and_evidence_and_compacts_multisentence_context",
+          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::build_memory_injection_uses_compiled_task_state_for_review_queries",
+          "name": "scoring::tests::test_scored_retrieval_confidence_gate_needs_more_evidence_for_shared_query_anchor",
           "status": "pass"
         },
         {
@@ -342,27 +334,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extracted_fact_fallback_detects_negative_display_preference",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_decision",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_copy",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_capability_summary",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_paraphrase",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_transient_status",
+          "name": "scoring::tests::test_retrieval_confidence_gate_needs_more_evidence_when_top_candidates_are_close",
           "status": "pass"
         },
         {
@@ -370,11 +342,51 @@
           "status": "pass"
         },
         {
+          "name": "server::proxy::tests::build_memory_injection_uses_summary_and_evidence_and_compacts_multisentence_context",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_fallback_detects_negative_display_preference",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_copy_decision",
+          "status": "pass"
+        },
+        {
+          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::build_memory_injection_uses_compiled_task_state_for_review_queries",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_decision",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_capability_summary",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_copy",
+          "status": "pass"
+        },
+        {
           "name": "server::proxy::tests::extraction_ready_accepts_anthropic_key_for_claude_provider",
           "status": "pass"
         },
         {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_paraphrase",
+          "status": "pass"
+        },
+        {
           "name": "server::proxy::tests::extraction_ready_accepts_request_scoped_api_key_override",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_requires_openai_credentials",
           "status": "pass"
         },
         {
@@ -390,7 +402,11 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::injection_filter_rejects_html_comment_payload",
+          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_override_for_openai_default",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_transient_status",
           "status": "pass"
         },
         {
@@ -402,15 +418,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_override_for_openai_default",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::passthrough_local_only_rejects_remote_forwarded_client",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extraction_ready_requires_openai_credentials",
+          "name": "server::proxy::tests::injection_filter_rejects_html_comment_payload",
           "status": "pass"
         },
         {
@@ -418,11 +426,11 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_copy_decision",
+          "name": "tests::prefers_current_binary_when_not_in_target_tree",
           "status": "pass"
         },
         {
-          "name": "tests::prefers_current_binary_when_not_in_target_tree",
+          "name": "server::proxy::tests::passthrough_local_only_rejects_remote_forwarded_client",
           "status": "pass"
         },
         {
@@ -523,14 +531,14 @@
     },
     {
       "title": "Other Integration Paths",
-      "count": 42,
+      "count": 43,
       "items": [
         {
-          "name": "test_batch_contradiction_detection_within_same_batch",
+          "name": "test_batch_store_handles_zero_knowledge_and_source_provenance",
           "status": "pass"
         },
         {
-          "name": "test_batch_store_handles_zero_knowledge_and_source_provenance",
+          "name": "test_batch_contradiction_detection_within_same_batch",
           "status": "pass"
         },
         {
@@ -542,19 +550,15 @@
           "status": "pass"
         },
         {
+          "name": "test_admin_recent_groups_injections_extractions_feedbacks_and_consolidations",
+          "status": "pass"
+        },
+        {
           "name": "test_conformance_cli_normalizes_canonical_fixtures",
           "status": "pass"
         },
         {
           "name": "test_cli_history_branch_into_empty_namespace",
-          "status": "pass"
-        },
-        {
-          "name": "test_admin_recent_groups_injections_extractions_feedbacks_and_consolidations",
-          "status": "pass"
-        },
-        {
-          "name": "test_cli_passport_export_and_import_roundtrip",
           "status": "pass"
         },
         {
@@ -574,15 +578,19 @@
           "status": "pass"
         },
         {
+          "name": "test_cli_passport_export_and_import_roundtrip",
+          "status": "pass"
+        },
+        {
           "name": "test_hybrid_gateway_fallback_covers_four_auth_paths_and_reports_core_unavailable",
           "status": "pass"
         },
         {
-          "name": "test_hybrid_serve_manages_core_and_exposes_gateway_health",
+          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
           "status": "pass"
         },
         {
-          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
+          "name": "test_hybrid_serve_manages_core_and_exposes_gateway_health",
           "status": "pass"
         },
         {
@@ -618,7 +626,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_ignores_builtin_codex_tools_for_chat_fallback",
+          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
           "status": "pass"
         },
         {
@@ -626,11 +634,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
-          "status": "pass"
-        },
-        {
-          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
+          "name": "test_proxy_responses_oauth_ignores_builtin_codex_tools_for_chat_fallback",
           "status": "pass"
         },
         {
@@ -638,11 +642,15 @@
           "status": "pass"
         },
         {
+          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
+          "status": "pass"
+        },
+        {
           "name": "test_proxy_injection_prefers_review_context_memory",
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
+          "name": "test_proxy_responses_oauth_tool_calls_fallback_maps_function_call_output",
           "status": "pass"
         },
         {
@@ -650,7 +658,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_tool_calls_fallback_maps_function_call_output",
+          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
           "status": "pass"
         },
         {
@@ -662,11 +670,7 @@
           "status": "pass"
         },
         {
-          "name": "test_query_explain_reports_need_more_evidence_and_abstain",
-          "status": "pass"
-        },
-        {
-          "name": "test_review_queue_supersede_uses_review_keys_and_records_audit_trail",
+          "name": "test_query_explain_needs_more_evidence_for_shared_smoke_anchor_with_extra_memories",
           "status": "pass"
         },
         {
@@ -674,7 +678,11 @@
           "status": "pass"
         },
         {
-          "name": "test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps",
+          "name": "test_review_queue_supersede_uses_review_keys_and_records_audit_trail",
+          "status": "pass"
+        },
+        {
+          "name": "test_query_explain_reports_need_more_evidence_and_abstain",
           "status": "pass"
         },
         {
@@ -682,15 +690,19 @@
           "status": "pass"
         },
         {
+          "name": "test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps",
+          "status": "pass"
+        },
+        {
           "name": "test_server_can_run_plain_http_without_dev_mode",
           "status": "pass"
         },
         {
-          "name": "test_semantic_dedup_is_isolated_per_namespace",
+          "name": "test_update_recomputes_contradictions_when_content_changes",
           "status": "pass"
         },
         {
-          "name": "test_update_recomputes_contradictions_when_content_changes",
+          "name": "test_semantic_dedup_is_isolated_per_namespace",
           "status": "pass"
         }
       ]
@@ -753,7 +765,7 @@
         {
           "name": "cargo audit (offline if available)",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         }
       ]
     },
@@ -880,7 +892,7 @@
         {
           "name": "Recall latency p50 / p95 / p99",
           "status": "pass",
-          "note": "169.88ms / 255.38ms / 300.02ms"
+          "note": "189.11ms / 259.22ms / 283.03ms"
         }
       ]
     },
@@ -951,7 +963,7 @@
         {
           "name": "Stable proxy latency p95",
           "status": "pass",
-          "note": "301 ms"
+          "note": "172 ms"
         }
       ]
     },
@@ -998,7 +1010,7 @@
         {
           "name": "Exact score distribution",
           "status": "pass",
-          "note": "min 0.463, p5 1.016, p50 1.020, p95 1.024, max 1.024"
+          "note": "min 0.460, p5 1.016, p50 1.020, p95 1.024, max 1.024"
         },
         {
           "name": "Related score distribution",
@@ -1008,7 +1020,7 @@
         {
           "name": "Noise score distribution",
           "status": "pass",
-          "note": "min 0.348, p5 0.348, p50 0.348, p95 0.359, max 0.376"
+          "note": "min 0.347, p5 0.347, p50 0.347, p95 0.359, max 0.375"
         },
         {
           "name": "Threshold 0.400",
@@ -1016,7 +1028,7 @@
           "note": "noise rejected 100.0%, exact kept 100.0%, related kept 100.0%, F1 1.000"
         },
         {
-          "name": "Best scanned threshold 0.400",
+          "name": "Best scanned threshold 0.375",
           "status": "pass",
           "note": "F1 1.000"
         }
@@ -1160,7 +1172,7 @@
         {
           "name": "Backup creates valid archive",
           "status": "pass",
-          "note": "32443 bytes"
+          "note": "32394 bytes"
         },
         {
           "name": "Restore from backup succeeds",

@@ -1109,6 +1109,78 @@ async fn test_query_explain_reports_need_more_evidence_and_abstain() {
 }
 
 #[tokio::test]
+async fn test_query_explain_needs_more_evidence_for_shared_smoke_anchor_with_extra_memories() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("gate-explain-shared-anchor.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Deploy smoke rule: after smoke passes, continue the staged rollout to production.",
+                    "tags": ["deploy", "smoke", "rollout"]
+                },
+                {
+                    "content": "Release smoke rule: after smoke passes, publish the docker image to ghcr.io/memoryosscom/memoryoss.",
+                    "tags": ["release", "smoke", "docker"]
+                },
+                {
+                    "content": "Auth review checklist: require tests and security review before merging sensitive changes.",
+                    "tags": ["review", "security", "checklist"]
+                },
+                {
+                    "content": "For review responses, keep findings first and make missing evidence explicit.",
+                    "tags": ["review", "style", "findings-first"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let ambiguous_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "what should happen after smoke passes?",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ambiguous_resp.status(), 200);
+    let ambiguous_body: serde_json::Value = ambiguous_resp.json().await.unwrap();
+    assert_eq!(
+        ambiguous_body["retrieval_gate"]["decision"].as_str(),
+        Some("need_more_evidence")
+    );
+    assert!(
+        ambiguous_body["retrieval_gate"]["reasons"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .any(|reason| reason.as_str() == Some("shared_query_anchor_across_candidates"))
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
 async fn test_query_explain_prioritizes_task_context_for_deploy_bugfix_and_review() {
     let port = free_port();
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");

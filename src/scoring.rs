@@ -852,6 +852,9 @@ fn is_under_specified_query(query: &str) -> bool {
                         | "your"
                         | "have"
                         | "will"
+                        | "happen"
+                        | "happens"
+                        | "next"
                 )
         })
         .count();
@@ -872,6 +875,59 @@ fn looks_like_next_step_query(query: &str) -> bool {
     ]
     .iter()
     .any(|pattern| padded.contains(pattern))
+}
+
+fn query_anchor_tokens(query: &str) -> Vec<String> {
+    normalize_task_text(query)
+        .split_whitespace()
+        .filter(|token| {
+            token.len() >= 4
+                && !matches!(
+                    *token,
+                    "what"
+                        | "when"
+                        | "where"
+                        | "which"
+                        | "should"
+                        | "after"
+                        | "before"
+                        | "here"
+                        | "there"
+                        | "this"
+                        | "that"
+                        | "with"
+                        | "from"
+                        | "about"
+                        | "into"
+                        | "your"
+                        | "have"
+                        | "will"
+                        | "happen"
+                        | "happens"
+                        | "next"
+                )
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn shares_query_anchor_between_candidates(
+    query: &str,
+    first_content: &str,
+    second_content: &str,
+) -> bool {
+    let anchors = query_anchor_tokens(query);
+    if anchors.len() < 2 {
+        return false;
+    }
+
+    let first = normalize_task_text(first_content);
+    let second = normalize_task_text(second_content);
+    let shared = anchors
+        .iter()
+        .filter(|anchor| first.contains(anchor.as_str()) && second.contains(anchor.as_str()))
+        .count();
+    shared >= 2
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -1095,6 +1151,16 @@ fn build_gate_summary(
             {
                 reasons.push("query_under_specified".to_string());
             }
+            if second.is_some_and(|other| {
+                is_under_specified_query(query)
+                    && shares_query_anchor_between_candidates(
+                        query,
+                        &top_entry.memory.content,
+                        &other.memory.content,
+                    )
+            }) {
+                reasons.push("shared_query_anchor_across_candidates".to_string());
+            }
             if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP)
                 && (!top_has_identifier || second_has_identifier)
             {
@@ -1234,6 +1300,16 @@ pub fn apply_scored_retrieval_confidence_gate(
                 && is_under_specified_query(query)
             {
                 reasons.push("query_under_specified".to_string());
+            }
+            if second.is_some_and(|other| {
+                is_under_specified_query(query)
+                    && shares_query_anchor_between_candidates(
+                        query,
+                        &top_entry.memory.content,
+                        &other.memory.content,
+                    )
+            }) {
+                reasons.push("shared_query_anchor_across_candidates".to_string());
             }
             if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP)
                 && (!top_has_identifier || second_has_identifier)
@@ -2144,6 +2220,65 @@ mod tests {
         );
         assert_eq!(gate.decision, RetrievalConfidenceDecision::Abstain);
         assert!(qualified.is_empty());
+    }
+
+    #[test]
+    fn test_scored_retrieval_confidence_gate_needs_more_evidence_for_shared_query_anchor() {
+        let memories = vec![
+            ScoredMemory {
+                memory: Memory::new(
+                    "Deploy smoke rule: after smoke passes, continue the staged rollout to production."
+                        .into(),
+                ),
+                score: 0.64,
+                provenance: vec!["vector".into(), "fts".into()],
+                trust_score: 0.9,
+                low_trust: false,
+            },
+            ScoredMemory {
+                memory: Memory::new(
+                    "Release smoke rule: after smoke passes, publish the docker image to ghcr.io/memoryosscom/memoryoss."
+                        .into(),
+                ),
+                score: 0.43,
+                provenance: vec!["vector".into(), "fts".into()],
+                trust_score: 0.9,
+                low_trust: false,
+            },
+            ScoredMemory {
+                memory: Memory::new(
+                    "Auth review checklist: require tests and security review before merging sensitive changes."
+                        .into(),
+                ),
+                score: 0.31,
+                provenance: vec!["vector".into()],
+                trust_score: 0.9,
+                low_trust: false,
+            },
+        ];
+
+        let (gate, qualified) = apply_scored_retrieval_confidence_gate(
+            &memories,
+            "what should happen after smoke passes?",
+            0.4,
+            true,
+        );
+        assert_eq!(gate.decision, RetrievalConfidenceDecision::NeedMoreEvidence);
+        assert!(qualified.is_empty());
+        assert!(
+            gate.reasons
+                .iter()
+                .any(|reason| reason == "shared_query_anchor_across_candidates")
+        );
+    }
+
+    #[test]
+    fn test_shared_query_anchor_between_candidates_detects_smoke_phrase() {
+        assert!(shares_query_anchor_between_candidates(
+            "what should happen after smoke passes?",
+            "Deploy smoke rule: after smoke passes, continue the staged rollout to production.",
+            "Release smoke rule: after smoke passes, publish the docker image."
+        ));
     }
 
     #[test]
