@@ -259,6 +259,7 @@ pub enum IdentifierKind {
     EnvVar,
     BranchPattern,
     Commit,
+    Contract,
     Policy,
 }
 
@@ -270,6 +271,7 @@ impl IdentifierKind {
             Self::EnvVar => "env_var",
             Self::BranchPattern => "branch_pattern",
             Self::Commit => "commit",
+            Self::Contract => "contract",
             Self::Policy => "policy",
         }
     }
@@ -297,6 +299,12 @@ pub(crate) fn identifier_matches_kind(identifier: &str, kind: IdentifierKind) ->
             lowered.starts_with("feat/") || lowered.starts_with("fix/")
         }
         IdentifierKind::Commit => contains_hex_commit(&lowered),
+        IdentifierKind::Contract => {
+            lowered.contains("runtime")
+                || lowered.contains("contract")
+                || lowered.contains("version")
+                || lowered.contains("schema")
+        }
         IdentifierKind::Policy => false,
     }
 }
@@ -450,6 +458,31 @@ pub fn detect_identifier_route(query: &str) -> Option<IdentifierRouteProfile> {
         matched_terms.extend(commit_terms);
     }
 
+    let contract_terms = query_keyword_present(
+        query,
+        &[
+            "runtime",
+            "runtime contract",
+            "contract",
+            "contracts",
+            "contract id",
+            "version",
+            "schema",
+            "semantics",
+            "export metadata",
+            "portable export",
+        ],
+    );
+    if !contract_terms.is_empty()
+        || identifiers.iter().any(|ident| {
+            let lowered = ident.to_lowercase();
+            lowered.contains("runtime") || lowered.contains("contract") || lowered.contains("v1")
+        })
+    {
+        kinds.push(IdentifierKind::Contract);
+        matched_terms.extend(contract_terms);
+    }
+
     let policy_terms = query_keyword_present(
         query,
         &[
@@ -531,6 +564,15 @@ pub(crate) fn content_matches_identifier_kind(content: &str, kind: IdentifierKin
             lowered.contains("feat/") || lowered.contains("fix/") || lowered.contains("<ticket>")
         }
         IdentifierKind::Commit => contains_hex_commit(&lowered),
+        IdentifierKind::Contract => {
+            lowered.contains("runtime contract")
+                || lowered.contains("contract_id")
+                || lowered.contains("runtime_contract")
+                || lowered.contains("contract version")
+                || lowered.contains("stable semantics")
+                || lowered.contains("portable export")
+                || lowered.contains("document_route")
+        }
         IdentifierKind::Policy => {
             lowered.contains(" must ")
                 || lowered.starts_with("must ")
@@ -1546,7 +1588,8 @@ pub fn score_and_explain(
                         .map(|kind| match kind {
                             IdentifierKind::EnvVar
                             | IdentifierKind::Endpoint
-                            | IdentifierKind::Path => 0.07,
+                            | IdentifierKind::Path
+                            | IdentifierKind::Contract => 0.07,
                             IdentifierKind::BranchPattern | IdentifierKind::Commit => 0.055,
                             IdentifierKind::Policy => 0.04,
                         })
@@ -1859,6 +1902,19 @@ mod tests {
             detect_identifier_route("which endpoint handles Anthropic messages through the proxy?")
                 .expect("expected endpoint route");
         assert!(endpoint_route.kinds.contains(&IdentifierKind::Endpoint));
+    }
+
+    #[test]
+    fn test_detect_identifier_route_finds_runtime_contract_queries() {
+        let route = detect_identifier_route(
+            "What runtime contract version does memoryOSS expose, and what does the export carry?",
+        )
+        .expect("expected runtime contract route");
+        assert!(route.kinds.contains(&IdentifierKind::Contract));
+        assert!(
+            route.matched_terms.iter().any(|term| term == "contract")
+                || route.matched_terms.iter().any(|term| term == "runtime")
+        );
     }
 
     #[test]

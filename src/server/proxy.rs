@@ -9,6 +9,7 @@
 //!
 //! Automatic long-term memory without any code changes.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use axum::Json;
@@ -709,7 +710,218 @@ fn escape_memory_xml(content: &str) -> String {
         .replace('>', "&gt;")
 }
 
-fn build_memory_injection(memories: &[ScoredMemory], token_budget: usize) -> (String, usize) {
+fn normalize_exact_query_text(text: &str) -> String {
+    text.to_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_alphanumeric() || ch == '_' || ch == '/' || ch == '.' || ch.is_whitespace() {
+                ch
+            } else {
+                ' '
+            }
+        })
+        .collect()
+}
+
+fn split_exact_fact_sentences(content: &str) -> Vec<String> {
+    content
+        .split(['.', '!', '?', '\n'])
+        .map(str::trim)
+        .filter(|sentence| !sentence.is_empty())
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn truncate_exact_fact(content: &str, max_chars: usize) -> String {
+    let mut truncated = String::new();
+    for ch in content.chars() {
+        if truncated.chars().count() >= max_chars {
+            break;
+        }
+        truncated.push(ch);
+    }
+    if truncated.chars().count() < content.chars().count() {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn exact_value_query(query: &str) -> bool {
+    let normalized = normalize_exact_query_text(query);
+    let padded = format!(" {normalized} ");
+    [
+        " exact ",
+        " verbatim ",
+        " version ",
+        " contract ",
+        " contract id ",
+        " identifier ",
+        " endpoint ",
+        " path ",
+        " env var ",
+        " env vars ",
+        " variable ",
+        " route ",
+        " sha ",
+        " hash ",
+        " carries ",
+        " carry ",
+        " metadata ",
+    ]
+    .iter()
+    .any(|pattern| padded.contains(pattern))
+}
+
+fn runtime_contract_query(query: &str) -> bool {
+    let normalized = normalize_exact_query_text(query);
+    let padded = format!(" {normalized} ");
+    (padded.contains(" runtime contract ")
+        || padded.contains(" contract id ")
+        || padded.contains(" runtime_contract ")
+        || (padded.contains(" contract ") && padded.contains(" version ")))
+        && (padded.contains(" export ")
+            || padded.contains(" version ")
+            || padded.contains(" carry ")
+            || padded.contains(" carries ")
+            || padded.contains(" expose ")
+            || padded.contains(" exposed ")
+            || padded.contains(" expose"))
+}
+
+fn sentence_has_exact_literal(sentence: &str) -> bool {
+    let lowered = sentence.to_lowercase();
+    lowered.contains("/v1/")
+        || lowered.contains("/proxy/")
+        || lowered.contains("http://")
+        || lowered.contains("https://")
+        || lowered.contains("runtime_contract")
+        || lowered.contains("contract_id")
+        || lowered.contains("document_route")
+        || lowered.contains("stable_semantics")
+        || lowered.contains("experimental_layers_excluded")
+        || lowered.contains("memoryoss.runtime.")
+        || lowered.contains(".rs")
+        || lowered.contains(".toml")
+        || lowered.contains(".json")
+        || lowered.contains(".yaml")
+        || lowered.contains(".yml")
+        || lowered.contains('_')
+        || sentence
+            .split(|ch: char| !(ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == '_'))
+            .any(|token| {
+                let has_digit = token.chars().any(|ch| ch.is_ascii_digit());
+                let dotted = token.matches('.').count() >= 1;
+                let hyphenated = token.matches('-').count() >= 2;
+                token.len() >= 6 && has_digit && (dotted || hyphenated)
+            })
+}
+
+fn sentence_matches_exact_query(
+    sentence: &str,
+    route: Option<&crate::scoring::IdentifierRouteProfile>,
+    runtime_contract: bool,
+) -> bool {
+    let lowered = sentence.to_lowercase();
+    if runtime_contract
+        && [
+            "runtime contract",
+            "contract id",
+            "contract_id",
+            "runtime_contract",
+            "version",
+            "portable export",
+            "runtime contract metadata",
+            "stable semantics",
+            "experimental_layers_excluded",
+            "document_route",
+        ]
+        .iter()
+        .any(|needle| lowered.contains(needle))
+    {
+        return true;
+    }
+
+    let Some(route) = route else {
+        return false;
+    };
+
+    if route.identifiers.iter().any(|ident| {
+        let lowered_ident = ident.to_lowercase();
+        lowered_ident.len() >= 3 && lowered.contains(&lowered_ident)
+    }) {
+        return true;
+    }
+
+    if route
+        .matched_terms
+        .iter()
+        .any(|term| term.len() >= 4 && lowered.contains(term))
+    {
+        return true;
+    }
+
+    route
+        .focus_terms
+        .iter()
+        .any(|term| term.len() >= 4 && lowered.contains(term))
+}
+
+fn exact_fact_candidates(memories: &[ScoredMemory], query: &str) -> Vec<(usize, String)> {
+    let route = crate::scoring::detect_identifier_route(query);
+    let runtime_contract = runtime_contract_query(query);
+    if !runtime_contract && !exact_value_query(query) {
+        return Vec::new();
+    }
+
+    let mut facts: Vec<(usize, String)> = Vec::new();
+    for (idx, scored) in memories.iter().enumerate() {
+        for sentence in split_exact_fact_sentences(&scored.memory.content) {
+            if !sentence_matches_exact_query(&sentence, route.as_ref(), runtime_contract) {
+                continue;
+            }
+            if !runtime_contract && !sentence_has_exact_literal(&sentence) {
+                continue;
+            }
+            let mut fact = sentence.trim().to_string();
+            if fact.chars().count() > 220 {
+                fact = truncate_exact_fact(&fact, 220);
+            }
+            if !fact.ends_with('.') {
+                fact.push('.');
+            }
+            if facts
+                .iter()
+                .any(|(_, existing)| crate::fusion::are_structural_duplicates(existing, &fact))
+            {
+                continue;
+            }
+            facts.push((idx, fact));
+            if facts.len() >= 3 {
+                return facts;
+            }
+        }
+    }
+    facts
+}
+
+fn runtime_contract_exact_block() -> String {
+    let metadata = crate::memory::runtime_contract_export_metadata();
+    format!(
+        "<runtime_contract>\n<contract_id>{}</contract_id>\n<version>{}</version>\n<export_carries>runtime_contract metadata with contract_id, version, document_route, stable_semantics, and experimental_layers_excluded.</export_carries>\n</runtime_contract>\n",
+        escape_memory_xml(&metadata.contract_id),
+        escape_memory_xml(&metadata.version),
+    )
+}
+
+fn exact_value_hint_block() -> &'static str {
+    "<exact_value_hint>When the user asks for an identifier, version, contract name, endpoint, path, env var, hash, or carried field, copy the exact value verbatim from &lt;runtime_contract&gt; or &lt;exact_fact&gt; blocks. Do not shorten, rename, or paraphrase exact identifiers.</exact_value_hint>\n"
+}
+
+fn build_memory_injection(
+    memories: &[ScoredMemory],
+    token_budget: usize,
+    query: Option<&str>,
+) -> (String, usize) {
     if memories.is_empty() {
         return (String::new(), 0);
     }
@@ -719,7 +931,39 @@ fn build_memory_injection(memories: &[ScoredMemory], token_budget: usize) -> (St
     let footer = "</memory_context>\n";
     let mut parts = vec![header.to_string()];
     let mut tokens_used = estimate_tokens(header) + estimate_tokens(footer);
+    let mut contributing_memories = HashSet::new();
     let mut actual_count = 0;
+
+    if let Some(query) = query {
+        let runtime_contract = runtime_contract_query(query);
+        let exact_fact_candidates = exact_fact_candidates(memories, query);
+        if runtime_contract || !exact_fact_candidates.is_empty() {
+            let hint = exact_value_hint_block();
+            let hint_tokens = estimate_tokens(hint);
+            if tokens_used + hint_tokens <= token_budget {
+                parts.push(hint.to_string());
+                tokens_used += hint_tokens;
+            }
+        }
+        if runtime_contract {
+            let block = runtime_contract_exact_block();
+            let block_tokens = estimate_tokens(&block);
+            if tokens_used + block_tokens <= token_budget {
+                parts.push(block);
+                tokens_used += block_tokens;
+            }
+        }
+        for (idx, fact) in exact_fact_candidates {
+            let entry = format!("<exact_fact>{}</exact_fact>\n", escape_memory_xml(&fact));
+            let entry_tokens = estimate_tokens(&entry);
+            if tokens_used + entry_tokens > token_budget {
+                break;
+            }
+            parts.push(entry);
+            tokens_used += entry_tokens;
+            contributing_memories.insert(idx);
+        }
+    }
 
     for (i, summary) in summaries.iter().enumerate() {
         let start = format!(
@@ -736,6 +980,7 @@ fn build_memory_injection(memories: &[ScoredMemory], token_budget: usize) -> (St
         }
         parts.push(start);
         tokens_used += estimate_tokens(parts.last().unwrap());
+        contributing_memories.insert(i);
 
         let mut omitted_evidence = summary.evidence.len().saturating_sub(1);
         for evidence in summary.evidence.iter().take(1) {
@@ -774,7 +1019,10 @@ fn build_memory_injection(memories: &[ScoredMemory], token_budget: usize) -> (St
     }
 
     parts.push(footer.to_string());
-    (parts.join(""), actual_count)
+    (
+        parts.join(""),
+        actual_count.max(contributing_memories.len().min(memories.len())),
+    )
 }
 
 /// Inject memories into the messages array by prepending/appending to system prompt.
@@ -782,12 +1030,13 @@ fn inject_memories(
     messages: &mut Vec<serde_json::Value>,
     memories: &[ScoredMemory],
     token_budget: usize,
+    query: Option<&str>,
 ) -> usize {
     if memories.is_empty() {
         return 0;
     }
 
-    let (injection, actual_count) = build_memory_injection(memories, token_budget);
+    let (injection, actual_count) = build_memory_injection(memories, token_budget, query);
     if injection.is_empty() || actual_count == 0 {
         return 0;
     }
@@ -970,7 +1219,8 @@ pub async fn proxy_chat_completions(
                     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut())
                     {
                         injected_count =
-                            inject_memories(messages, &qualified, memory_budget) as u64;
+                            inject_memories(messages, &qualified, memory_budget, Some(&query))
+                                as u64;
                         if injected_count > 0 {
                             record_injected_memories(
                                 &state,
@@ -2086,14 +2336,48 @@ mod tests {
             trust_score: 0.94,
             low_trust: false,
         }];
-        let (injection, count) = build_memory_injection(&memories, 4_000);
+        let (injection, count) = build_memory_injection(
+            &memories,
+            4_000,
+            Some("which endpoint handles Anthropic messages through the proxy?"),
+        );
         assert_eq!(count, 1);
+        assert!(injection.contains("<exact_fact>"));
         assert!(injection.contains("<summary>"));
         assert!(injection.contains("<evidence"));
         assert!(
             !injection.contains("Use query-explain when the endpoint behavior looks ambiguous"),
             "summary+evidence injection should compact away lower-priority tail detail"
         );
+    }
+
+    #[test]
+    fn build_memory_injection_includes_exact_runtime_contract_values_verbatim() {
+        let memories = vec![ScoredMemory {
+            memory: Memory::new(
+                "Runtime contract id is memoryoss.runtime.v1alpha1 and version is 2026-03-13. Portability export carries runtime_contract metadata with contract_id, version, document_route, stable_semantics, and experimental_layers_excluded."
+                    .to_string(),
+            ),
+            score: 0.97,
+            provenance: vec!["identifier_kind_match:contract".to_string()],
+            trust_score: 0.98,
+            low_trust: false,
+        }];
+        let (injection, count) = build_memory_injection(
+            &memories,
+            4_000,
+            Some(
+                "What runtime contract version does memoryOSS expose, and what does the export carry?",
+            ),
+        );
+        assert_eq!(count, 1);
+        assert!(injection.contains("<runtime_contract>"));
+        assert!(injection.contains("memoryoss.runtime.v1alpha1"));
+        assert!(injection.contains("2026-03-13"));
+        assert!(injection.contains("runtime_contract metadata"));
+        assert!(injection.contains("document_route"));
+        assert!(injection.contains("<exact_fact>"));
+        assert!(injection.contains("<exact_value_hint>"));
     }
 
     #[test]
@@ -2313,12 +2597,13 @@ fn inject_memories_anthropic(
     body: &mut serde_json::Value,
     memories: &[ScoredMemory],
     token_budget: usize,
+    query: Option<&str>,
 ) -> usize {
     if memories.is_empty() {
         return 0;
     }
 
-    let (injection, actual_count) = build_memory_injection(memories, token_budget);
+    let (injection, actual_count) = build_memory_injection(memories, token_budget, query);
     if injection.is_empty() || actual_count == 0 {
         return 0;
     }
@@ -2493,8 +2778,12 @@ pub async fn proxy_anthropic_messages(
                     gate_decision = gate.decision;
                     gate_evaluated = true;
 
-                    injected_count =
-                        inject_memories_anthropic(&mut body, &qualified, memory_budget) as u64;
+                    injected_count = inject_memories_anthropic(
+                        &mut body,
+                        &qualified,
+                        memory_budget,
+                        Some(&query),
+                    ) as u64;
                     if injected_count > 0 {
                         record_injected_memories(
                             &state,
@@ -3552,7 +3841,8 @@ pub async fn proxy_responses(
                 gate_decision = gate.decision;
                 gate_evaluated = true;
 
-                injected_count = inject_memories(&mut messages, &qualified, memory_budget) as u64;
+                injected_count =
+                    inject_memories(&mut messages, &qualified, memory_budget, Some(&query)) as u64;
                 if injected_count > 0 {
                     record_injected_memories(
                         &state,
