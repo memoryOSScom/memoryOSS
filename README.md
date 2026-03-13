@@ -268,6 +268,7 @@ max_memory_pct = 0.10                      # Max 10% of context window for memor
 min_recall_score = 0.40                    # Minimum relevance score for injection (calibrated from internal query benchmarks)
 min_channel_score = 0.15                   # Precision gate: min score in any channel (default: 0.15)
 diversity_factor = 0.3                     # MMR diversity penalty (default: 0.3)
+identifier_first_routing = true            # Route path/endpoint/env-var style queries through lexical-first reranking
 
 [[proxy.key_mapping]]
 proxy_key = "ek_..."                       # Client-facing key
@@ -305,7 +306,7 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/auth/token` | POST | Get JWT from API key |
 | `/v1/store` | POST | Store a memory |
 | `/v1/store/batch` | POST | Store multiple memories |
-| `/v1/recall` | POST | Semantic recall |
+| `/v1/recall` | POST | Semantic recall with raw memories plus summary/evidence view |
 | `/v1/recall/batch` | POST | Batch recall |
 | `/v1/update` | PATCH | Update a memory |
 | `/v1/forget` | DELETE | Delete memories |
@@ -326,7 +327,7 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/index-health` | GET | Index status |
 | `/v1/admin/idf-stats` | GET | IDF index statistics |
 | `/v1/admin/space-stats` | GET | Space index statistics |
-| `/v1/admin/query-explain` | POST | Query debug/explain |
+| `/v1/admin/query-explain` | POST | Query debug/explain with summary + evidence drill-down |
 | `/v1/admin/lifecycle` | GET | Lifecycle state summary and latest memories |
 | `/v1/admin/recent` | GET | Recent injections, extractions, feedbacks, and consolidations |
 | `/v1/admin/review-queue` | GET | Candidate / contested / rejected review inbox with suggested actions |
@@ -338,6 +339,10 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/peek/{id}` | GET | Peek at memory content |
 | `/v1/source` | GET | AGPL-3.0 source code info |
 | `/metrics` | GET | Prometheus-style metrics |
+
+Proxy memory injection now uses a two-level format inside `<memory_context>`:
+- `<summary>` blocks give the compact task-facing memory
+- `<evidence>` blocks carry bounded preview snippets plus provenance so operators can drill down without dumping raw stored content into every prompt
 
 ### Sharing (cross-namespace collaboration)
 

@@ -1759,8 +1759,10 @@ async fn recall_inner(
             )
             .await
     {
+        let summaries = crate::fusion::build_scored_memory_summaries(&cached);
         return Ok(RecallResponse {
             memories: cached,
+            summaries,
             next_cursor: None,
         });
     }
@@ -1782,8 +1784,10 @@ async fn recall_inner(
         )
         .await
     {
+        let summaries = crate::fusion::build_scored_memory_summaries(&decomposed);
         return Ok(RecallResponse {
             memories: decomposed,
+            summaries,
             next_cursor: None,
         });
     }
@@ -2050,8 +2054,10 @@ async fn recall_inner(
         .metrics
         .recalls
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let summaries = crate::fusion::build_scored_memory_summaries(&scored);
     Ok(RecallResponse {
         memories: scored,
+        summaries,
         next_cursor,
     })
 }
@@ -2610,6 +2616,7 @@ async fn query_explain(
         .map(|(id, score)| json!({"id": id, "score": score}))
         .collect();
     let review_queue_summary = cached_review_queue_summary(&state, namespace);
+    let summary_results = crate::fusion::build_explained_memory_summaries(&explained);
 
     Ok(Json(json!({
         "query": req.query,
@@ -2646,6 +2653,7 @@ async fn query_explain(
         "fts_results": fts_explain,
         "exact_results": exact_explain,
         "review_queue_summary": review_queue_summary,
+        "summary_results": summary_results,
         "final_results": explained,
     }))
     .into_response())

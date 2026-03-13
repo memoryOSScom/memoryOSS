@@ -3,7 +3,9 @@
 
 use std::collections::HashSet;
 
-use crate::memory::{Memory, MemoryStatus, ScoreExplainEntry, ScoredMemory};
+use crate::memory::{
+    Memory, MemoryStatus, MemorySummaryEntry, ScoreExplainEntry, ScoredMemory, SummaryEvidenceItem,
+};
 
 const MIN_SUBSTRING_TOKENS: usize = 5;
 const MIN_JACCARD_TOKENS: usize = 6;
@@ -72,6 +74,59 @@ fn split_sentences(content: &str) -> Vec<String> {
         .filter(|s| !s.is_empty())
         .map(ToString::to_string)
         .collect()
+}
+
+fn truncate_preview(content: &str, max_chars: usize) -> String {
+    let mut truncated = String::new();
+    for ch in content.chars() {
+        if truncated.chars().count() >= max_chars {
+            break;
+        }
+        truncated.push(ch);
+    }
+    if truncated.len() < content.len() {
+        truncated.push_str("...");
+    }
+    truncated
+}
+
+fn summary_sentence(content: &str) -> String {
+    let sentences = split_sentences(content);
+    if let Some(first) = sentences.first() {
+        let first = first.trim();
+        if first.chars().count() <= 140 {
+            if first.ends_with('.') {
+                first.to_string()
+            } else {
+                format!("{first}.")
+            }
+        } else {
+            truncate_preview(first, 140)
+        }
+    } else {
+        truncate_preview(content.trim(), 140)
+    }
+}
+
+fn evidence_previews(content: &str) -> Vec<String> {
+    let sentences = split_sentences(content);
+    if sentences.is_empty() {
+        return vec![truncate_preview(content.trim(), 120)];
+    }
+
+    let mut previews: Vec<String> = sentences
+        .into_iter()
+        .skip(1)
+        .take(2)
+        .map(|sentence| truncate_preview(sentence.trim(), 90))
+        .filter(|preview| !preview.is_empty())
+        .collect();
+
+    if previews.is_empty() {
+        previews.push(truncate_preview(content.trim(), 120));
+    }
+
+    previews
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
@@ -352,6 +407,54 @@ pub fn collapse_explained_entries_for_query(
     }
 
     collapsed
+}
+
+pub fn build_scored_memory_summaries(scored: &[ScoredMemory]) -> Vec<MemorySummaryEntry> {
+    scored
+        .iter()
+        .map(|entry| MemorySummaryEntry {
+            memory_id: entry.memory.id,
+            summary: summary_sentence(&entry.memory.content),
+            score: entry.score,
+            trust_score: entry.trust_score,
+            low_trust: entry.low_trust,
+            status: entry.memory.status,
+            tags: entry.memory.tags.clone(),
+            provenance: entry.provenance.clone(),
+            evidence: evidence_previews(&entry.memory.content)
+                .into_iter()
+                .map(|preview| SummaryEvidenceItem {
+                    preview,
+                    provenance: entry.provenance.clone(),
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+pub fn build_explained_memory_summaries(
+    explained: &[ScoreExplainEntry],
+) -> Vec<MemorySummaryEntry> {
+    explained
+        .iter()
+        .map(|entry| MemorySummaryEntry {
+            memory_id: entry.memory.id,
+            summary: summary_sentence(&entry.memory.content),
+            score: entry.final_score,
+            trust_score: entry.trust_score,
+            low_trust: entry.low_trust,
+            status: entry.memory.status,
+            tags: entry.memory.tags.clone(),
+            provenance: entry.provenance.clone(),
+            evidence: evidence_previews(&entry.memory.content)
+                .into_iter()
+                .map(|preview| SummaryEvidenceItem {
+                    preview,
+                    provenance: entry.provenance.clone(),
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 pub fn should_cluster_memories(

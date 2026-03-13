@@ -273,6 +273,27 @@ async fn wait_for_superseded_by(
     }
 }
 
+async fn wait_for_specific_superseded_by(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    memory_id: &str,
+    expected_derived_id: &str,
+) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(10);
+    loop {
+        let body = inspect_memory(client, base, api_key, memory_id).await;
+        if body["superseded_by"].as_str() == Some(expected_derived_id) {
+            return;
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "timed out waiting for memory {memory_id} to be superseded by {expected_derived_id}"
+        );
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+}
+
 /// Start a server command in background, wait for it to be ready, return the child.
 async fn start_server_command(config_path: &str, command: &str) -> tokio::process::Child {
     let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
@@ -951,6 +972,56 @@ async fn test_query_explain_returns_real_score_breakdown() {
         explain_body["retrieval_gate"]["decision"].as_str(),
         Some("inject"),
         "strong exact retrieval should pass the confidence gate"
+    );
+    let summary_results = explain_body["summary_results"]
+        .as_array()
+        .expect("missing summary_results array");
+    assert!(
+        !summary_results.is_empty(),
+        "missing summary-level explain results"
+    );
+    let first_summary = &summary_results[0];
+    assert!(
+        first_summary["summary"].as_str().is_some(),
+        "missing summary text"
+    );
+    assert!(
+        first_summary["provenance"].as_array().is_some(),
+        "missing summary provenance"
+    );
+    assert!(
+        first_summary["evidence"]
+            .as_array()
+            .map(|items| !items.is_empty())
+            .unwrap_or(false),
+        "missing evidence previews"
+    );
+    assert!(
+        first_summary["evidence"][0]["preview"]
+            .as_str()
+            .unwrap_or("")
+            .contains("X-Memory-Mode"),
+        "evidence preview should preserve supporting detail"
+    );
+
+    let recall_resp = client
+        .post(format!("{base}/v1/recall"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "src/server/routes.rs X-Memory-Mode namespace",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(recall_resp.status(), 200, "recall failed");
+    let recall_body: serde_json::Value = recall_resp.json().await.unwrap();
+    assert!(
+        recall_body["summaries"]
+            .as_array()
+            .map(|items| !items.is_empty())
+            .unwrap_or(false),
+        "recall should expose summary/evidence view alongside raw memories"
     );
 
     child.kill().await.ok();
@@ -1635,6 +1706,14 @@ namespace = "test"
     assert!(
         system_content.contains("/proxy/anthropic/v1/messages"),
         "matching anthropic endpoint should be injected"
+    );
+    assert!(
+        system_content.contains("<summary>"),
+        "proxy injection should include summary blocks"
+    );
+    assert!(
+        system_content.contains("<evidence"),
+        "proxy injection should include evidence previews"
     );
     if system_content.contains("/proxy/v1/chat/completions") {
         let anthropic_pos = system_content.find("/proxy/anthropic/v1/messages").unwrap();
@@ -4978,6 +5057,14 @@ max_clusters = 10
 
     let derived_id =
         wait_for_superseded_by(&client, &base, "test-key-integration", &first_id).await;
+    wait_for_specific_superseded_by(
+        &client,
+        &base,
+        "test-key-integration",
+        &second_id,
+        derived_id.as_str(),
+    )
+    .await;
     let second = inspect_memory(&client, &base, "test-key-integration", &second_id).await;
     assert_eq!(second["superseded_by"].as_str(), Some(derived_id.as_str()));
 

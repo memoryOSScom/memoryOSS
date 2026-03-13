@@ -742,6 +742,8 @@ fn default_evidence_count() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RecallResponse {
     pub memories: Vec<ScoredMemory>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summaries: Vec<MemorySummaryEntry>,
     /// Cursor for next page. None if no more results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub next_cursor: Option<String>,
@@ -758,6 +760,29 @@ pub struct ScoredMemory {
     /// Flagged as low-trust (not rejected, just flagged).
     #[serde(default)]
     pub low_trust: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SummaryEvidenceItem {
+    pub preview: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemorySummaryEntry {
+    pub memory_id: Uuid,
+    pub summary: String,
+    pub score: f64,
+    pub trust_score: f64,
+    pub low_trust: bool,
+    pub status: MemoryStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<SummaryEvidenceItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

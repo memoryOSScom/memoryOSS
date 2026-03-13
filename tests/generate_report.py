@@ -315,6 +315,11 @@ def retrieval_injection_lane_items(label: str, summary: dict) -> list[dict]:
             format_rate(summary.get("missed_evidence_rate")),
         ),
         item(
+            f"{prefix}summary context shrink vs flat",
+            "pass",
+            format_rate(summary.get("summary_context_shrink_rate")),
+        ),
+        item(
             f"{prefix}proxy latency p95",
             "pass",
             f"{summary.get('proxy_latency_ms_p95', 0):.0f} ms",
