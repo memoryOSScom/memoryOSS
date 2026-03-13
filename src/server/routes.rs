@@ -2628,6 +2628,9 @@ async fn query_explain(
         .collect();
     let review_queue_summary = cached_review_queue_summary(&state, namespace);
     let summary_results = crate::fusion::build_explained_memory_summaries(&explained);
+    let compiled_task_state = task_context
+        .as_ref()
+        .and_then(|context| crate::fusion::compile_explained_task_state(&explained, context));
 
     Ok(Json(json!({
         "query": req.query,
@@ -2650,6 +2653,7 @@ async fn query_explain(
             "kind": ctx.label(),
             "matched_terms": ctx.matched_terms,
         })),
+        "task_state": compiled_task_state,
         "idf_boost": idf_boost,
         "min_channel_score": min_channel_score,
         "diversity_factor": diversity_factor,

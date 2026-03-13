@@ -44,6 +44,111 @@ impl TaskContextKind {
         }
     }
 
+    pub fn task_state_goal(self) -> &'static str {
+        match self {
+            Self::Deploy => "Compile the minimum safe deployment state for this task.",
+            Self::Bugfix => "Compile the minimum debugging state for this task.",
+            Self::Review => "Compile the minimum review state for this task.",
+            Self::Style => "Compile the minimum response-style state for this task.",
+        }
+    }
+
+    pub fn task_state_constraint_hints(self) -> &'static [&'static str] {
+        match self {
+            Self::Deploy => &[
+                "required",
+                "approval",
+                "before production",
+                "staging",
+                "must",
+                "rollback",
+                "smoke",
+                "checklist",
+            ],
+            Self::Bugfix => &[
+                "workaround",
+                "root cause",
+                "retry",
+                "rollback",
+                "must",
+                "required",
+                "before retrying",
+            ],
+            Self::Review => &[
+                "require",
+                "required",
+                "before merge",
+                "security",
+                "checklist",
+                "must",
+                "never",
+                "policy",
+            ],
+            Self::Style => &[
+                "concise",
+                "verbosity",
+                "bullet",
+                "summary",
+                "never show raw",
+                "preference",
+                "format",
+            ],
+        }
+    }
+
+    pub fn task_state_action_hints(self) -> &'static [&'static str] {
+        match self {
+            Self::Deploy => &[
+                "notify",
+                "rerun",
+                "roll back",
+                "rollback",
+                "release",
+                "deploy",
+                "validate",
+                "ship",
+            ],
+            Self::Bugfix => &[
+                "debug",
+                "clear",
+                "flush",
+                "invalidate",
+                "retry",
+                "patch",
+                "fix",
+                "rerun",
+            ],
+            Self::Review => &[
+                "review", "audit", "check", "confirm", "merge", "verify", "inspect",
+            ],
+            Self::Style => &[
+                "rewrite",
+                "rephrase",
+                "summarize",
+                "format",
+                "display",
+                "respond",
+            ],
+        }
+    }
+
+    pub fn task_state_missing_question(self) -> &'static str {
+        match self {
+            Self::Deploy => {
+                "Missing deploy state: confirm the blocking rollout rule or latest rollout action."
+            }
+            Self::Bugfix => {
+                "Missing bugfix state: confirm the current root cause or latest workaround."
+            }
+            Self::Review => {
+                "Missing review state: confirm the blocking review checklist or approval rule."
+            }
+            Self::Style => {
+                "Missing style state: confirm the preferred response format or verbosity rule."
+            }
+        }
+    }
+
     fn query_hints(self) -> &'static [&'static str] {
         match self {
             Self::Deploy => &[

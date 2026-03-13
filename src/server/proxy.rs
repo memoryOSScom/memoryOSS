@@ -965,6 +965,25 @@ fn build_memory_injection(
         }
     }
 
+    if let Some(task_context) = query.and_then(crate::scoring::detect_task_context)
+        && let Some(task_state) = crate::fusion::compile_scored_task_state(memories, &task_context)
+    {
+        let block = crate::fusion::render_task_state_xml(&task_state);
+        let block_tokens = estimate_tokens(&block);
+        if tokens_used + block_tokens <= token_budget {
+            parts.push(block);
+            parts.push(footer.to_string());
+            return (
+                parts.join(""),
+                task_state
+                    .inputs
+                    .selected_memory_ids
+                    .len()
+                    .max(contributing_memories.len()),
+            );
+        }
+    }
+
     for (i, summary) in summaries.iter().enumerate() {
         let start = format!(
             "<summary>{}</summary>\n",
@@ -2349,6 +2368,40 @@ mod tests {
             !injection.contains("Use query-explain when the endpoint behavior looks ambiguous"),
             "summary+evidence injection should compact away lower-priority tail detail"
         );
+    }
+
+    #[test]
+    fn build_memory_injection_uses_compiled_task_state_for_review_queries() {
+        let memories = vec![
+            ScoredMemory {
+                memory: Memory::new(
+                    "Auth review checklist: require tests and security review before merging sensitive changes.".to_string(),
+                ),
+                score: 0.93,
+                provenance: vec!["task_context:review".to_string()],
+                trust_score: 0.95,
+                low_trust: false,
+            },
+            ScoredMemory {
+                memory: Memory::new(
+                    "Auth rollback patch was merged after the token cache flush completed.".to_string(),
+                ),
+                score: 0.81,
+                provenance: vec!["fts".to_string()],
+                trust_score: 0.88,
+                low_trust: false,
+            },
+        ];
+        let (injection, count) = build_memory_injection(
+            &memories,
+            4_000,
+            Some("Review the auth changes before merge and audit anything risky."),
+        );
+        assert_eq!(count, 2);
+        assert!(injection.contains("<task_state kind=\"review\">"));
+        assert!(injection.contains("<constraints>"));
+        assert!(injection.contains("<recent_actions>"));
+        assert!(!injection.contains("<summary>"));
     }
 
     #[test]

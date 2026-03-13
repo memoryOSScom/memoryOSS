@@ -1174,6 +1174,25 @@ async fn test_query_explain_prioritizes_task_context_for_deploy_bugfix_and_revie
     assert_eq!(deploy_resp.status(), 200);
     let deploy_body: serde_json::Value = deploy_resp.json().await.unwrap();
     assert_eq!(deploy_body["task_context"]["kind"].as_str(), Some("deploy"));
+    assert_eq!(deploy_body["task_state"]["kind"].as_str(), Some("deploy"));
+    assert!(
+        deploy_body["task_state"]["constraints"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
+        "deploy query should compile explicit constraints"
+    );
+    assert!(
+        deploy_body["task_state"]["facts"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
+        "deploy query should compile explicit facts"
+    );
+    assert!(
+        deploy_body["task_state"]["decisions"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
+        "deploy task state should expose condensation decisions"
+    );
     let deploy_results = deploy_body["final_results"].as_array().unwrap();
     assert!(
         deploy_results[0]["memory"]["content"]
@@ -1336,6 +1355,7 @@ namespace = "test"
         explain_body["task_context"]["kind"].as_str(),
         Some("review")
     );
+    assert_eq!(explain_body["task_state"]["kind"].as_str(), Some("review"));
     let explain_results = explain_body["final_results"].as_array().unwrap();
     assert!(
         explain_results[0]["memory"]["content"]
@@ -1385,20 +1405,18 @@ namespace = "test"
         .as_str()
         .expect("system content missing");
     let review_memory = "Auth review checklist: require tests and security review before merging sensitive changes.";
-    let bugfix_memory =
-        "Auth hotfix note: merge the rollback patch only after flushing the token cache.";
     assert!(
         system_content.contains(review_memory),
         "review memory should be present in injected context"
     );
-    if system_content.contains(bugfix_memory) {
-        let review_pos = system_content.find(review_memory).unwrap();
-        let bugfix_pos = system_content.find(bugfix_memory).unwrap();
-        assert!(
-            review_pos < bugfix_pos,
-            "review-context memory should appear before bugfix distractor"
-        );
-    }
+    assert!(
+        system_content.contains("<task_state kind=\"review\">"),
+        "review queries should inject an explicit compiled task state"
+    );
+    assert!(
+        system_content.contains("<constraints>"),
+        "task state should separate constraints from other context"
+    );
 
     child.kill().await.ok();
     upstream_handle.abort();

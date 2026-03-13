@@ -344,6 +344,15 @@ Proxy memory injection now uses a two-level format inside `<memory_context>`:
 - `<summary>` blocks give the compact task-facing memory
 - `<evidence>` blocks carry bounded preview snippets plus provenance so operators can drill down without dumping raw stored content into every prompt
 
+For recognized task classes (`deploy`, `bugfix`, `review`, `style`), memoryOSS now compiles an explicit `<task_state>` block instead of a flat memory list. That compiled state separates:
+- facts
+- constraints
+- recent actions
+- open questions
+- evidence
+
+The admin explain surface exposes the same compiled task state plus the input memories and condensation decisions that produced it.
+
 ### Portable Runtime Contract
 
 memoryOSS now exposes a versioned runtime contract at `/v1/runtime/contract`.

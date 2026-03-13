@@ -3,9 +3,13 @@
 
 use std::collections::HashSet;
 
+use serde::{Deserialize, Serialize};
+use uuid::Uuid;
+
 use crate::memory::{
     Memory, MemoryStatus, MemorySummaryEntry, ScoreExplainEntry, ScoredMemory, SummaryEvidenceItem,
 };
+use crate::scoring::TaskContext;
 
 const MIN_SUBSTRING_TOKENS: usize = 5;
 const MIN_JACCARD_TOKENS: usize = 6;
@@ -127,6 +131,434 @@ fn evidence_previews(content: &str) -> Vec<String> {
     }
 
     previews
+}
+
+fn escape_xml(content: &str) -> String {
+    content
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&apos;")
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledTaskStateItem {
+    pub memory_id: Uuid,
+    pub summary: String,
+    pub score: f64,
+    pub trust_score: f64,
+    pub status: MemoryStatus,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledTaskStateEvidence {
+    pub memory_id: Uuid,
+    pub preview: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub provenance: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledTaskStateInputs {
+    pub candidate_memory_ids: Vec<Uuid>,
+    pub selected_memory_ids: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub omitted_memory_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CompiledTaskState {
+    pub kind: String,
+    pub goal: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub facts: Vec<CompiledTaskStateItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub constraints: Vec<CompiledTaskStateItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub recent_actions: Vec<CompiledTaskStateItem>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub open_questions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence: Vec<CompiledTaskStateEvidence>,
+    pub inputs: CompiledTaskStateInputs,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub decisions: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct TaskStateCandidate {
+    memory_id: Uuid,
+    content: String,
+    summary: String,
+    score: f64,
+    trust_score: f64,
+    status: MemoryStatus,
+    tags: Vec<String>,
+    provenance: Vec<String>,
+    evidence: Vec<SummaryEvidenceItem>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TaskStateBucket {
+    Fact,
+    Constraint,
+    RecentAction,
+    OpenQuestion,
+}
+
+fn contains_hint(text: &str, hints: &[&str]) -> bool {
+    let lowered = text.to_lowercase();
+    hints.iter().any(|hint| {
+        let hint = hint.to_lowercase();
+        lowered.contains(&hint)
+    })
+}
+
+fn is_normative_text(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    [
+        " must ",
+        " should ",
+        " required ",
+        " requires ",
+        " never ",
+        " do not ",
+        " before ",
+        " only after ",
+        " mandatory ",
+        " policy ",
+        " preference ",
+        " checklist ",
+        " source of truth ",
+        " canonical ",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn is_action_text(text: &str) -> bool {
+    let lowered = text.to_lowercase();
+    [
+        " rerun ",
+        " retry ",
+        " roll back ",
+        " rollback ",
+        " notify ",
+        " merge ",
+        " deploy ",
+        " release ",
+        " validate ",
+        " review ",
+        " audit ",
+        " flush ",
+        " clear ",
+        " invalidate ",
+        " patch ",
+        " fix ",
+    ]
+    .iter()
+    .any(|needle| lowered.contains(needle))
+}
+
+fn bucket_candidate(candidate: &TaskStateCandidate, task_context: &TaskContext) -> TaskStateBucket {
+    if matches!(
+        candidate.status,
+        MemoryStatus::Candidate | MemoryStatus::Contested
+    ) {
+        return TaskStateBucket::OpenQuestion;
+    }
+
+    let tag_text = candidate.tags.join(" ");
+    if is_normative_text(&candidate.content)
+        || contains_hint(
+            &candidate.content,
+            task_context.kind.task_state_constraint_hints(),
+        )
+        || contains_hint(&tag_text, task_context.kind.task_state_constraint_hints())
+    {
+        return TaskStateBucket::Constraint;
+    }
+
+    if is_action_text(&candidate.content)
+        || contains_hint(
+            &candidate.content,
+            task_context.kind.task_state_action_hints(),
+        )
+        || contains_hint(&tag_text, task_context.kind.task_state_action_hints())
+    {
+        return TaskStateBucket::RecentAction;
+    }
+
+    TaskStateBucket::Fact
+}
+
+fn candidate_to_item(candidate: &TaskStateCandidate) -> CompiledTaskStateItem {
+    CompiledTaskStateItem {
+        memory_id: candidate.memory_id,
+        summary: candidate.summary.clone(),
+        score: candidate.score,
+        trust_score: candidate.trust_score,
+        status: candidate.status,
+        tags: candidate.tags.clone(),
+        provenance: candidate.provenance.clone(),
+    }
+}
+
+fn compile_task_state(
+    candidates: Vec<TaskStateCandidate>,
+    task_context: &TaskContext,
+) -> Option<CompiledTaskState> {
+    if candidates.is_empty() {
+        return None;
+    }
+
+    let mut facts = Vec::new();
+    let mut constraints = Vec::new();
+    let mut recent_actions = Vec::new();
+    let mut open_questions = Vec::new();
+    let mut evidence = Vec::new();
+    let mut selected_ids = Vec::new();
+    let mut decisions = Vec::new();
+
+    for candidate in &candidates {
+        let bucket = bucket_candidate(candidate, task_context);
+        let item = candidate_to_item(candidate);
+        let mut selected = false;
+
+        match bucket {
+            TaskStateBucket::Constraint if constraints.len() < 2 => {
+                constraints.push(item);
+                selected = true;
+            }
+            TaskStateBucket::RecentAction if recent_actions.len() < 2 => {
+                recent_actions.push(item);
+                selected = true;
+            }
+            TaskStateBucket::Fact if facts.len() < 2 => {
+                facts.push(item);
+                selected = true;
+            }
+            TaskStateBucket::OpenQuestion if open_questions.len() < 2 => {
+                let question = match candidate.status {
+                    MemoryStatus::Candidate => {
+                        format!(
+                            "Confirm candidate memory before relying on it: {}",
+                            candidate.summary
+                        )
+                    }
+                    MemoryStatus::Contested => {
+                        format!(
+                            "Resolve contested memory before relying on it: {}",
+                            candidate.summary
+                        )
+                    }
+                    _ => format!(
+                        "Clarify whether this memory should stay active: {}",
+                        candidate.summary
+                    ),
+                };
+                open_questions.push(question);
+                selected = true;
+            }
+            _ => {}
+        }
+
+        if selected {
+            selected_ids.push(candidate.memory_id);
+            if let Some(first_evidence) = candidate.evidence.first() {
+                if evidence.len() < 4 {
+                    evidence.push(CompiledTaskStateEvidence {
+                        memory_id: candidate.memory_id,
+                        preview: first_evidence.preview.clone(),
+                        provenance: first_evidence.provenance.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    if facts.is_empty()
+        && let Some(candidate) = candidates
+            .iter()
+            .find(|candidate| !selected_ids.contains(&candidate.memory_id))
+    {
+        facts.push(candidate_to_item(candidate));
+        selected_ids.push(candidate.memory_id);
+    }
+
+    if facts.is_empty() && recent_actions.is_empty() && constraints.len() > 1 {
+        if let Some(downgraded_constraint) = constraints.pop() {
+            facts.push(downgraded_constraint);
+            decisions.push(
+                "Demoted the lowest-priority constraint into facts to keep the working state balanced."
+                    .to_string(),
+            );
+        }
+    }
+
+    if constraints.is_empty() || (facts.is_empty() && recent_actions.is_empty()) {
+        open_questions.push(task_context.kind.task_state_missing_question().to_string());
+    }
+    open_questions.sort();
+    open_questions.dedup();
+
+    if !constraints.is_empty() {
+        decisions
+            .push("Promoted policy-like or preference-like memories into constraints.".to_string());
+    }
+    if !recent_actions.is_empty() {
+        decisions.push("Promoted action-oriented memories into recent actions.".to_string());
+    }
+    if !open_questions.is_empty() {
+        decisions.push(
+            "Turned unresolved or low-confidence signals into explicit open questions.".to_string(),
+        );
+    }
+    if !evidence.is_empty() {
+        decisions.push(
+            "Kept one bounded evidence preview per selected memory for drill-down.".to_string(),
+        );
+    }
+
+    let candidate_memory_ids = candidates
+        .iter()
+        .map(|candidate| candidate.memory_id)
+        .collect();
+    let omitted_memory_ids = candidates
+        .iter()
+        .map(|candidate| candidate.memory_id)
+        .filter(|id| !selected_ids.contains(id))
+        .collect();
+
+    Some(CompiledTaskState {
+        kind: task_context.label().to_string(),
+        goal: task_context.kind.task_state_goal().to_string(),
+        facts,
+        constraints,
+        recent_actions,
+        open_questions,
+        evidence,
+        inputs: CompiledTaskStateInputs {
+            candidate_memory_ids,
+            selected_memory_ids: selected_ids,
+            omitted_memory_ids,
+        },
+        decisions,
+    })
+}
+
+pub fn compile_scored_task_state(
+    scored: &[ScoredMemory],
+    task_context: &TaskContext,
+) -> Option<CompiledTaskState> {
+    compile_task_state(
+        scored
+            .iter()
+            .map(|entry| TaskStateCandidate {
+                memory_id: entry.memory.id,
+                content: entry.memory.content.clone(),
+                summary: summary_sentence(&entry.memory.content),
+                score: entry.score,
+                trust_score: entry.trust_score,
+                status: entry.memory.status,
+                tags: entry.memory.tags.clone(),
+                provenance: entry.provenance.clone(),
+                evidence: evidence_previews(&entry.memory.content)
+                    .into_iter()
+                    .map(|preview| SummaryEvidenceItem {
+                        preview,
+                        provenance: entry.provenance.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        task_context,
+    )
+}
+
+pub fn compile_explained_task_state(
+    explained: &[ScoreExplainEntry],
+    task_context: &TaskContext,
+) -> Option<CompiledTaskState> {
+    compile_task_state(
+        explained
+            .iter()
+            .map(|entry| TaskStateCandidate {
+                memory_id: entry.memory.id,
+                content: entry.memory.content.clone(),
+                summary: summary_sentence(&entry.memory.content),
+                score: entry.final_score,
+                trust_score: entry.trust_score,
+                status: entry.memory.status,
+                tags: entry.memory.tags.clone(),
+                provenance: entry.provenance.clone(),
+                evidence: evidence_previews(&entry.memory.content)
+                    .into_iter()
+                    .map(|preview| SummaryEvidenceItem {
+                        preview,
+                        provenance: entry.provenance.clone(),
+                    })
+                    .collect(),
+            })
+            .collect(),
+        task_context,
+    )
+}
+
+pub fn render_task_state_xml(task_state: &CompiledTaskState) -> String {
+    fn render_items(tag: &str, item_tag: &str, items: &[CompiledTaskStateItem], body: &mut String) {
+        if items.is_empty() {
+            return;
+        }
+        body.push_str(&format!("<{tag}>\n"));
+        for item in items {
+            body.push_str(&format!(
+                "<{item_tag}>{}</{item_tag}>\n",
+                escape_xml(&item.summary)
+            ));
+        }
+        body.push_str(&format!("</{tag}>\n"));
+    }
+
+    let mut body = format!(
+        "<task_state kind=\"{}\">\n<goal>{}</goal>\n",
+        task_state.kind,
+        escape_xml(&task_state.goal)
+    );
+    render_items("facts", "fact", &task_state.facts, &mut body);
+    render_items(
+        "constraints",
+        "constraint",
+        &task_state.constraints,
+        &mut body,
+    );
+    render_items(
+        "recent_actions",
+        "recent_action",
+        &task_state.recent_actions,
+        &mut body,
+    );
+    if !task_state.open_questions.is_empty() {
+        body.push_str("<open_questions>\n");
+        for question in &task_state.open_questions {
+            body.push_str(&format!("<question>{}</question>\n", escape_xml(question)));
+        }
+        body.push_str("</open_questions>\n");
+    }
+    if !task_state.evidence.is_empty() {
+        body.push_str("<evidence>\n");
+        for item in &task_state.evidence {
+            body.push_str(&format!("<item>{}</item>\n", escape_xml(&item.preview)));
+        }
+        body.push_str("</evidence>\n");
+    }
+    body.push_str("</task_state>\n");
+    body
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f64 {
@@ -583,11 +1015,14 @@ pub fn duplicate_rate_for_active_memories(memories: &[Memory], threshold: f64) -
 
 #[cfg(test)]
 mod tests {
-    use crate::memory::{Memory, ScoreChannels, ScoreExplainEntry, ScoredMemory};
+    use crate::memory::{Memory, MemoryStatus, ScoreChannels, ScoreExplainEntry, ScoredMemory};
+    use crate::scoring::{TaskContext, TaskContextKind};
+    use uuid::Uuid;
 
     use super::{
         are_structural_duplicates, collapse_explained_entries, collapse_scored_memories,
-        collapse_scored_memories_for_query, fuse_contents,
+        collapse_scored_memories_for_query, compile_scored_task_state, fuse_contents,
+        render_task_state_xml,
     };
 
     #[test]
@@ -769,5 +1204,110 @@ mod tests {
                 || anthropic.memory.content.contains("Anthropic Messages API"),
             "collapsed content should preserve details from both fragments"
         );
+    }
+
+    #[test]
+    fn test_compile_scored_task_state_separates_constraints_actions_and_questions() {
+        let mut constraint =
+            Memory::new("Production deploys require staging approval before rollout.".to_string());
+        constraint.tags = vec!["deploy".to_string(), "approval".to_string()];
+
+        let mut action = Memory::new(
+            "Latest deploy action: rerun the smoke test and notify ops-red once rollout finishes."
+                .to_string(),
+        );
+        action.tags = vec!["deploy".to_string(), "runbook".to_string()];
+
+        let mut candidate = Memory::new(
+            "Candidate deploy note: maybe skip smoke tests when the canary looks healthy."
+                .to_string(),
+        );
+        candidate.status = MemoryStatus::Candidate;
+        candidate.tags = vec!["deploy".to_string(), "candidate".to_string()];
+
+        let task_state = compile_scored_task_state(
+            &[
+                ScoredMemory {
+                    memory: constraint,
+                    score: 0.93,
+                    provenance: vec!["fts".to_string()],
+                    trust_score: 0.91,
+                    low_trust: false,
+                },
+                ScoredMemory {
+                    memory: action,
+                    score: 0.88,
+                    provenance: vec!["vector".to_string()],
+                    trust_score: 0.87,
+                    low_trust: false,
+                },
+                ScoredMemory {
+                    memory: candidate,
+                    score: 0.7,
+                    provenance: vec!["vector".to_string()],
+                    trust_score: 0.6,
+                    low_trust: false,
+                },
+            ],
+            &TaskContext {
+                kind: TaskContextKind::Deploy,
+                matched_terms: vec!["deploy".to_string()],
+            },
+        )
+        .expect("expected compiled task state");
+
+        assert_eq!(task_state.kind, "deploy");
+        assert!(!task_state.constraints.is_empty());
+        assert!(
+            !task_state.recent_actions.is_empty() || !task_state.facts.is_empty(),
+            "compiler should keep at least one non-constraint working-state item"
+        );
+        assert!(!task_state.open_questions.is_empty());
+        assert!(
+            task_state
+                .decisions
+                .iter()
+                .any(|entry| entry.contains("constraints")),
+            "compiler should explain why constraints were promoted"
+        );
+    }
+
+    #[test]
+    fn test_render_task_state_xml_emits_explicit_sections() {
+        let task_state = super::CompiledTaskState {
+            kind: "review".to_string(),
+            goal: "Compile the minimum review state for this task.".to_string(),
+            facts: Vec::new(),
+            constraints: vec![super::CompiledTaskStateItem {
+                memory_id: Uuid::now_v7(),
+                summary: "Require tests and security review before merge.".to_string(),
+                score: 0.9,
+                trust_score: 0.9,
+                status: MemoryStatus::Active,
+                tags: vec!["review".to_string()],
+                provenance: vec!["fts".to_string()],
+            }],
+            recent_actions: Vec::new(),
+            open_questions: vec![
+                "Confirm whether the rollback diff needs another reviewer.".to_string(),
+            ],
+            evidence: vec![super::CompiledTaskStateEvidence {
+                memory_id: Uuid::now_v7(),
+                preview: "Security review before merge.".to_string(),
+                provenance: vec!["fts".to_string()],
+            }],
+            inputs: super::CompiledTaskStateInputs {
+                candidate_memory_ids: Vec::new(),
+                selected_memory_ids: Vec::new(),
+                omitted_memory_ids: Vec::new(),
+            },
+            decisions: Vec::new(),
+        };
+
+        let xml = render_task_state_xml(&task_state);
+        assert!(xml.contains("<task_state kind=\"review\">"));
+        assert!(xml.contains("<constraints>"));
+        assert!(xml.contains("<open_questions>"));
+        assert!(xml.contains("<evidence>"));
     }
 }

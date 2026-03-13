@@ -85,6 +85,9 @@ RETRIEVAL_INJECTION_METRICS = [
     ("need_more_evidence_recall", "higher_is_better"),
     ("missed_evidence_rate", "lower_is_better"),
     ("summary_context_shrink_rate", "higher_is_better"),
+    ("task_state_usage_rate", "higher_is_better"),
+    ("task_state_hit_rate", "higher_is_better"),
+    ("task_state_context_shrink_rate", "higher_is_better"),
     ("proxy_latency_ms_p95", "lower_is_better"),
 ]
 
@@ -523,6 +526,10 @@ def request_has_memory_context(request: dict) -> bool:
     return bool(captured_memory_context_text(request))
 
 
+def request_uses_task_state(request: dict) -> bool:
+    return "<task_state" in captured_memory_context_text(request)
+
+
 def build_flat_memory_context(explain: dict, count: int) -> str:
     results = (explain.get("final_results") or [])[:count]
     if not results:
@@ -588,6 +595,10 @@ def run_retrieval_injection_lane(
     correct_need_more_evidence = 0
     proxy_latency_ms: list[float] = []
     summary_context_shrink_rates: list[float] = []
+    expected_task_state = 0
+    task_state_used = 0
+    task_state_hits = 0
+    task_state_context_shrink_rates: list[float] = []
 
     for case in RETRIEVAL_INJECTION_CASES:
         explain_status, explain = http_json_with_retry(
@@ -626,6 +637,7 @@ def run_retrieval_injection_lane(
 
         request = upstream_server.captured_requests[-1]
         injected = request_has_memory_context(request)
+        uses_task_state = request_uses_task_state(request)
         captured_context = captured_memory_context_text(request)
         anchor_match = request_matches_anchor(request, case.get("expected_anchor"))
         if injected and captured_context:
@@ -636,6 +648,25 @@ def run_retrieval_injection_lane(
                     summary_context_shrink_rates.append(
                         max(0.0, 1.0 - (len(captured_context) / len(flat_context)))
                     )
+            elif uses_task_state:
+                flat_context = build_flat_memory_context(explain, 3)
+                if flat_context:
+                    task_state_context_shrink_rates.append(
+                        max(0.0, 1.0 - (len(captured_context) / len(flat_context)))
+                    )
+                    summary_context_shrink_rates.append(
+                        max(0.0, 1.0 - (len(captured_context) / len(flat_context)))
+                    )
+
+        expected_compiled_state = (
+            case["expected_action"] == "inject" and bool(explain.get("task_context"))
+        )
+        if expected_compiled_state:
+            expected_task_state += 1
+            if uses_task_state:
+                task_state_used += 1
+            if uses_task_state and anchor_match:
+                task_state_hits += 1
 
         if case["expected_action"] == "inject":
             expected_inject += 1
@@ -678,6 +709,7 @@ def run_retrieval_injection_lane(
                 "identifier_case": bool(case.get("identifier_case")),
                 "proxy_injected": injected,
                 "anchor_match": anchor_match,
+                "task_state_used": uses_task_state,
                 "gate_decision": gate_decision,
                 "gate_reasons": gate_reasons,
                 "top_score": round(top_score, 4),
@@ -718,6 +750,17 @@ def run_retrieval_injection_lane(
             sum(summary_context_shrink_rates) / len(summary_context_shrink_rates), 4
         )
         if summary_context_shrink_rates
+        else 0.0,
+        "task_state_usage_rate": round(task_state_used / expected_task_state, 4)
+        if expected_task_state
+        else 0.0,
+        "task_state_hit_rate": round(task_state_hits / expected_task_state, 4)
+        if expected_task_state
+        else 0.0,
+        "task_state_context_shrink_rate": round(
+            sum(task_state_context_shrink_rates) / len(task_state_context_shrink_rates), 4
+        )
+        if task_state_context_shrink_rates
         else 0.0,
         "proxy_latency_ms_p95": round(percentile(proxy_latency_ms, 0.95), 2),
     }
