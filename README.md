@@ -1,6 +1,6 @@
 # memoryOSS
 
-Persistent long-term memory for AI agents. memoryOSS runs as a local memory layer in front of the LLM API, with MCP always available for explicit memory tools.
+Persistent long-term memory for AI agents. memoryOSS runs as a local memory layer in front of the LLM API, with MCP always available for explicit memory tools. The runtime contract is versioned and machine-readable, so the product can be described precisely as a portable memory runtime instead of only a proxy.
 
 > **Public Beta (v0.1.1)** — memoryOSS is a public beta for evaluation and testing. Features, APIs, and configuration may change without notice. Do not use for critical or regulated workloads. Please keep your own backups. This notice does not limit any mandatory statutory rights.
 
@@ -344,6 +344,21 @@ Proxy memory injection now uses a two-level format inside `<memory_context>`:
 - `<summary>` blocks give the compact task-facing memory
 - `<evidence>` blocks carry bounded preview snippets plus provenance so operators can drill down without dumping raw stored content into every prompt
 
+### Portable Runtime Contract
+
+memoryOSS now exposes a versioned runtime contract at `/v1/runtime/contract`.
+
+Stable runtime semantics today:
+- namespace-scoped memory records
+- opaque provenance and lifecycle metadata
+- explicit merge and supersede lineage
+- contract-tagged portability export
+
+Explicitly outside the stable runtime contract for now:
+- retrieval strategy details like confidence gating and identifier-first routing
+- first-class branch and replay APIs
+- first-class typed policy and evidence objects with full import/export fidelity
+
 ### Sharing (cross-namespace collaboration)
 
 | Endpoint | Method | Description |
@@ -361,6 +376,7 @@ Proxy memory injection now uses a two-level format inside `<memory_context>`:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/export` | GET | Data export (all memories) |
+| `/v1/runtime/contract` | GET | Versioned portable memory runtime contract |
 | `/v1/memories` | GET | Data access (list memories) |
 | `/v1/forget/certified` | DELETE | Certified deletion with audit trail |
 

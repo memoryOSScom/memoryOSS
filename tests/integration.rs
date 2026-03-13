@@ -4779,6 +4779,14 @@ async fn test_gdpr_connections_cover_export_access_and_certified_forget() {
         .unwrap();
     assert_eq!(export_resp.status(), 200);
     let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    assert_eq!(
+        export_body["runtime_contract"]["contract_id"].as_str(),
+        Some("memoryoss.runtime.v1alpha1")
+    );
+    assert_eq!(
+        export_body["runtime_contract"]["version"].as_str(),
+        Some("2026-03-13")
+    );
     assert_eq!(export_body["count"].as_u64(), Some(1));
     assert!(
         export_body["memories"][0].get("embedding").is_none(),
@@ -4834,6 +4842,92 @@ async fn test_gdpr_connections_cover_export_access_and_certified_forget() {
     assert_eq!(export_after_resp.status(), 200);
     let export_after_body: serde_json::Value = export_after_resp.json().await.unwrap();
     assert_eq!(export_after_body["count"].as_u64(), Some(0));
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("runtime-contract.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let resp = client
+        .get(format!("{base}/v1/runtime/contract"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body: serde_json::Value = resp.json().await.unwrap();
+
+    assert_eq!(
+        body["contract_id"].as_str(),
+        Some("memoryoss.runtime.v1alpha1")
+    );
+    assert_eq!(body["version"].as_str(), Some("2026-03-13"));
+    assert!(
+        body["stable_semantics"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["name"].as_str() == Some("namespace_scope")),
+        "contract should expose stable namespace scope semantics"
+    );
+    assert!(
+        body["experimental_layers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["name"].as_str() == Some("retrieval_confidence_gate")
+                    && entry["excluded_from_contract"].as_bool() == Some(true)
+            }),
+        "experimental retrieval layers must be separated from the stable contract"
+    );
+    assert!(
+        body["object_model"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["kind"].as_str() == Some("branch")
+                    && entry["support_level"].as_str() == Some("planned")
+            }),
+        "branch should be documented as planned rather than silently implied"
+    );
+    assert!(
+        body["known_gaps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["area"].as_str() == Some("replay")),
+        "contract should surface replay as an explicit current gap"
+    );
+    assert!(
+        body["api_mappings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| {
+                entry["runtime_operation"].as_str() == Some("portability_export")
+                    && entry["routes"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|route| route.as_str() == Some("/v1/export"))
+            }),
+        "portability export should be mapped into the runtime contract"
+    );
 
     child.kill().await.ok();
 }

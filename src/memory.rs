@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use uuid::Uuid;
 
+pub const MEMORY_RUNTIME_CONTRACT_ID: &str = "memoryoss.runtime.v1alpha1";
+pub const MEMORY_RUNTIME_CONTRACT_VERSION: &str = "2026-03-13";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum MemoryType {
@@ -45,6 +48,460 @@ impl std::fmt::Display for MemoryStatus {
             Self::Contested => write!(f, "contested"),
             Self::Stale => write!(f, "stale"),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RuntimeSupportLevel {
+    Stable,
+    Partial,
+    Planned,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeContractDocument {
+    pub contract_id: String,
+    pub version: String,
+    pub runtime_name: String,
+    pub stable_semantics: Vec<RuntimeSemantic>,
+    pub experimental_layers: Vec<RuntimeExperimentalLayer>,
+    pub object_model: Vec<RuntimeObjectModelEntry>,
+    pub guarantees: Vec<RuntimeGuarantee>,
+    pub api_mappings: Vec<RuntimeApiMapping>,
+    pub known_gaps: Vec<RuntimeGap>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeSemantic {
+    pub name: String,
+    pub guarantee: String,
+    pub current_surfaces: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeExperimentalLayer {
+    pub name: String,
+    pub description: String,
+    pub current_surfaces: Vec<String>,
+    pub excluded_from_contract: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeObjectModelEntry {
+    pub kind: String,
+    pub support_level: RuntimeSupportLevel,
+    pub description: String,
+    pub current_mapping: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub known_gaps: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeGuarantee {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeApiMapping {
+    pub runtime_operation: String,
+    pub routes: Vec<String>,
+    pub data_model_fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeGap {
+    pub area: String,
+    pub status: RuntimeSupportLevel,
+    pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeContractExportMetadata {
+    pub contract_id: String,
+    pub version: String,
+    pub document_route: String,
+    pub stable_semantics: Vec<String>,
+    pub experimental_layers_excluded: Vec<String>,
+}
+
+pub fn runtime_contract_document() -> RuntimeContractDocument {
+    RuntimeContractDocument {
+        contract_id: MEMORY_RUNTIME_CONTRACT_ID.to_string(),
+        version: MEMORY_RUNTIME_CONTRACT_VERSION.to_string(),
+        runtime_name: "memoryoss".to_string(),
+        stable_semantics: vec![
+            RuntimeSemantic {
+                name: "namespace_scope".to_string(),
+                guarantee:
+                    "Every stored memory belongs to a namespace boundary that is enforced on read, write, export, feedback, and sharing surfaces."
+                        .to_string(),
+                current_surfaces: vec![
+                    "Memory.namespace".to_string(),
+                    "/v1/store".to_string(),
+                    "/v1/recall".to_string(),
+                    "/v1/export".to_string(),
+                    "/v1/admin/sharing/*".to_string(),
+                ],
+            },
+            RuntimeSemantic {
+                name: "provenance".to_string(),
+                guarantee:
+                    "Stored memories preserve opaque source provenance, lifecycle timestamps, and review history without exposing raw API keys."
+                        .to_string(),
+                current_surfaces: vec![
+                    "Memory.source_key".to_string(),
+                    "Memory.created_at".to_string(),
+                    "Memory.updated_at".to_string(),
+                    "Memory.last_verified_at".to_string(),
+                    "Memory.review_events".to_string(),
+                    "/v1/export".to_string(),
+                    "/v1/inspect/{id}".to_string(),
+                ],
+            },
+            RuntimeSemantic {
+                name: "supersede".to_string(),
+                guarantee:
+                    "Superseding a memory marks the source stale, keeps lineage, and preserves the replacement pointer as first-class state."
+                        .to_string(),
+                current_surfaces: vec![
+                    "Memory.status".to_string(),
+                    "Memory.superseded_by".to_string(),
+                    "Memory.supersede_count".to_string(),
+                    "/v1/feedback".to_string(),
+                    "/v1/admin/review/action".to_string(),
+                    "/v1/inspect/{id}".to_string(),
+                ],
+            },
+            RuntimeSemantic {
+                name: "merge".to_string(),
+                guarantee:
+                    "Consolidation produces derived memories with explicit lineage instead of silently overwriting source records."
+                        .to_string(),
+                current_surfaces: vec![
+                    "Memory.derived_from".to_string(),
+                    "/v1/consolidate".to_string(),
+                    "/v1/export".to_string(),
+                ],
+            },
+            RuntimeSemantic {
+                name: "portable_export".to_string(),
+                guarantee:
+                    "The runtime can emit a contract-tagged portability export that omits embeddings but preserves semantic identity, provenance, and lineage."
+                        .to_string(),
+                current_surfaces: vec!["/v1/export".to_string()],
+            },
+        ],
+        experimental_layers: vec![
+            RuntimeExperimentalLayer {
+                name: "retrieval_confidence_gate".to_string(),
+                description:
+                    "Decides inject/abstain/need_more_evidence for proxy recall. This influences retrieval behavior but is not part of the stable memory object contract."
+                        .to_string(),
+                current_surfaces: vec![
+                    "proxy.confidence_gate".to_string(),
+                    "/proxy/*".to_string(),
+                    "/v1/admin/query-explain".to_string(),
+                ],
+                excluded_from_contract: true,
+            },
+            RuntimeExperimentalLayer {
+                name: "identifier_first_routing".to_string(),
+                description:
+                    "Routes identifier-heavy queries through lexical-first reranking. This changes selection strategy, not runtime object semantics."
+                        .to_string(),
+                current_surfaces: vec![
+                    "proxy.identifier_first_routing".to_string(),
+                    "/proxy/*".to_string(),
+                    "/v1/admin/query-explain".to_string(),
+                ],
+                excluded_from_contract: true,
+            },
+            RuntimeExperimentalLayer {
+                name: "summary_evidence_recall".to_string(),
+                description:
+                    "Provides compact summary/evidence renderings of stored memory. The presentation is additive and may evolve independently from the stored runtime state."
+                        .to_string(),
+                current_surfaces: vec![
+                    "/v1/recall".to_string(),
+                    "/v1/admin/query-explain".to_string(),
+                    "/proxy/*".to_string(),
+                ],
+                excluded_from_contract: true,
+            },
+        ],
+        object_model: vec![
+            RuntimeObjectModelEntry {
+                kind: "project_memory".to_string(),
+                support_level: RuntimeSupportLevel::Stable,
+                description:
+                    "Canonical durable memory record scoped by namespace for project-specific facts, preferences, decisions, and incidents."
+                        .to_string(),
+                current_mapping: vec![
+                    "Memory + Memory.namespace".to_string(),
+                    "/v1/store".to_string(),
+                    "/v1/recall".to_string(),
+                    "/v1/export".to_string(),
+                ],
+                known_gaps: Vec::new(),
+            },
+            RuntimeObjectModelEntry {
+                kind: "user_memory".to_string(),
+                support_level: RuntimeSupportLevel::Partial,
+                description:
+                    "User- or agent-specific runtime state layered on top of project memory."
+                        .to_string(),
+                current_mapping: vec![
+                    "Memory.agent".to_string(),
+                    "Memory.session".to_string(),
+                    "/v1/memories".to_string(),
+                ],
+                known_gaps: vec![
+                    "No first-class user object with its own lifecycle separate from Memory rows."
+                        .to_string(),
+                ],
+            },
+            RuntimeObjectModelEntry {
+                kind: "team_memory".to_string(),
+                support_level: RuntimeSupportLevel::Partial,
+                description:
+                    "Shared runtime state spanning multiple namespaces or operators."
+                        .to_string(),
+                current_mapping: vec![
+                    "sharing_store shared namespaces".to_string(),
+                    "/v1/admin/sharing/*".to_string(),
+                    "/v1/sharing/accessible".to_string(),
+                ],
+                known_gaps: vec![
+                    "No first-class team object with merge policy, ownership, and replay surfaces yet."
+                        .to_string(),
+                ],
+            },
+            RuntimeObjectModelEntry {
+                kind: "evidence".to_string(),
+                support_level: RuntimeSupportLevel::Partial,
+                description:
+                    "Supporting evidence and drill-down snippets attached to recalled memory."
+                        .to_string(),
+                current_mapping: vec![
+                    "Memory.evidence_count".to_string(),
+                    "RecallResponse.summaries[*].evidence".to_string(),
+                    "/v1/admin/query-explain".to_string(),
+                ],
+                known_gaps: vec![
+                    "Evidence is renderable and countable, but not yet a first-class persisted object with import/export fidelity."
+                        .to_string(),
+                ],
+            },
+            RuntimeObjectModelEntry {
+                kind: "policy".to_string(),
+                support_level: RuntimeSupportLevel::Partial,
+                description:
+                    "Normative memory that should actively guide or block later agent behavior."
+                        .to_string(),
+                current_mapping: vec![
+                    "Memory content + tags".to_string(),
+                    "/v1/store".to_string(),
+                    "/v1/feedback".to_string(),
+                    "/proxy/*".to_string(),
+                ],
+                known_gaps: vec![
+                    "Policies are represented semantically today, not as a typed runtime object."
+                        .to_string(),
+                ],
+            },
+            RuntimeObjectModelEntry {
+                kind: "provenance".to_string(),
+                support_level: RuntimeSupportLevel::Stable,
+                description:
+                    "Opaque provenance and lifecycle metadata attached to runtime records."
+                        .to_string(),
+                current_mapping: vec![
+                    "Memory.source_key".to_string(),
+                    "Memory.review_events".to_string(),
+                    "Memory.created_at/updated_at/last_verified_at".to_string(),
+                    "/v1/export".to_string(),
+                    "/v1/inspect/{id}".to_string(),
+                ],
+                known_gaps: Vec::new(),
+            },
+            RuntimeObjectModelEntry {
+                kind: "merge".to_string(),
+                support_level: RuntimeSupportLevel::Stable,
+                description: "Derived record created by consolidation or future merge workflows."
+                    .to_string(),
+                current_mapping: vec![
+                    "Memory.derived_from".to_string(),
+                    "/v1/consolidate".to_string(),
+                    "/v1/export".to_string(),
+                ],
+                known_gaps: Vec::new(),
+            },
+            RuntimeObjectModelEntry {
+                kind: "supersede".to_string(),
+                support_level: RuntimeSupportLevel::Stable,
+                description:
+                    "Explicit replacement edge between runtime records."
+                        .to_string(),
+                current_mapping: vec![
+                    "Memory.superseded_by".to_string(),
+                    "/v1/feedback".to_string(),
+                    "/v1/admin/review/action".to_string(),
+                ],
+                known_gaps: Vec::new(),
+            },
+            RuntimeObjectModelEntry {
+                kind: "branch".to_string(),
+                support_level: RuntimeSupportLevel::Planned,
+                description:
+                    "Forkable runtime lineage for safe experimentation and later merge."
+                        .to_string(),
+                current_mapping: Vec::new(),
+                known_gaps: vec![
+                    "No first-class branch surface or lineage graph yet.".to_string(),
+                ],
+            },
+            RuntimeObjectModelEntry {
+                kind: "replay".to_string(),
+                support_level: RuntimeSupportLevel::Planned,
+                description:
+                    "Deterministic replay of visible runtime state from recorded events and lineage."
+                        .to_string(),
+                current_mapping: Vec::new(),
+                known_gaps: vec![
+                    "No deterministic replay endpoint or replay artifact format yet.".to_string(),
+                ],
+            },
+        ],
+        guarantees: vec![
+            RuntimeGuarantee {
+                name: "opaque_source_provenance".to_string(),
+                description:
+                    "Source provenance uses opaque key identifiers instead of raw API keys."
+                        .to_string(),
+            },
+            RuntimeGuarantee {
+                name: "lineage_preservation".to_string(),
+                description:
+                    "Merge and supersede transitions preserve lineage instead of destructive overwrite."
+                        .to_string(),
+            },
+            RuntimeGuarantee {
+                name: "namespace_isolation".to_string(),
+                description:
+                    "Runtime reads and writes stay scoped to namespace boundaries unless sharing grants explicitly widen access."
+                        .to_string(),
+            },
+            RuntimeGuarantee {
+                name: "contract_tagged_export".to_string(),
+                description:
+                    "Portability exports carry runtime contract metadata so downstream tools can reason about semantics and gaps."
+                        .to_string(),
+            },
+        ],
+        api_mappings: vec![
+            RuntimeApiMapping {
+                runtime_operation: "write_memory".to_string(),
+                routes: vec!["/v1/store".to_string(), "/v1/store/batch".to_string()],
+                data_model_fields: vec![
+                    "Memory.content".to_string(),
+                    "Memory.tags".to_string(),
+                    "Memory.namespace".to_string(),
+                    "Memory.agent".to_string(),
+                    "Memory.session".to_string(),
+                ],
+            },
+            RuntimeApiMapping {
+                runtime_operation: "read_memory".to_string(),
+                routes: vec!["/v1/recall".to_string(), "/v1/recall/batch".to_string()],
+                data_model_fields: vec![
+                    "RecallResponse.memories".to_string(),
+                    "RecallResponse.summaries".to_string(),
+                ],
+            },
+            RuntimeApiMapping {
+                runtime_operation: "inspect_lineage".to_string(),
+                routes: vec![
+                    "/v1/inspect/{id}".to_string(),
+                    "/v1/admin/query-explain".to_string(),
+                ],
+                data_model_fields: vec![
+                    "Memory.superseded_by".to_string(),
+                    "Memory.derived_from".to_string(),
+                    "Memory.review_events".to_string(),
+                ],
+            },
+            RuntimeApiMapping {
+                runtime_operation: "transition_memory".to_string(),
+                routes: vec![
+                    "/v1/feedback".to_string(),
+                    "/v1/admin/review/action".to_string(),
+                    "/v1/consolidate".to_string(),
+                ],
+                data_model_fields: vec![
+                    "Memory.status".to_string(),
+                    "Memory.superseded_by".to_string(),
+                    "Memory.derived_from".to_string(),
+                    "Memory.contradicts_with".to_string(),
+                ],
+            },
+            RuntimeApiMapping {
+                runtime_operation: "portability_export".to_string(),
+                routes: vec!["/v1/export".to_string()],
+                data_model_fields: vec![
+                    "Memory without embedding".to_string(),
+                    "runtime_contract metadata".to_string(),
+                ],
+            },
+        ],
+        known_gaps: vec![
+            RuntimeGap {
+                area: "import".to_string(),
+                status: RuntimeSupportLevel::Planned,
+                note:
+                    "There is no first-class import endpoint that round-trips the runtime contract yet."
+                        .to_string(),
+            },
+            RuntimeGap {
+                area: "branch".to_string(),
+                status: RuntimeSupportLevel::Planned,
+                note: "Branch lineage is not yet a first-class runtime surface.".to_string(),
+            },
+            RuntimeGap {
+                area: "replay".to_string(),
+                status: RuntimeSupportLevel::Planned,
+                note: "Replay semantics are specified here but not yet implemented as a deterministic API."
+                    .to_string(),
+            },
+            RuntimeGap {
+                area: "typed_policy_and_evidence_objects".to_string(),
+                status: RuntimeSupportLevel::Partial,
+                note:
+                    "Policy and evidence semantics exist, but they are not yet first-class persisted objects with independent import/export fidelity."
+                        .to_string(),
+            },
+        ],
+    }
+}
+
+pub fn runtime_contract_export_metadata() -> RuntimeContractExportMetadata {
+    RuntimeContractExportMetadata {
+        contract_id: MEMORY_RUNTIME_CONTRACT_ID.to_string(),
+        version: MEMORY_RUNTIME_CONTRACT_VERSION.to_string(),
+        document_route: "/v1/runtime/contract".to_string(),
+        stable_semantics: vec![
+            "namespace_scope".to_string(),
+            "provenance".to_string(),
+            "supersede".to_string(),
+            "merge".to_string(),
+            "portable_export".to_string(),
+        ],
+        experimental_layers_excluded: vec![
+            "retrieval_confidence_gate".to_string(),
+            "identifier_first_routing".to_string(),
+            "summary_evidence_recall".to_string(),
+        ],
     }
 }
 
@@ -974,7 +1431,11 @@ pub struct ConsolidateResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{Memory, MemoryFeedbackAction, MemoryStatus, ReviewQueueKind, memories_contradict};
+    use super::{
+        MEMORY_RUNTIME_CONTRACT_ID, MEMORY_RUNTIME_CONTRACT_VERSION, Memory, MemoryFeedbackAction,
+        MemoryStatus, ReviewQueueKind, RuntimeSupportLevel, memories_contradict,
+        runtime_contract_document,
+    };
 
     #[test]
     fn test_confirm_from_signal_promotes_candidate() {
@@ -1120,6 +1581,40 @@ mod tests {
         assert_eq!(
             memory.review_events[0].queue_kind,
             Some(ReviewQueueKind::Candidate)
+        );
+    }
+
+    #[test]
+    fn test_runtime_contract_document_exposes_stable_semantics_and_known_gaps() {
+        let contract = runtime_contract_document();
+
+        assert_eq!(contract.contract_id, MEMORY_RUNTIME_CONTRACT_ID);
+        assert_eq!(contract.version, MEMORY_RUNTIME_CONTRACT_VERSION);
+        assert!(
+            contract
+                .stable_semantics
+                .iter()
+                .any(|entry| entry.name == "namespace_scope")
+        );
+        assert!(
+            contract
+                .experimental_layers
+                .iter()
+                .any(|entry| entry.name == "retrieval_confidence_gate"
+                    && entry.excluded_from_contract)
+        );
+        assert!(
+            contract
+                .object_model
+                .iter()
+                .any(|entry| entry.kind == "branch"
+                    && entry.support_level == RuntimeSupportLevel::Planned)
+        );
+        assert!(
+            contract
+                .known_gaps
+                .iter()
+                .any(|entry| entry.area == "replay")
         );
     }
 }

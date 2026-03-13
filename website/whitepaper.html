@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>memoryOSS Whitepaper — Persistent Memory for AI Agents</title>
-<meta name="description" content="Technical whitepaper: How memoryOSS solves the AI agent memory problem with a transparent proxy architecture, multi-channel retrieval, and Bayesian trust scoring.">
+<meta name="description" content="Technical whitepaper: How memoryOSS solves the AI agent memory problem with a transparent proxy architecture, a portable memory runtime contract, multi-channel retrieval, and Bayesian trust scoring.">
 <style>
 :root {
   --white: #fff; --gray-50: #fafafa; --gray-100: #f5f5f7; --gray-200: #e8e8ed;
@@ -130,7 +130,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
 <div class="wp-header"><div class="w">
   <div class="over">Whitepaper</div>
   <h1>Persistent Memory for AI Agents:<br>Architecture and Design</h1>
-  <p class="subtitle">How memoryOSS solves the statelessness problem with transparent integration, multi-channel retrieval, and trust-gated memory injection.</p>
+  <p class="subtitle">How memoryOSS solves the statelessness problem with transparent integration, a versioned portable runtime contract, multi-channel retrieval, and trust-gated memory injection.</p>
   <div class="wp-meta">
     <span>v1.0</span>
     <span>|</span>
@@ -405,6 +405,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
   <h3>Data Protection</h3>
   <ul>
     <li><b>GDPR Export</b> &mdash; <code>/v1/export</code> returns all stored data for a namespace</li>
+    <li><b>Runtime Contract</b> &mdash; <code>/v1/runtime/contract</code> exposes the stable semantics and current gaps of the portable memory runtime</li>
     <li><b>Certified Deletion</b> &mdash; <code>/v1/forget/certified</code> with cryptographic deletion certificates</li>
     <li><b>Memory Decay</b> &mdash; age-based automatic cleanup</li>
     <li><b>No telemetry by default</b> &mdash; memoryOSS itself sends no analytics, crash reports, or phone-home traffic. Normal model requests still go to the upstream provider you configure.</li>
@@ -437,6 +438,10 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
 
   <h3>Why a Separate BM25 Index?</h3>
   <p>Embeddings compress information. The identifier <code>handleWebSocketConnection</code> and "manage network socket" produce similar vectors. But when a developer asks about <code>handleWebSocketConnection</code>, they mean that exact function, not anything semantically similar. BM25 full-text search preserves these distinctions. The dual-index approach (vector + BM25) is more reliable than either approach alone in identifier-heavy developer contexts.</p>
+
+  <h3>Why a Runtime Contract?</h3>
+  <p>A proxy alone is not yet a portable runtime. To become a real shared memory substrate, memoryOSS needs stable semantics that other clients can target without reverse-engineering implementation details. The runtime contract makes those semantics explicit: namespace scope, provenance, merge, supersede, and portability export are treated as stable runtime guarantees, while retrieval strategies remain intentionally outside the contract.</p>
+  <p>This separation matters. It lets memoryOSS evolve retrieval and ranking aggressively without silently changing the meaning of stored state. A client that understands the contract can reason about exported memory, lineage, and known gaps even if the retrieval stack changes later.</p>
 </div>
 
 <!-- 9. Comparison -->
@@ -514,9 +519,9 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
 <div class="wp-section" id="conclusion">
   <h2><span class="sec-num">10</span>Conclusion</h2>
   <p>The AI agent memory problem is fundamentally an infrastructure problem, not an application problem. Asking every application to integrate memory SDKs doesn't scale. The proxy pattern solves this at the right layer: transparently, universally, and without requiring cooperation from application developers.</p>
-  <p>memoryOSS combines this architectural insight with multi-signal retrieval and injection control, safety mechanisms (quarantine, trust scoring, injection filtering), and operational simplicity (single binary, embedded storage, zero dependencies).</p>
+  <p>memoryOSS combines this architectural insight with a versioned portable runtime contract, multi-signal retrieval and injection control, safety mechanisms (quarantine, trust scoring, injection filtering), and operational simplicity (single binary, embedded storage, zero dependencies).</p>
   <p>In our benchmark workload, a small set of early high-signal memories was inserted before a much larger background corpus. Subsequent queries continued to retrieve those early signal memories with 100% hit rate, while unrelated noise queries stayed below the injection threshold. Separate long-memory regression runs stored a sentinel first, added 5k or 20k background memories, and still recovered that first sentinel at rank 1. A separate 2-hour soak run completed without errors or leak signals. The public tests page now publishes the corresponding extraction-quality, observed-duplicate-rate, active-memory-size, and observed false-positive injection metrics alongside those retention artifacts. In a separate constrained 10-task Claude benchmark, replacing repeated full task context with recalled memory context reduced average input tokens by 44.4%. This is benchmark evidence for defined workloads, not a claim of perfect recall or universal token savings for every real-world conversation.</p>
-  <p>The result is a system where AI agents retain project-specific knowledge over time without giving every extracted fact equal weight.</p>
+  <p>The result is a system where AI agents retain project-specific knowledge over time without giving every extracted fact equal weight, and where that knowledge can be described as runtime state instead of only a hidden proxy database.</p>
   <p>memoryOSS is designed to preserve the context that makes work cumulative.</p>
 
   <div class="wp-highlight">

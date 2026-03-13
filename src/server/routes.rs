@@ -28,6 +28,7 @@ use crate::memory::{
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction, MemoryStatus,
     RecallRequest, RecallResponse, ReviewQueueKind, ScoredMemory, StoreRequest, StoreResponse,
     UpdateRequest, contradiction_signature, contradiction_signatures_conflict, memories_contradict,
+    runtime_contract_document, runtime_contract_export_metadata,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -558,6 +559,7 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/v1/sharing/accessible", get(accessible_shared_ns))
         .route("/v1/export", get(gdpr_export))
+        .route("/v1/runtime/contract", get(runtime_contract))
         .route("/v1/memories", get(gdpr_access))
         .route("/v1/forget/certified", delete(gdpr_forget_certified))
         .route("/metrics", get(metrics))
@@ -2840,12 +2842,27 @@ async fn gdpr_export(
         .collect();
 
     Ok(Json(json!({
+        "runtime_contract": runtime_contract_export_metadata(),
         "namespace": namespace,
         "exported_at": chrono::Utc::now(),
         "count": export.len(),
         "memories": export,
     }))
     .into_response())
+}
+
+/// GET /v1/runtime/contract — versioned portable runtime semantics and current gaps.
+async fn runtime_contract(
+    State(state): State<AppState>,
+    parts: Parts,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    Ok(Json(runtime_contract_document()).into_response())
 }
 
 #[derive(Deserialize)]
