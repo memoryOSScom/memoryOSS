@@ -300,9 +300,19 @@ def retrieval_injection_lane_items(label: str, summary: dict) -> list[dict]:
             format_rate(summary.get("abstain_recall")),
         ),
         item(
+            f"{prefix}need more evidence recall",
+            "pass",
+            format_rate(summary.get("need_more_evidence_recall")),
+        ),
+        item(
             f"{prefix}missed evidence rate",
             "pass",
             format_rate(summary.get("missed_evidence_rate")),
+        ),
+        item(
+            f"{prefix}proxy latency p95",
+            "pass",
+            f"{summary.get('proxy_latency_ms_p95', 0):.0f} ms",
         ),
     ]
 
@@ -483,13 +493,19 @@ def build_sections(
                 if stable_lane
                 else 0
             )
+            expected_need_more_evidence = (
+                stable_lane.get("summary", {}).get("expected_need_more_evidence_cases", 0)
+                if stable_lane
+                else 0
+            )
             items = [
                 item(
                     "Probe dataset coverage",
                     "pass",
                     (
                         f"{dataset_size} cases "
-                        f"({expected_inject} inject, {expected_abstain} abstain)"
+                        f"({expected_inject} inject, {expected_abstain} abstain, "
+                        f"{expected_need_more_evidence} need_more_evidence)"
                         f"{artifact_suffix(benchmark_report, benchmark_step)}"
                     ),
                 )

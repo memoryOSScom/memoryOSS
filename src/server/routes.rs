@@ -119,6 +119,9 @@ pub struct MetricsCounters {
     pub forgets: std::sync::atomic::AtomicU64,
     pub proxy_requests: std::sync::atomic::AtomicU64,
     pub proxy_memories_injected: std::sync::atomic::AtomicU64,
+    pub proxy_gate_inject: std::sync::atomic::AtomicU64,
+    pub proxy_gate_abstain: std::sync::atomic::AtomicU64,
+    pub proxy_gate_need_more_evidence: std::sync::atomic::AtomicU64,
     pub proxy_facts_extracted: std::sync::atomic::AtomicU64,
     pub proxy_upstream_errors: std::sync::atomic::AtomicU64,
 }
@@ -131,6 +134,9 @@ impl MetricsCounters {
             forgets: std::sync::atomic::AtomicU64::new(0),
             proxy_requests: std::sync::atomic::AtomicU64::new(0),
             proxy_memories_injected: std::sync::atomic::AtomicU64::new(0),
+            proxy_gate_inject: std::sync::atomic::AtomicU64::new(0),
+            proxy_gate_abstain: std::sync::atomic::AtomicU64::new(0),
+            proxy_gate_need_more_evidence: std::sync::atomic::AtomicU64::new(0),
             proxy_facts_extracted: std::sync::atomic::AtomicU64::new(0),
             proxy_upstream_errors: std::sync::atomic::AtomicU64::new(0),
         }
@@ -2566,6 +2572,12 @@ async fn query_explain(
     });
     explained = crate::fusion::collapse_explained_entries(explained);
     explained.truncate(req.limit);
+    let (retrieval_gate, _) = crate::scoring::apply_retrieval_confidence_gate(
+        &explained,
+        &req.query,
+        state.config.proxy.min_recall_score,
+        state.config.proxy.confidence_gate,
+    );
 
     let vector_explain: Vec<_> = vector_results
         .iter()
@@ -2608,6 +2620,7 @@ async fn query_explain(
             "exact": weights.exact,
             "recency": weights.recency,
         },
+        "retrieval_gate": retrieval_gate,
         "vector_results": vector_explain,
         "fts_results": fts_explain,
         "exact_results": exact_explain,
@@ -3086,6 +3099,15 @@ async fn metrics(State(state): State<AppState>, parts: Parts) -> Result<Response
          # HELP memoryoss_proxy_memories_injected_total Total memories injected via proxy\n\
          # TYPE memoryoss_proxy_memories_injected_total counter\n\
          memoryoss_proxy_memories_injected_total {proxy_injected}\n\
+         # HELP memoryoss_proxy_gate_inject_total Total proxy requests where the confidence gate chose inject\n\
+         # TYPE memoryoss_proxy_gate_inject_total counter\n\
+         memoryoss_proxy_gate_inject_total {proxy_gate_inject}\n\
+         # HELP memoryoss_proxy_gate_abstain_total Total proxy requests where the confidence gate chose abstain\n\
+         # TYPE memoryoss_proxy_gate_abstain_total counter\n\
+         memoryoss_proxy_gate_abstain_total {proxy_gate_abstain}\n\
+         # HELP memoryoss_proxy_gate_need_more_evidence_total Total proxy requests where the confidence gate chose need_more_evidence\n\
+         # TYPE memoryoss_proxy_gate_need_more_evidence_total counter\n\
+         memoryoss_proxy_gate_need_more_evidence_total {proxy_gate_need_more_evidence}\n\
          # HELP memoryoss_proxy_facts_extracted_total Total facts extracted via proxy\n\
          # TYPE memoryoss_proxy_facts_extracted_total counter\n\
          memoryoss_proxy_facts_extracted_total {proxy_extracted}\n\
@@ -3110,6 +3132,18 @@ async fn metrics(State(state): State<AppState>, parts: Parts) -> Result<Response
         proxy_injected = state
             .metrics
             .proxy_memories_injected
+            .load(std::sync::atomic::Ordering::Relaxed),
+        proxy_gate_inject = state
+            .metrics
+            .proxy_gate_inject
+            .load(std::sync::atomic::Ordering::Relaxed),
+        proxy_gate_abstain = state
+            .metrics
+            .proxy_gate_abstain
+            .load(std::sync::atomic::Ordering::Relaxed),
+        proxy_gate_need_more_evidence = state
+            .metrics
+            .proxy_gate_need_more_evidence
             .load(std::sync::atomic::Ordering::Relaxed),
         proxy_extracted = state
             .metrics

@@ -55,6 +55,12 @@ EXPERIMENTAL_MIN_RECALL_SCORE = os.environ.get(
 EXPERIMENTAL_MEMORY_MODE = os.environ.get(
     "BENCHMARK_EXPERIMENTAL_MEMORY_MODE", ""
 ).strip()
+CONFIDENCE_GATE_ENABLED = os.environ.get(
+    "BENCHMARK_CONFIDENCE_GATE_ENABLED", "true"
+).strip().lower() not in ("0", "false", "no", "off")
+EXPERIMENTAL_CONFIDENCE_GATE = os.environ.get(
+    "BENCHMARK_EXPERIMENTAL_CONFIDENCE_GATE", ""
+).strip()
 
 MIN_SUBSTRING_TOKENS = 5
 MIN_JACCARD_TOKENS = 6
@@ -68,7 +74,9 @@ RETRIEVAL_INJECTION_METRICS = [
     ("wrong_injection_rate", "lower_is_better"),
     ("abstain_precision", "higher_is_better"),
     ("abstain_recall", "higher_is_better"),
+    ("need_more_evidence_recall", "higher_is_better"),
     ("missed_evidence_rate", "lower_is_better"),
+    ("proxy_latency_ms_p95", "lower_is_better"),
 ]
 
 RETRIEVAL_PROBE_MEMORIES = [
@@ -184,6 +192,11 @@ RETRIEVAL_INJECTION_CASES = [
         "id": "RI14",
         "expected_action": "abstain",
         "query": "tell me a joke about deployments",
+    },
+    {
+        "id": "RI15",
+        "expected_action": "need_more_evidence",
+        "query": "what should happen after smoke passes?",
     },
 ]
 
@@ -340,6 +353,7 @@ def build_proxy_sections(
     upstream_port: int,
     *,
     min_recall_score: float,
+    confidence_gate: bool,
     default_memory_mode: str = "full",
 ) -> str:
     return f"""
@@ -349,6 +363,7 @@ passthrough_auth = false
 upstream_url = "http://127.0.0.1:{upstream_port}/v1"
 default_memory_mode = "{default_memory_mode}"
 min_recall_score = {min_recall_score}
+confidence_gate = {"true" if confidence_gate else "false"}
 extraction_enabled = false
 
 [[proxy.key_mapping]]
@@ -498,11 +513,15 @@ def run_retrieval_injection_lane(
     cases = []
     expected_inject = 0
     expected_abstain = 0
+    expected_need_more_evidence = 0
     positive_hits = 0
     wrong_injections = 0
     missed_evidence = 0
     abstains = 0
     correct_abstains = 0
+    predicted_need_more_evidence = 0
+    correct_need_more_evidence = 0
+    proxy_latency_ms: list[float] = []
 
     for case in RETRIEVAL_INJECTION_CASES:
         explain_status, explain = http_json_with_retry(
@@ -521,9 +540,16 @@ def run_retrieval_injection_lane(
                 f"retrieval/injection explain failed for {case['id']}: {explain_status} {explain}"
             )
         top_score, top_content = top_final_score(explain)
+        retrieval_gate = explain.get("retrieval_gate") or {}
+        gate_decision = retrieval_gate.get("decision", "abstain")
+        gate_reasons = retrieval_gate.get("reasons") or []
+        if gate_decision == "need_more_evidence":
+            predicted_need_more_evidence += 1
 
         before = len(upstream_server.captured_requests)
+        t0 = time.time()
         proxy_status, proxy_body = proxy_request(base_url, proxy_key, case["query"])
+        proxy_latency_ms.append((time.time() - t0) * 1000.0)
         if proxy_status != 200:
             raise RuntimeError(
                 f"retrieval/injection proxy request failed for {case['id']}: {proxy_status} {proxy_body}"
@@ -548,11 +574,18 @@ def run_retrieval_injection_lane(
             if missed:
                 missed_evidence += 1
         else:
-            expected_abstain += 1
-            if injected:
-                wrong_injections += 1
+            if case["expected_action"] == "need_more_evidence":
+                expected_need_more_evidence += 1
+                if gate_decision == "need_more_evidence":
+                    correct_need_more_evidence += 1
+                if injected:
+                    wrong_injections += 1
             else:
-                correct_abstains += 1
+                expected_abstain += 1
+                if injected:
+                    wrong_injections += 1
+                else:
+                    correct_abstains += 1
 
         if not injected:
             abstains += 1
@@ -565,27 +598,38 @@ def run_retrieval_injection_lane(
                 "expected_anchor": case.get("expected_anchor"),
                 "proxy_injected": injected,
                 "anchor_match": anchor_match,
+                "gate_decision": gate_decision,
+                "gate_reasons": gate_reasons,
                 "top_score": round(top_score, 4),
                 "top_content": top_content,
+                "proxy_latency_ms": round(proxy_latency_ms[-1], 2),
             }
         )
 
     abstain_precision = correct_abstains / abstains if abstains else 1.0
     abstain_recall = correct_abstains / expected_abstain if expected_abstain else 1.0
+    need_more_evidence_recall = (
+        correct_need_more_evidence / expected_need_more_evidence
+        if expected_need_more_evidence
+        else 1.0
+    )
     summary = {
         "lane": lane_name,
         "dataset_size": len(RETRIEVAL_INJECTION_CASES),
         "expected_inject_cases": expected_inject,
         "expected_abstain_cases": expected_abstain,
+        "expected_need_more_evidence_cases": expected_need_more_evidence,
         "positive_injection_hit_rate": round(positive_hits / expected_inject, 4)
         if expected_inject
         else 0.0,
         "wrong_injection_rate": round(wrong_injections / len(RETRIEVAL_INJECTION_CASES), 4),
         "abstain_precision": round(abstain_precision, 4),
         "abstain_recall": round(abstain_recall, 4),
+        "need_more_evidence_recall": round(need_more_evidence_recall, 4),
         "missed_evidence_rate": round(missed_evidence / expected_inject, 4)
         if expected_inject
         else 0.0,
+        "proxy_latency_ms_p95": round(percentile(proxy_latency_ms, 0.95), 2),
     }
     return {
         "summary": summary,
@@ -602,11 +646,14 @@ def compare_retrieval_injection_lanes(stable: dict, experimental: dict) -> dict:
         stable_value = stable_summary.get(metric)
         experimental_value = experimental_summary.get(metric)
         delta = round(experimental_value - stable_value, 4)
-        regression = (
-            experimental_value < stable_value
-            if direction == "higher_is_better"
-            else experimental_value > stable_value
-        )
+        if metric == "proxy_latency_ms_p95":
+            regression = delta > 150.0
+        else:
+            regression = (
+                experimental_value < stable_value
+                if direction == "higher_is_better"
+                else experimental_value > stable_value
+            )
         if regression:
             regressions += 1
         metrics.append(
@@ -710,10 +757,11 @@ namespace = "bench"
 key = "{PROBE_ADMIN_KEY}"
 role = "admin"
 namespace = "probe"
-"""
+    """
     extra_sections = build_proxy_sections(
         upstream_port,
         min_recall_score=THRESHOLD,
+        confidence_gate=CONFIDENCE_GATE_ENABLED,
         default_memory_mode="full",
     )
     write_test_config(
@@ -996,7 +1044,11 @@ namespace = "probe"
             "comparison": None,
         }
 
-        if EXPERIMENTAL_MIN_RECALL_SCORE or EXPERIMENTAL_MEMORY_MODE:
+        if (
+            EXPERIMENTAL_MIN_RECALL_SCORE
+            or EXPERIMENTAL_MEMORY_MODE
+            or EXPERIMENTAL_CONFIDENCE_GATE
+        ):
             experimental_port = free_port()
             experimental_config_path = tmp / "benchmark-experimental.toml"
             experimental_log_path = tmp / "experimental-server.log"
@@ -1006,6 +1058,11 @@ namespace = "probe"
                 else THRESHOLD
             )
             experimental_memory_mode = EXPERIMENTAL_MEMORY_MODE or "full"
+            experimental_confidence_gate = (
+                EXPERIMENTAL_CONFIDENCE_GATE.lower() not in ("0", "false", "no", "off")
+                if EXPERIMENTAL_CONFIDENCE_GATE
+                else CONFIDENCE_GATE_ENABLED
+            )
             stop_process(process)
             write_test_config(
                 experimental_config_path,
@@ -1015,6 +1072,7 @@ namespace = "probe"
                 extra_sections=build_proxy_sections(
                     upstream_port,
                     min_recall_score=experimental_threshold,
+                    confidence_gate=experimental_confidence_gate,
                     default_memory_mode=experimental_memory_mode,
                 ),
             )

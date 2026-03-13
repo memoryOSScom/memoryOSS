@@ -532,6 +532,11 @@ pub struct ProxyConfig {
     /// Spreads results across different agents/tags to prevent aspect-blindness.
     #[serde(default)]
     pub diversity_factor: Option<f64>,
+    /// Lightweight confidence gate before proxy injection.
+    /// When enabled, the proxy explicitly chooses inject / abstain / need_more_evidence
+    /// instead of relying only on a raw score threshold.
+    #[serde(default = "default_true")]
+    pub confidence_gate: bool,
     /// Default memory mode: "full", "off", or "after" (default: "full").
     /// Overridden by X-Memory-Mode header if allow_client_memory_control is true.
     #[serde(default = "default_memory_mode")]
@@ -574,6 +579,7 @@ impl Default for ProxyConfig {
             passthrough_local_only: true,
             min_channel_score: None,
             diversity_factor: None,
+            confidence_gate: true,
             default_memory_mode: default_memory_mode(),
             memory_after_date: None,
         }
@@ -605,6 +611,7 @@ impl std::fmt::Debug for ProxyConfig {
             .field("passthrough_local_only", &self.passthrough_local_only)
             .field("min_channel_score", &self.min_channel_score)
             .field("diversity_factor", &self.diversity_factor)
+            .field("confidence_gate", &self.confidence_gate)
             .field("default_memory_mode", &self.default_memory_mode)
             .field("memory_after_date", &self.memory_after_date)
             .finish()

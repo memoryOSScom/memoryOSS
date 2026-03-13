@@ -519,84 +519,27 @@ fn estimate_tokens(text: &str) -> usize {
 /// Content-policy filter: reject memories that look like prompt injection attempts.
 /// Uses multi-layer defense: blocklist + structural patterns + NFKC unicode normalization.
 fn is_safe_for_injection(content: &str) -> bool {
-    use unicode_normalization::UnicodeNormalization;
-    // Full NFKC normalization: converts fullwidth/homoglyphs to ASCII equivalents,
-    // then strip zero-width chars and lowercase
-    let normalized: String = content
-        .nfkc()
-        .filter(|c| {
-            !matches!(
-                c,
-                '\u{200B}' | '\u{200C}' | '\u{200D}' | '\u{FEFF}' |  // zero-width
-            '\u{00AD}' |  // soft hyphen
-            '\u{2060}' | '\u{180E}' // word joiner, mongolian vowel separator
-            )
-        })
-        .collect::<String>()
-        .to_lowercase();
+    crate::scoring::is_safe_for_injection(content)
+}
 
-    // Reject if content tries to impersonate roles or delimiters
-    let structural_patterns = [
-        // Role impersonation
-        "system:",
-        "assistant:",
-        "human:",
-        "[system]",
-        "[/system]",
-        // Model-specific delimiters
-        "<|im_end|>",
-        "<|im_start|>",
-        "[inst]",
-        "[/inst]",
-        "<|endoftext|>",
-        "<|begin_of_text|>",
-        "</s>",
-        "<s>",
-        // Instruction override attempts (language-agnostic patterns)
-        "ignore previous",
-        "ignore all instruction",
-        "ignore above",
-        "disregard above",
-        "disregard previous",
-        "disregard all",
-        "forget everything",
-        "forget all instruction",
-        "new instructions:",
-        "override your",
-        "override the",
-        "you are now",
-        "act as if",
-        "pretend you are",
-        "do not follow",
-        "stop being",
-        "system prompt:",
-        "reveal your prompt",
-        "show your instructions",
-        "<!--",
-        "-->",
-        "### system",
-        "## system",
-        "# system",
-        "### assistant",
-        "## assistant",
-        "# assistant",
-    ];
+fn record_gate_decision(state: &AppState, decision: crate::scoring::RetrievalConfidenceDecision) {
+    let counter = match decision {
+        crate::scoring::RetrievalConfidenceDecision::Inject => &state.metrics.proxy_gate_inject,
+        crate::scoring::RetrievalConfidenceDecision::Abstain => &state.metrics.proxy_gate_abstain,
+        crate::scoring::RetrievalConfidenceDecision::NeedMoreEvidence => {
+            &state.metrics.proxy_gate_need_more_evidence
+        }
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
 
-    if structural_patterns.iter().any(|p| normalized.contains(p)) {
-        return false;
-    }
-
-    // Reject content with excessive special characters (likely injection payload)
-    let special_ratio = content
-        .chars()
-        .filter(|c| matches!(c, '<' | '>' | '{' | '}' | '|' | '\\'))
-        .count() as f64
-        / content.len().max(1) as f64;
-    if special_ratio > 0.15 {
-        return false;
-    }
-
-    true
+fn add_memory_headers(
+    mut response: axum::http::response::Builder,
+    injected_count: u64,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
+) -> axum::http::response::Builder {
+    response = response.header("x-memory-injected-count", injected_count.to_string());
+    response.header("x-memory-gate-decision", gate_decision.to_string())
 }
 
 fn should_store_extracted_fact(content: &str) -> bool {
@@ -925,6 +868,8 @@ pub async fn proxy_chat_completions(
     let memory_mode = parse_memory_mode(headers, proxy_config);
 
     let mut injected_count = 0u64;
+    let mut gate_decision = crate::scoring::RetrievalConfidenceDecision::Abstain;
+    let mut gate_evaluated = false;
 
     // Extract model name before mutable borrow of messages
     let model_name = body
@@ -964,19 +909,22 @@ pub async fn proxy_chat_completions(
                     let memory_budget =
                         (model_context as f64 * proxy_config.max_memory_pct) as usize;
 
-                    let qualified: Vec<ScoredMemory> = memories
+                    let eligible: Vec<ScoredMemory> = memories
                         .into_iter()
-                        .filter(|sm| sm.score >= proxy_config.min_recall_score)
-                        .filter(|sm| is_safe_for_injection(&sm.memory.content))
-                        .filter(|sm| sm.memory.eligible_for_injection())
-                        // Trust gate: skip low-trust memories
-                        .filter(|sm| !sm.low_trust)
                         // Apply date filter for MemoryMode::After
                         .filter(|sm| match &memory_mode {
                             MemoryMode::After(cutoff) => sm.memory.created_at >= *cutoff,
                             _ => true,
                         })
                         .collect();
+                    let (gate, qualified) = crate::scoring::apply_scored_retrieval_confidence_gate(
+                        &eligible,
+                        &query,
+                        proxy_config.min_recall_score,
+                        proxy_config.confidence_gate,
+                    );
+                    gate_decision = gate.decision;
+                    gate_evaluated = true;
 
                     // Now mutable borrow for injection
                     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut())
@@ -1005,6 +953,9 @@ pub async fn proxy_chat_completions(
         .metrics
         .proxy_requests
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if gate_evaluated {
+        record_gate_decision(&state, gate_decision);
+    }
     state
         .metrics
         .proxy_memories_injected
@@ -1032,6 +983,7 @@ pub async fn proxy_chat_completions(
             namespace,
             model = model_name,
             injected_count,
+            gate_decision = %gate_decision,
             memory_mode = ?memory_mode,
             is_streaming,
             is_oauth,
@@ -1084,6 +1036,7 @@ pub async fn proxy_chat_completions(
         return forward_stream(
             resp,
             injected_count,
+            gate_decision,
             &resp_headers,
             state.clone(),
             namespace.to_string(),
@@ -1156,8 +1109,7 @@ pub async fn proxy_chat_completions(
         }
     }
 
-    response
-        .header("x-memory-injected-count", injected_count.to_string())
+    add_memory_headers(response, injected_count, gate_decision)
         .body(axum::body::Body::from(resp_body))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -1167,6 +1119,7 @@ pub async fn proxy_chat_completions(
 async fn forward_stream(
     resp: reqwest::Response,
     injected_count: u64,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
     resp_headers: &HeaderMap,
     state: AppState,
     namespace: String,
@@ -1254,8 +1207,8 @@ async fn forward_stream(
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
-        .header("connection", "keep-alive")
-        .header("x-memory-injected-count", injected_count.to_string());
+        .header("connection", "keep-alive");
+    response = add_memory_headers(response, injected_count, gate_decision);
 
     // Forward rate limit headers from upstream
     for (name, value) in resp_headers.iter() {
@@ -2414,6 +2367,8 @@ pub async fn proxy_anthropic_messages(
     let memory_mode = parse_memory_mode(headers, proxy_config);
 
     let mut injected_count = 0u64;
+    let mut gate_decision = crate::scoring::RetrievalConfidenceDecision::Abstain;
+    let mut gate_evaluated = false;
 
     // Extract model name
     let model_name = body
@@ -2454,18 +2409,21 @@ pub async fn proxy_anthropic_messages(
                     let memory_budget =
                         (model_context as f64 * proxy_config.max_memory_pct) as usize;
 
-                    let qualified: Vec<ScoredMemory> = memories
+                    let eligible: Vec<ScoredMemory> = memories
                         .into_iter()
-                        .filter(|sm| sm.score >= proxy_config.min_recall_score)
-                        .filter(|sm| is_safe_for_injection(&sm.memory.content))
-                        .filter(|sm| sm.memory.eligible_for_injection())
-                        // Trust gate: skip low-trust memories
-                        .filter(|sm| !sm.low_trust)
                         .filter(|sm| match &memory_mode {
                             MemoryMode::After(cutoff) => sm.memory.created_at >= *cutoff,
                             _ => true,
                         })
                         .collect();
+                    let (gate, qualified) = crate::scoring::apply_scored_retrieval_confidence_gate(
+                        &eligible,
+                        &query,
+                        proxy_config.min_recall_score,
+                        proxy_config.confidence_gate,
+                    );
+                    gate_decision = gate.decision;
+                    gate_evaluated = true;
 
                     injected_count =
                         inject_memories_anthropic(&mut body, &qualified, memory_budget) as u64;
@@ -2490,6 +2448,9 @@ pub async fn proxy_anthropic_messages(
         .metrics
         .proxy_requests
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if gate_evaluated {
+        record_gate_decision(&state, gate_decision);
+    }
     state
         .metrics
         .proxy_memories_injected
@@ -2527,6 +2488,7 @@ pub async fn proxy_anthropic_messages(
             namespace,
             model = model_name,
             injected_count,
+            gate_decision = %gate_decision,
             memory_mode = ?memory_mode,
             is_streaming,
             is_oauth,
@@ -2592,6 +2554,7 @@ pub async fn proxy_anthropic_messages(
         return forward_anthropic_stream(
             resp,
             injected_count,
+            gate_decision,
             &resp_headers,
             state.clone(),
             namespace.to_string(),
@@ -2663,8 +2626,7 @@ pub async fn proxy_anthropic_messages(
         }
     }
 
-    response
-        .header("x-memory-injected-count", injected_count.to_string())
+    add_memory_headers(response, injected_count, gate_decision)
         .body(axum::body::Body::from(resp_body))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
@@ -2673,6 +2635,7 @@ pub async fn proxy_anthropic_messages(
 async fn forward_anthropic_stream(
     resp: reqwest::Response,
     injected_count: u64,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
     resp_headers: &HeaderMap,
     state: AppState,
     namespace: String,
@@ -2761,8 +2724,8 @@ async fn forward_anthropic_stream(
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
-        .header("connection", "keep-alive")
-        .header("x-memory-injected-count", injected_count.to_string());
+        .header("connection", "keep-alive");
+    response = add_memory_headers(response, injected_count, gate_decision);
 
     for (name, value) in resp_headers.iter() {
         if name == "request-id" || name.as_str().starts_with("x-ratelimit") {
@@ -3421,6 +3384,8 @@ pub async fn proxy_responses(
 
     let memory_mode = parse_memory_mode(headers, proxy_config);
     let mut injected_count = 0u64;
+    let mut gate_decision = crate::scoring::RetrievalConfidenceDecision::Abstain;
+    let mut gate_evaluated = false;
 
     if let OpenAIAuth::OAuthPassthrough { token, .. } = &openai_auth
         && oauth_token_lacks_openai_proxy_scope(token)
@@ -3503,17 +3468,21 @@ pub async fn proxy_responses(
                     .unwrap_or(model_context);
                 let memory_budget = (model_context as f64 * proxy_config.max_memory_pct) as usize;
 
-                let qualified: Vec<ScoredMemory> = memories
+                let eligible: Vec<ScoredMemory> = memories
                     .into_iter()
-                    .filter(|sm| sm.score >= proxy_config.min_recall_score)
-                    .filter(|sm| is_safe_for_injection(&sm.memory.content))
-                    .filter(|sm| sm.memory.eligible_for_injection())
-                    .filter(|sm| !sm.low_trust)
                     .filter(|sm| match &memory_mode {
                         MemoryMode::After(cutoff) => sm.memory.created_at >= *cutoff,
                         _ => true,
                     })
                     .collect();
+                let (gate, qualified) = crate::scoring::apply_scored_retrieval_confidence_gate(
+                    &eligible,
+                    &query,
+                    proxy_config.min_recall_score,
+                    proxy_config.confidence_gate,
+                );
+                gate_decision = gate.decision;
+                gate_evaluated = true;
 
                 injected_count = inject_memories(&mut messages, &qualified, memory_budget) as u64;
                 if injected_count > 0 {
@@ -3542,6 +3511,9 @@ pub async fn proxy_responses(
         .metrics
         .proxy_requests
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if gate_evaluated {
+        record_gate_decision(&state, gate_decision);
+    }
     state
         .metrics
         .proxy_memories_injected
@@ -3613,6 +3585,7 @@ pub async fn proxy_responses(
         return forward_chat_stream_as_responses(
             resp,
             injected_count,
+            gate_decision,
             &resp_headers,
             state.clone(),
             namespace.to_string(),
@@ -3632,6 +3605,7 @@ pub async fn proxy_responses(
         return forward_responses_stream(
             resp,
             injected_count,
+            gate_decision,
             &resp_headers,
             state.clone(),
             namespace.to_string(),
@@ -3710,8 +3684,7 @@ pub async fn proxy_responses(
         resp_body.to_vec()
     };
 
-    response
-        .header("x-memory-injected-count", injected_count.to_string())
+    add_memory_headers(response, injected_count, gate_decision)
         .header(
             "content-type",
             if use_oauth_chat_fallback && status.is_success() {
@@ -3753,6 +3726,7 @@ fn extract_assistant_text_responses(resp_json: &serde_json::Value) -> String {
 async fn forward_responses_stream(
     resp: reqwest::Response,
     injected_count: u64,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
     resp_headers: &HeaderMap,
     state: AppState,
     namespace: String,
@@ -3839,8 +3813,8 @@ async fn forward_responses_stream(
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
-        .header("connection", "keep-alive")
-        .header("x-memory-injected-count", injected_count.to_string());
+        .header("connection", "keep-alive");
+    response = add_memory_headers(response, injected_count, gate_decision);
 
     for (name, value) in resp_headers.iter() {
         if name == "x-request-id" || name.as_str().starts_with("x-ratelimit") {
@@ -3856,6 +3830,7 @@ async fn forward_responses_stream(
 async fn forward_chat_stream_as_responses(
     resp: reqwest::Response,
     injected_count: u64,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
     resp_headers: &HeaderMap,
     state: AppState,
     namespace: String,
@@ -4090,8 +4065,8 @@ async fn forward_chat_stream_as_responses(
         .status(StatusCode::OK)
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
-        .header("connection", "keep-alive")
-        .header("x-memory-injected-count", injected_count.to_string());
+        .header("connection", "keep-alive");
+    response = add_memory_headers(response, injected_count, gate_decision);
 
     for (name, value) in resp_headers.iter() {
         if name == "x-request-id" || name.as_str().starts_with("x-ratelimit") {
@@ -4129,12 +4104,16 @@ pub async fn proxy_debug_stats(State(state): State<AppState>, headers: HeaderMap
         "extract_model": state.config.proxy.extract_model,
         "max_memory_pct": state.config.proxy.max_memory_pct,
         "min_recall_score": state.config.proxy.min_recall_score,
+        "confidence_gate": state.config.proxy.confidence_gate,
         "log_privacy_mode": state.config.proxy.privacy_mode,
         "key_mappings": state.config.proxy.key_mapping.len(),
         "review_queue_summary": review_queue_summary,
         "metrics": {
             "total_requests": metrics.proxy_requests.load(std::sync::atomic::Ordering::Relaxed),
             "memories_injected": metrics.proxy_memories_injected.load(std::sync::atomic::Ordering::Relaxed),
+            "gate_inject": metrics.proxy_gate_inject.load(std::sync::atomic::Ordering::Relaxed),
+            "gate_abstain": metrics.proxy_gate_abstain.load(std::sync::atomic::Ordering::Relaxed),
+            "gate_need_more_evidence": metrics.proxy_gate_need_more_evidence.load(std::sync::atomic::Ordering::Relaxed),
             "facts_extracted": metrics.proxy_facts_extracted.load(std::sync::atomic::Ordering::Relaxed),
             "upstream_errors": metrics.proxy_upstream_errors.load(std::sync::atomic::Ordering::Relaxed),
         }

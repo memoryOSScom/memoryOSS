@@ -947,6 +947,92 @@ async fn test_query_explain_returns_real_score_breakdown() {
             .contains("src/server/routes.rs"),
         "expected stored memory in explain results"
     );
+    assert_eq!(
+        explain_body["retrieval_gate"]["decision"].as_str(),
+        Some("inject"),
+        "strong exact retrieval should pass the confidence gate"
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_query_explain_reports_need_more_evidence_and_abstain() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("gate-explain.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Deploy smoke rule: after smoke passes, continue the staged rollout to production.",
+                    "tags": ["deploy", "smoke", "rollout"]
+                },
+                {
+                    "content": "Release smoke rule: after smoke passes, publish the docker image to ghcr.io/memoryosscom/memoryoss.",
+                    "tags": ["release", "smoke", "docker"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let ambiguous_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "what should happen after smoke passes?",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ambiguous_resp.status(), 200);
+    let ambiguous_body: serde_json::Value = ambiguous_resp.json().await.unwrap();
+    assert_eq!(
+        ambiguous_body["retrieval_gate"]["decision"].as_str(),
+        Some("need_more_evidence")
+    );
+    assert!(
+        ambiguous_body["retrieval_gate"]["reasons"]
+            .as_array()
+            .unwrap_or(&Vec::new())
+            .iter()
+            .any(|reason| reason.as_str() == Some("top_candidates_too_close"))
+    );
+
+    let abstain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "tell me a joke about deployments",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(abstain_resp.status(), 200);
+    let abstain_body: serde_json::Value = abstain_resp.json().await.unwrap();
+    assert_eq!(
+        abstain_body["retrieval_gate"]["decision"].as_str(),
+        Some("abstain")
+    );
 
     child.kill().await.ok();
 }
@@ -1209,6 +1295,13 @@ namespace = "test"
             >= 1,
         "proxy should inject at least one contextual memory"
     );
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-gate-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("inject")
+    );
 
     let requests = upstream_state.requests.lock().unwrap().clone();
     let upstream_req = requests
@@ -1236,6 +1329,135 @@ namespace = "test"
             "review-context memory should appear before bugfix distractor"
         );
     }
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_proxy_confidence_gate_skips_ambiguous_memory_injection() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+default_memory_mode = "full"
+confidence_gate = true
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-gate.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Deploy smoke rule: after smoke passes, continue the staged rollout to production.",
+                    "tags": ["deploy", "smoke", "rollout"]
+                },
+                {
+                    "content": "Release smoke rule: after smoke passes, publish the docker image to ghcr.io/memoryosscom/memoryoss.",
+                    "tags": ["release", "smoke", "docker"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "what should happen after smoke passes?"}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-gate-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("need_more_evidence")
+    );
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-injected-count")
+            .and_then(|v| v.to_str().ok()),
+        Some("0")
+    );
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    let upstream_req = requests
+        .iter()
+        .find(|req| req["path"].as_str() == Some("/v1/chat/completions"))
+        .expect("missing upstream proxy request");
+    let upstream_messages = upstream_req["body"]["messages"]
+        .as_array()
+        .expect("missing upstream messages");
+    assert!(
+        upstream_messages.iter().all(|message| {
+            message["role"].as_str() != Some("system")
+                || !message["content"]
+                    .as_str()
+                    .unwrap_or("")
+                    .contains("<memory_context")
+        }),
+        "ambiguous proxy query should not inject memory context"
+    );
+
+    let stats_resp = client
+        .get(format!("{base}/proxy/v1/debug/stats"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stats_resp.status(), 200);
+    let stats_body: serde_json::Value = stats_resp.json().await.unwrap();
+    assert_eq!(stats_body["confidence_gate"].as_bool(), Some(true));
+    assert_eq!(
+        stats_body["metrics"]["gate_need_more_evidence"].as_u64(),
+        Some(1)
+    );
 
     child.kill().await.ok();
     upstream_handle.abort();

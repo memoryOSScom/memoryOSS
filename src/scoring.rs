@@ -5,6 +5,7 @@
 //! Used by: proxy recall, API recall, and decompose sub-queries.
 //! Implements GrepRAG multi-channel scoring + RLM IDF boost + precision gate + diversity.
 
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -284,6 +285,490 @@ fn task_context_boost(
     );
 
     (boost, provenance)
+}
+
+fn looks_like_non_memory_query(query: &str) -> bool {
+    let normalized = normalize_task_text(query);
+    let padded = format!(" {normalized} ");
+    [
+        " how are you ",
+        " joke ",
+        " jokes ",
+        " poem ",
+        " poems ",
+        " story ",
+        " stories ",
+        " coffee ",
+        " be back ",
+        " grab coffee ",
+    ]
+    .iter()
+    .any(|pattern| padded.contains(pattern))
+}
+
+fn is_under_specified_query(query: &str) -> bool {
+    let normalized = normalize_task_text(query);
+    let informative_tokens = normalized
+        .split_whitespace()
+        .filter(|token| {
+            token.len() >= 4
+                && !matches!(
+                    *token,
+                    "what"
+                        | "when"
+                        | "where"
+                        | "which"
+                        | "should"
+                        | "after"
+                        | "before"
+                        | "here"
+                        | "there"
+                        | "this"
+                        | "that"
+                        | "with"
+                        | "from"
+                        | "about"
+                        | "into"
+                        | "your"
+                        | "have"
+                        | "will"
+                )
+        })
+        .count();
+    let has_specific_marker = query
+        .chars()
+        .any(|ch| matches!(ch, '/' | '_' | '.' | ':' | '-' | '`' | '"' | '\''));
+    !has_specific_marker && informative_tokens <= 2
+}
+
+fn looks_like_next_step_query(query: &str) -> bool {
+    let normalized = normalize_task_text(query);
+    let padded = format!(" {normalized} ");
+    [
+        " what should happen after ",
+        " what happens after ",
+        " what should happen next ",
+        " what should we do next ",
+    ]
+    .iter()
+    .any(|pattern| padded.contains(pattern))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RetrievalConfidenceDecision {
+    Inject,
+    Abstain,
+    NeedMoreEvidence,
+}
+
+impl std::fmt::Display for RetrievalConfidenceDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Inject => write!(f, "inject"),
+            Self::Abstain => write!(f, "abstain"),
+            Self::NeedMoreEvidence => write!(f, "need_more_evidence"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RetrievalConfidenceGate {
+    pub enabled: bool,
+    pub decision: RetrievalConfidenceDecision,
+    pub reasons: Vec<String>,
+    pub considered_count: usize,
+    pub qualified_count: usize,
+    pub unsafe_filtered: usize,
+    pub ineligible_filtered: usize,
+    pub low_trust_filtered: usize,
+    pub below_threshold_filtered: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub second_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score_gap: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_max_channel_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_trust_score: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub top_confidence: Option<f64>,
+}
+
+const GATE_AMBIGUOUS_GAP: f64 = 0.12;
+const GATE_LOW_SUPPORT_MAX_CHANNEL: f64 = 0.22;
+const GATE_LOW_CONFIDENCE_THRESHOLD: f64 = 0.55;
+const GATE_WEAK_MARGIN: f64 = 0.08;
+const GATE_NEAR_THRESHOLD_MARGIN: f64 = 0.03;
+
+/// Content-policy filter: reject memories that look like prompt injection attempts.
+/// Uses multi-layer defense: blocklist + structural patterns + NFKC unicode normalization.
+pub fn is_safe_for_injection(content: &str) -> bool {
+    use unicode_normalization::UnicodeNormalization;
+
+    let normalized: String = content
+        .nfkc()
+        .filter(|c| {
+            !matches!(
+                c,
+                '\u{200B}'
+                    | '\u{200C}'
+                    | '\u{200D}'
+                    | '\u{FEFF}'
+                    | '\u{00AD}'
+                    | '\u{2060}'
+                    | '\u{180E}'
+            )
+        })
+        .collect::<String>()
+        .to_lowercase();
+
+    let structural_patterns = [
+        "system:",
+        "assistant:",
+        "human:",
+        "[system]",
+        "[/system]",
+        "<|im_end|>",
+        "<|im_start|>",
+        "[inst]",
+        "[/inst]",
+        "<|endoftext|>",
+        "<|begin_of_text|>",
+        "</s>",
+        "<s>",
+        "ignore previous",
+        "ignore all instruction",
+        "ignore above",
+        "disregard above",
+        "disregard previous",
+        "disregard all",
+        "forget everything",
+        "forget all instruction",
+        "new instructions:",
+        "override your",
+        "override the",
+        "you are now",
+        "act as if",
+        "pretend you are",
+        "do not follow",
+        "stop being",
+        "system prompt:",
+        "reveal your prompt",
+        "show your instructions",
+        "<!--",
+        "-->",
+        "### system",
+        "## system",
+        "# system",
+        "### assistant",
+        "## assistant",
+        "# assistant",
+    ];
+
+    if structural_patterns.iter().any(|p| normalized.contains(p)) {
+        return false;
+    }
+
+    let special_ratio = content
+        .chars()
+        .filter(|c| matches!(c, '<' | '>' | '{' | '}' | '|' | '\\'))
+        .count() as f64
+        / content.len().max(1) as f64;
+    special_ratio <= 0.15
+}
+
+fn qualifies_for_proxy_injection(entry: &ScoreExplainEntry, min_recall_score: f64) -> bool {
+    entry.final_score >= min_recall_score
+        && is_safe_for_injection(&entry.memory.content)
+        && entry.memory.eligible_for_injection()
+        && !entry.low_trust
+}
+
+fn explained_to_scored(entry: &ScoreExplainEntry) -> ScoredMemory {
+    ScoredMemory {
+        memory: entry.memory.clone(),
+        score: entry.final_score,
+        provenance: entry.provenance.clone(),
+        trust_score: entry.trust_score,
+        low_trust: entry.low_trust,
+    }
+}
+
+fn build_gate_summary(
+    entries: &[ScoreExplainEntry],
+    query: &str,
+    min_recall_score: f64,
+    enabled: bool,
+) -> RetrievalConfidenceGate {
+    let considered_count = entries.len();
+    let qualified: Vec<&ScoreExplainEntry> = entries
+        .iter()
+        .filter(|entry| qualifies_for_proxy_injection(entry, min_recall_score))
+        .collect();
+    let unsafe_filtered = entries
+        .iter()
+        .filter(|entry| !is_safe_for_injection(&entry.memory.content))
+        .count();
+    let ineligible_filtered = entries
+        .iter()
+        .filter(|entry| {
+            is_safe_for_injection(&entry.memory.content) && !entry.memory.eligible_for_injection()
+        })
+        .count();
+    let low_trust_filtered = entries
+        .iter()
+        .filter(|entry| {
+            is_safe_for_injection(&entry.memory.content)
+                && entry.memory.eligible_for_injection()
+                && entry.low_trust
+        })
+        .count();
+    let below_threshold_filtered = entries
+        .iter()
+        .filter(|entry| {
+            is_safe_for_injection(&entry.memory.content)
+                && entry.memory.eligible_for_injection()
+                && !entry.low_trust
+                && entry.final_score < min_recall_score
+        })
+        .count();
+
+    let top = qualified.first().copied().or_else(|| entries.first());
+    let second = qualified.get(1).copied();
+    let score_gap =
+        top.and_then(|top_entry| second.map(|other| top_entry.final_score - other.final_score));
+
+    let mut reasons = Vec::new();
+    let actual_decision = if enabled && looks_like_non_memory_query(query) {
+        reasons.push("query_not_memory_seeking".to_string());
+        RetrievalConfidenceDecision::Abstain
+    } else if let Some(top_entry) = top {
+        if qualified.is_empty() {
+            let plausible =
+                top_entry.final_score >= (min_recall_score - GATE_NEAR_THRESHOLD_MARGIN).max(0.0);
+            if !is_safe_for_injection(&top_entry.memory.content) {
+                reasons.push("top_candidate_unsafe".to_string());
+            } else if !top_entry.memory.eligible_for_injection() {
+                reasons.push("top_candidate_ineligible".to_string());
+            } else if top_entry.low_trust {
+                reasons.push("top_candidate_low_trust".to_string());
+            } else if plausible {
+                reasons.push("top_candidate_below_threshold".to_string());
+            } else {
+                reasons.push("no_plausible_candidate".to_string());
+            }
+
+            if enabled && plausible {
+                RetrievalConfidenceDecision::NeedMoreEvidence
+            } else {
+                RetrievalConfidenceDecision::Abstain
+            }
+        } else {
+            if (qualified.len() >= 2 || (entries.len() > 1 && looks_like_next_step_query(query)))
+                && is_under_specified_query(query)
+            {
+                reasons.push("query_under_specified".to_string());
+            }
+            if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP) {
+                reasons.push("top_candidates_too_close".to_string());
+            }
+            if top_entry.max_channel_score < GATE_LOW_SUPPORT_MAX_CHANNEL {
+                reasons.push("top_candidate_low_channel_support".to_string());
+            }
+            if top_entry.final_score < min_recall_score + GATE_WEAK_MARGIN {
+                reasons.push("top_candidate_near_threshold".to_string());
+            }
+            if top_entry.memory.confidence.unwrap_or(1.0) < GATE_LOW_CONFIDENCE_THRESHOLD
+                && top_entry.memory.confirm_count == 0
+                && top_entry.memory.evidence_count == 0
+            {
+                reasons.push("top_candidate_low_confidence".to_string());
+            }
+
+            if enabled && !reasons.is_empty() {
+                RetrievalConfidenceDecision::NeedMoreEvidence
+            } else {
+                if reasons.is_empty() {
+                    reasons.push("strong_top_candidate".to_string());
+                } else if !enabled {
+                    reasons.insert(0, "confidence_gate_disabled".to_string());
+                }
+                RetrievalConfidenceDecision::Inject
+            }
+        }
+    } else {
+        reasons.push("no_candidates".to_string());
+        RetrievalConfidenceDecision::Abstain
+    };
+
+    RetrievalConfidenceGate {
+        enabled,
+        decision: actual_decision,
+        reasons,
+        considered_count,
+        qualified_count: qualified.len(),
+        unsafe_filtered,
+        ineligible_filtered,
+        low_trust_filtered,
+        below_threshold_filtered,
+        top_score: top.map(|entry| entry.final_score),
+        second_score: second.map(|entry| entry.final_score),
+        score_gap,
+        top_max_channel_score: top.map(|entry| entry.max_channel_score),
+        top_trust_score: top.map(|entry| entry.trust_score),
+        top_confidence: top.map(|entry| entry.memory.confidence.unwrap_or(1.0)),
+    }
+}
+
+pub fn apply_retrieval_confidence_gate(
+    entries: &[ScoreExplainEntry],
+    query: &str,
+    min_recall_score: f64,
+    enabled: bool,
+) -> (RetrievalConfidenceGate, Vec<ScoredMemory>) {
+    let gate = build_gate_summary(entries, query, min_recall_score, enabled);
+    let qualified = if gate.decision == RetrievalConfidenceDecision::Inject {
+        entries
+            .iter()
+            .filter(|entry| qualifies_for_proxy_injection(entry, min_recall_score))
+            .map(explained_to_scored)
+            .collect()
+    } else {
+        Vec::new()
+    };
+    (gate, qualified)
+}
+
+pub fn apply_scored_retrieval_confidence_gate(
+    memories: &[ScoredMemory],
+    query: &str,
+    min_recall_score: f64,
+    enabled: bool,
+) -> (RetrievalConfidenceGate, Vec<ScoredMemory>) {
+    let qualified: Vec<ScoredMemory> = memories
+        .iter()
+        .filter(|sm| {
+            sm.score >= min_recall_score
+                && is_safe_for_injection(&sm.memory.content)
+                && sm.memory.eligible_for_injection()
+                && !sm.low_trust
+        })
+        .cloned()
+        .collect();
+    let top = qualified.first().or_else(|| memories.first());
+    let second = qualified.get(1);
+    let score_gap = top.and_then(|top_entry| second.map(|other| top_entry.score - other.score));
+
+    let mut reasons = Vec::new();
+    let decision = if enabled && looks_like_non_memory_query(query) {
+        reasons.push("query_not_memory_seeking".to_string());
+        RetrievalConfidenceDecision::Abstain
+    } else if let Some(top_entry) = top {
+        if qualified.is_empty() {
+            let plausible =
+                top_entry.score >= (min_recall_score - GATE_NEAR_THRESHOLD_MARGIN).max(0.0);
+            if !is_safe_for_injection(&top_entry.memory.content) {
+                reasons.push("top_candidate_unsafe".to_string());
+            } else if !top_entry.memory.eligible_for_injection() {
+                reasons.push("top_candidate_ineligible".to_string());
+            } else if top_entry.low_trust {
+                reasons.push("top_candidate_low_trust".to_string());
+            } else if plausible {
+                reasons.push("top_candidate_below_threshold".to_string());
+            } else {
+                reasons.push("no_plausible_candidate".to_string());
+            }
+
+            if enabled && plausible {
+                RetrievalConfidenceDecision::NeedMoreEvidence
+            } else {
+                RetrievalConfidenceDecision::Abstain
+            }
+        } else {
+            if (qualified.len() >= 2 || (memories.len() > 1 && looks_like_next_step_query(query)))
+                && is_under_specified_query(query)
+            {
+                reasons.push("query_under_specified".to_string());
+            }
+            if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP) {
+                reasons.push("top_candidates_too_close".to_string());
+            }
+            if top_entry.score < min_recall_score + GATE_WEAK_MARGIN {
+                reasons.push("top_candidate_near_threshold".to_string());
+            }
+            if top_entry.memory.confidence.unwrap_or(1.0) < GATE_LOW_CONFIDENCE_THRESHOLD
+                && top_entry.memory.confirm_count == 0
+                && top_entry.memory.evidence_count == 0
+            {
+                reasons.push("top_candidate_low_confidence".to_string());
+            }
+
+            if enabled && !reasons.is_empty() {
+                RetrievalConfidenceDecision::NeedMoreEvidence
+            } else {
+                if reasons.is_empty() {
+                    reasons.push("strong_top_candidate".to_string());
+                } else if !enabled {
+                    reasons.insert(0, "confidence_gate_disabled".to_string());
+                }
+                RetrievalConfidenceDecision::Inject
+            }
+        }
+    } else {
+        reasons.push("no_candidates".to_string());
+        RetrievalConfidenceDecision::Abstain
+    };
+
+    (
+        RetrievalConfidenceGate {
+            enabled,
+            decision,
+            reasons,
+            considered_count: memories.len(),
+            qualified_count: qualified.len(),
+            unsafe_filtered: memories
+                .iter()
+                .filter(|sm| !is_safe_for_injection(&sm.memory.content))
+                .count(),
+            ineligible_filtered: memories
+                .iter()
+                .filter(|sm| {
+                    is_safe_for_injection(&sm.memory.content) && !sm.memory.eligible_for_injection()
+                })
+                .count(),
+            low_trust_filtered: memories
+                .iter()
+                .filter(|sm| {
+                    is_safe_for_injection(&sm.memory.content)
+                        && sm.memory.eligible_for_injection()
+                        && sm.low_trust
+                })
+                .count(),
+            below_threshold_filtered: memories
+                .iter()
+                .filter(|sm| {
+                    is_safe_for_injection(&sm.memory.content)
+                        && sm.memory.eligible_for_injection()
+                        && !sm.low_trust
+                        && sm.score < min_recall_score
+                })
+                .count(),
+            top_score: top.map(|sm| sm.score),
+            second_score: second.map(|sm| sm.score),
+            score_gap,
+            top_max_channel_score: None,
+            top_trust_score: top.map(|sm| sm.trust_score),
+            top_confidence: top.map(|sm| sm.memory.confidence.unwrap_or(1.0)),
+        },
+        if decision == RetrievalConfidenceDecision::Inject {
+            qualified
+        } else {
+            Vec::new()
+        },
+    )
 }
 
 /// Options for score_and_merge — configurable per caller.
@@ -790,6 +1275,8 @@ fn apply_diversity_explained(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::memory::{Memory, ScoreChannels, ScoreExplainEntry};
+    use crate::security::trust::TrustSignals;
 
     #[test]
     fn test_detect_task_context_prefers_deploy_keywords() {
@@ -832,5 +1319,105 @@ mod tests {
                 .iter()
                 .any(|entry| entry == "task_match:tag:review")
         );
+    }
+
+    fn explained_entry(
+        content: &str,
+        final_score: f64,
+        max_channel_score: f64,
+        confidence: Option<f64>,
+    ) -> ScoreExplainEntry {
+        let mut memory = Memory::new(content.to_string());
+        memory.confidence = confidence;
+        ScoreExplainEntry {
+            memory,
+            provenance: vec!["vector".into()],
+            channels: ScoreChannels {
+                vector: max_channel_score,
+                fts: 0.0,
+                exact: 0.0,
+            },
+            max_channel_score,
+            base_score: final_score,
+            recency_score: 0.0,
+            confidence_factor: 1.0,
+            status_factor: 1.0,
+            trust_score: 0.9,
+            trust_confidence_low: 0.8,
+            trust_confidence_high: 1.0,
+            trust_signals: TrustSignals {
+                recency: 1.0,
+                source_reputation: 1.0,
+                embedding_coherence: 1.0,
+                access_frequency: 0.5,
+                outcome_learning: 0.5,
+            },
+            trust_multiplier: 1.0,
+            final_score,
+            low_trust: false,
+        }
+    }
+
+    #[test]
+    fn test_retrieval_confidence_gate_injects_on_strong_candidate() {
+        let entries = vec![explained_entry(
+            "Deploys must pass smoke checks before rollout.",
+            0.72,
+            0.68,
+            None,
+        )];
+        let (gate, qualified) =
+            apply_retrieval_confidence_gate(&entries, "deploy rollout checklist", 0.4, true);
+        assert_eq!(gate.decision, RetrievalConfidenceDecision::Inject);
+        assert_eq!(qualified.len(), 1);
+    }
+
+    #[test]
+    fn test_retrieval_confidence_gate_needs_more_evidence_when_top_candidates_are_close() {
+        let entries = vec![
+            explained_entry(
+                "Use feat/<ticket>-slug for feature branches.",
+                0.56,
+                0.44,
+                None,
+            ),
+            explained_entry(
+                "Use fix/<ticket>-slug for bugfix branches.",
+                0.51,
+                0.42,
+                None,
+            ),
+        ];
+        let (gate, qualified) = apply_retrieval_confidence_gate(
+            &entries,
+            "what should happen after rollout?",
+            0.4,
+            true,
+        );
+        assert_eq!(gate.decision, RetrievalConfidenceDecision::NeedMoreEvidence);
+        assert!(qualified.is_empty());
+        assert!(
+            gate.reasons
+                .iter()
+                .any(|reason| reason == "top_candidates_too_close")
+        );
+    }
+
+    #[test]
+    fn test_retrieval_confidence_gate_abstains_without_plausible_candidate() {
+        let entries = vec![explained_entry(
+            "General advice about database performance with no repo context.",
+            0.18,
+            0.09,
+            None,
+        )];
+        let (gate, qualified) = apply_retrieval_confidence_gate(
+            &entries,
+            "tell me a joke about deployments",
+            0.4,
+            true,
+        );
+        assert_eq!(gate.decision, RetrievalConfidenceDecision::Abstain);
+        assert!(qualified.is_empty());
     }
 }
