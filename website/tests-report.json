@@ -1,13 +1,13 @@
 {
   "runner": "tests/run_all.sh",
-  "generated_at": "2026-03-13T17:39:56.073922+00:00",
-  "duration_seconds": 1214,
+  "generated_at": "2026-03-13T18:47:14.368995+00:00",
+  "duration_seconds": 1063,
   "summary": {
     "status": "pass",
-    "total_checks_passed": 216,
+    "total_checks_passed": 220,
     "sections": 21,
-    "rust_unit_tests": 71,
-    "rust_integration_tests": 53,
+    "rust_unit_tests": 73,
+    "rust_integration_tests": 55,
     "typescript_tests": 5,
     "wizard_assertions": 186,
     "wizard_scenarios": 13,
@@ -22,7 +22,7 @@
       "slug": "cargo_fmt",
       "label": "cargo fmt --check",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/cargo_fmt.log"
     },
     {
@@ -36,14 +36,14 @@
       "slug": "cargo_test",
       "label": "cargo test",
       "status": "pass",
-      "duration_seconds": 132,
+      "duration_seconds": 52,
       "log_path": "tests/.last-run/cargo_test.log"
     },
     {
       "slug": "cargo_build",
       "label": "cargo build",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 1,
       "log_path": "tests/.last-run/cargo_build.log"
     },
     {
@@ -57,21 +57,21 @@
       "slug": "wizard_matrix",
       "label": "setup wizard matrix",
       "status": "pass",
-      "duration_seconds": 45,
+      "duration_seconds": 39,
       "log_path": "tests/.last-run/wizard_matrix.log"
     },
     {
       "slug": "benchmark",
       "label": "20k benchmark",
       "status": "pass",
-      "duration_seconds": 239,
+      "duration_seconds": 191,
       "log_path": "tests/.last-run/benchmark.log"
     },
     {
       "slug": "calibration",
       "label": "scoring calibration",
       "status": "pass",
-      "duration_seconds": 764,
+      "duration_seconds": 750,
       "log_path": "tests/.last-run/calibration.log"
     },
     {
@@ -85,21 +85,21 @@
       "slug": "coverage_gaps",
       "label": "coverage gaps",
       "status": "pass",
-      "duration_seconds": 22,
+      "duration_seconds": 21,
       "log_path": "tests/.last-run/coverage_gaps.log"
     },
     {
       "slug": "typescript_sdk",
       "label": "TypeScript SDK build/test",
       "status": "pass",
-      "duration_seconds": 4,
+      "duration_seconds": 3,
       "log_path": "tests/.last-run/typescript_sdk.log"
     },
     {
       "slug": "cargo_audit",
       "label": "cargo audit (offline if available)",
       "status": "pass",
-      "duration_seconds": 1,
+      "duration_seconds": 2,
       "log_path": "tests/.last-run/cargo_audit.log"
     }
   ],
@@ -111,7 +111,7 @@
         {
           "name": "cargo fmt --check",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         },
         {
           "name": "cargo clippy -- -D warnings",
@@ -121,29 +121,25 @@
         {
           "name": "cargo test",
           "status": "pass",
-          "note": "132s"
+          "note": "52s"
         },
         {
           "name": "cargo build",
           "status": "pass",
-          "note": "2s"
+          "note": "1s"
         }
       ]
     },
     {
       "title": "Rust Unit Tests",
-      "count": 71,
+      "count": 73,
       "items": [
-        {
-          "name": "engines::fts::tests::sanitize_user_query_removes_parser_syntax",
-          "status": "pass"
-        },
         {
           "name": "engines::fts::tests::sanitize_user_query_removes_angle_brackets",
           "status": "pass"
         },
         {
-          "name": "Fusion explain collapse merges structural duplicates",
+          "name": "engines::fts::tests::sanitize_user_query_removes_parser_syntax",
           "status": "pass"
         },
         {
@@ -159,11 +155,19 @@
           "status": "pass"
         },
         {
-          "name": "Intent cache hit/miss behavior",
+          "name": "Fusion explain collapse merges structural duplicates",
           "status": "pass"
         },
         {
           "name": "Intent cache session isolation",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache hit/miss behavior",
+          "status": "pass"
+        },
+        {
+          "name": "intent_cache::tests::test_cache_task_context_isolation",
           "status": "pass"
         },
         {
@@ -175,7 +179,7 @@
           "status": "pass"
         },
         {
-          "name": "intent_cache::tests::test_cache_task_context_isolation",
+          "name": "Intent cache invalidation on writes",
           "status": "pass"
         },
         {
@@ -187,15 +191,11 @@
           "status": "pass"
         },
         {
-          "name": "mcp::tests::marketplace_tool_metadata_covers_every_tool",
-          "status": "pass"
-        },
-        {
           "name": "Intent cache sorts and deduplicates tokens",
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_apply_feedback_action_and_review_event_capture_auditable_trail",
+          "name": "fusion::tests::test_identifier_route_collapse_merges_shared_endpoint_anchor_without_literal_query",
           "status": "pass"
         },
         {
@@ -203,7 +203,7 @@
           "status": "pass"
         },
         {
-          "name": "fusion::tests::test_identifier_route_collapse_merges_shared_endpoint_anchor_without_literal_query",
+          "name": "memory::tests::test_apply_feedback_action_and_review_event_capture_auditable_trail",
           "status": "pass"
         },
         {
@@ -215,10 +215,6 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memories_contradict_for_negated_fact_pair",
-          "status": "pass"
-        },
-        {
           "name": "Superseded stale memories do not revive automatically",
           "status": "pass"
         },
@@ -227,19 +223,27 @@
           "status": "pass"
         },
         {
+          "name": "memory::tests::test_memories_contradict_for_negated_fact_pair",
+          "status": "pass"
+        },
+        {
+          "name": "mcp::tests::marketplace_tool_metadata_covers_every_tool",
+          "status": "pass"
+        },
+        {
           "name": "memory::tests::test_memory_passport_bundle_filters_scope_and_computes_integrity",
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memory_passport_import_plan_reports_create_merge_and_conflict",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache invalidation on writes",
+          "name": "memory::tests::test_memory_history_view_includes_lineage_contradictions_and_review_chain",
           "status": "pass"
         },
         {
           "name": "memory::tests::test_record_reuse_signal_promotes_candidate_and_tracks_outcome",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_memory_history_bundle_and_replay_plan_require_empty_target_namespace",
           "status": "pass"
         },
         {
@@ -251,10 +255,6 @@
           "status": "pass"
         },
         {
-          "name": "Prefetch session tracking avoids duplicate warmups",
-          "status": "pass"
-        },
-        {
           "name": "Prefetch query recording deduplicates repeated prompts",
           "status": "pass"
         },
@@ -263,19 +263,7 @@
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_detect_task_context_prefers_deploy_keywords",
-          "status": "pass"
-        },
-        {
-          "name": "scoring::tests::test_detect_identifier_route_finds_runtime_contract_queries",
-          "status": "pass"
-        },
-        {
-          "name": "scoring::tests::test_identifier_route_analysis_detects_literal_and_kind_matches",
-          "status": "pass"
-        },
-        {
-          "name": "scoring::tests::test_retrieval_confidence_gate_injects_on_strong_candidate",
+          "name": "Prefetch session tracking avoids duplicate warmups",
           "status": "pass"
         },
         {
@@ -283,15 +271,23 @@
           "status": "pass"
         },
         {
+          "name": "scoring::tests::test_detect_identifier_route_finds_runtime_contract_queries",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_memory_passport_import_plan_reports_create_merge_and_conflict",
+          "status": "pass"
+        },
+        {
+          "name": "scoring::tests::test_identifier_route_analysis_detects_literal_and_kind_matches",
+          "status": "pass"
+        },
+        {
           "name": "scoring::tests::test_detect_task_context_fails_closed_on_ambiguous_query",
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_retrieval_confidence_gate_abstains_without_plausible_candidate",
-          "status": "pass"
-        },
-        {
-          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
+          "name": "scoring::tests::test_detect_task_context_prefers_deploy_keywords",
           "status": "pass"
         },
         {
@@ -299,15 +295,23 @@
           "status": "pass"
         },
         {
+          "name": "scoring::tests::test_retrieval_confidence_gate_abstains_without_plausible_candidate",
+          "status": "pass"
+        },
+        {
           "name": "scoring::tests::test_task_context_boost_prefers_matching_tags",
           "status": "pass"
         },
         {
-          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
+          "name": "scoring::tests::test_retrieval_confidence_gate_injects_on_strong_candidate",
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::build_memory_injection_includes_exact_runtime_contract_values_verbatim",
+          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
+          "status": "pass"
+        },
+        {
+          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
           "status": "pass"
         },
         {
@@ -319,7 +323,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extracted_fact_fallback_detects_negative_display_preference",
+          "name": "server::proxy::tests::build_memory_injection_includes_exact_runtime_contract_values_verbatim",
           "status": "pass"
         },
         {
@@ -327,7 +331,15 @@
           "status": "pass"
         },
         {
+          "name": "server::proxy::tests::extracted_fact_fallback_detects_negative_display_preference",
+          "status": "pass"
+        },
+        {
           "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_decision",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_capability_summary",
           "status": "pass"
         },
         {
@@ -339,7 +351,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_capability_summary",
+          "name": "server::proxy::tests::extraction_ready_accepts_anthropic_key_for_claude_provider",
           "status": "pass"
         },
         {
@@ -351,15 +363,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_ready_requires_openai_credentials",
-          "status": "pass"
-        },
-        {
           "name": "server::proxy::tests::extraction_request_disables_claude_oauth_override_for_openai_default",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_when_provider_is_claude",
           "status": "pass"
         },
         {
@@ -367,7 +371,15 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_ready_accepts_anthropic_key_for_claude_provider",
+          "name": "server::proxy::tests::extraction_uses_mapping_key_as_openai_fallback",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_ready_requires_openai_credentials",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_when_provider_is_claude",
           "status": "pass"
         },
         {
@@ -375,19 +387,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::passthrough_local_only_allows_loopback_direct",
-          "status": "pass"
-        },
-        {
           "name": "server::proxy::tests::injection_filter_rejects_markdown_header_payload",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extraction_uses_mapping_key_as_openai_fallback",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::passthrough_local_only_rejects_remote_forwarded_client",
           "status": "pass"
         },
         {
@@ -399,11 +399,19 @@
           "status": "pass"
         },
         {
-          "name": "tests::shell_config_detection_ignores_commented_or_empty_keys",
+          "name": "server::proxy::tests::passthrough_local_only_allows_loopback_direct",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::passthrough_local_only_rejects_remote_forwarded_client",
           "status": "pass"
         },
         {
           "name": "tests::shell_config_detection_finds_exported_key",
+          "status": "pass"
+        },
+        {
+          "name": "tests::shell_config_detection_ignores_commented_or_empty_keys",
           "status": "pass"
         },
         {
@@ -459,11 +467,11 @@
           "status": "pass"
         },
         {
-          "name": "Key rotation paths cover rotate, list, revoke, readability",
+          "name": "Decay and migrate CLI commands work against real data",
           "status": "pass"
         },
         {
-          "name": "Decay and migrate CLI commands work against real data",
+          "name": "Key rotation paths cover rotate, list, revoke, readability",
           "status": "pass"
         },
         {
@@ -496,8 +504,12 @@
     },
     {
       "title": "Other Integration Paths",
-      "count": 39,
+      "count": 41,
       "items": [
+        {
+          "name": "test_batch_contradiction_detection_within_same_batch",
+          "status": "pass"
+        },
         {
           "name": "test_batch_store_handles_zero_knowledge_and_source_provenance",
           "status": "pass"
@@ -507,23 +519,15 @@
           "status": "pass"
         },
         {
-          "name": "test_batch_contradiction_detection_within_same_batch",
-          "status": "pass"
-        },
-        {
           "name": "test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases",
           "status": "pass"
         },
         {
+          "name": "test_cli_history_branch_into_empty_namespace",
+          "status": "pass"
+        },
+        {
           "name": "test_admin_recent_groups_injections_extractions_feedbacks_and_consolidations",
-          "status": "pass"
-        },
-        {
-          "name": "test_consolidate_reports_reduction_and_preserves_provenance",
-          "status": "pass"
-        },
-        {
-          "name": "test_consolidation_worker_runs_automatically",
           "status": "pass"
         },
         {
@@ -535,7 +539,11 @@
           "status": "pass"
         },
         {
-          "name": "test_hybrid_gateway_fallback_covers_four_auth_paths_and_reports_core_unavailable",
+          "name": "test_consolidate_reports_reduction_and_preserves_provenance",
+          "status": "pass"
+        },
+        {
+          "name": "test_consolidation_worker_runs_automatically",
           "status": "pass"
         },
         {
@@ -543,11 +551,23 @@
           "status": "pass"
         },
         {
-          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
+          "name": "test_hybrid_gateway_fallback_covers_four_auth_paths_and_reports_core_unavailable",
+          "status": "pass"
+        },
+        {
+          "name": "test_history_api_view_and_replay_roundtrip",
           "status": "pass"
         },
         {
           "name": "test_hybrid_serve_manages_core_and_exposes_gateway_health",
+          "status": "pass"
+        },
+        {
+          "name": "test_hybrid_gateway_proxies_memory_api_to_running_core",
+          "status": "pass"
+        },
+        {
+          "name": "test_passport_api_export_import_roundtrip_with_dry_run_preview",
           "status": "pass"
         },
         {
@@ -559,14 +579,6 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_confidence_gate_skips_ambiguous_memory_injection",
-          "status": "pass"
-        },
-        {
-          "name": "test_passport_api_export_import_roundtrip_with_dry_run_preview",
-          "status": "pass"
-        },
-        {
           "name": "test_proxy_extraction_marks_existing_and_extracted_memories_contested",
           "status": "pass"
         },
@@ -575,7 +587,11 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
+          "name": "test_proxy_passthrough_is_local_only_by_default",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_confidence_gate_skips_ambiguous_memory_injection",
           "status": "pass"
         },
         {
@@ -583,15 +599,19 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_passthrough_is_local_only_by_default",
-          "status": "pass"
-        },
-        {
           "name": "test_proxy_responses_oauth_stream_with_tools_maps_function_call_sse",
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
+          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_text_fallback_uses_chat_completions",
+          "status": "pass"
+        },
+        {
+          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
           "status": "pass"
         },
         {
@@ -603,11 +623,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_text_fallback_uses_chat_completions",
-          "status": "pass"
-        },
-        {
-          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
+          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
           "status": "pass"
         },
         {
@@ -627,14 +643,6 @@
           "status": "pass"
         },
         {
-          "name": "test_repeated_unused_injection_drives_memory_stale",
-          "status": "pass"
-        },
-        {
-          "name": "test_query_explain_reports_need_more_evidence_and_abstain",
-          "status": "pass"
-        },
-        {
           "name": "test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps",
           "status": "pass"
         },
@@ -643,7 +651,15 @@
           "status": "pass"
         },
         {
+          "name": "test_query_explain_reports_need_more_evidence_and_abstain",
+          "status": "pass"
+        },
+        {
           "name": "test_server_can_run_plain_http_without_dev_mode",
+          "status": "pass"
+        },
+        {
+          "name": "test_repeated_unused_injection_drives_memory_stale",
           "status": "pass"
         },
         {
@@ -710,7 +726,7 @@
         {
           "name": "cargo audit (offline if available)",
           "status": "pass",
-          "note": "1s"
+          "note": "2s"
         }
       ]
     },
@@ -837,7 +853,7 @@
         {
           "name": "Recall latency p50 / p95 / p99",
           "status": "pass",
-          "note": "185.53ms / 309.65ms / 405.86ms"
+          "note": "124.84ms / 176.53ms / 191.71ms"
         }
       ]
     },
@@ -893,7 +909,7 @@
         {
           "name": "Stable proxy latency p95",
           "status": "pass",
-          "note": "191 ms"
+          "note": "199 ms"
         }
       ]
     },
@@ -940,17 +956,17 @@
         {
           "name": "Exact score distribution",
           "status": "pass",
-          "note": "min 1.016, p5 1.016, p50 1.020, p95 1.024, max 1.024"
+          "note": "min 0.463, p5 1.016, p50 1.020, p95 1.024, max 1.024"
         },
         {
           "name": "Related score distribution",
           "status": "pass",
-          "note": "min 0.662, p5 0.666, p50 0.693, p95 1.108, max 1.108"
+          "note": "min 0.662, p5 0.666, p50 0.697, p95 1.060, max 1.108"
         },
         {
           "name": "Noise score distribution",
           "status": "pass",
-          "note": "min 0.348, p5 0.348, p50 0.348, p95 0.359, max 0.376"
+          "note": "min 0.347, p5 0.347, p50 0.347, p95 0.358, max 0.372"
         },
         {
           "name": "Threshold 0.400",
@@ -958,7 +974,7 @@
           "note": "noise rejected 100.0%, exact kept 100.0%, related kept 100.0%, F1 1.000"
         },
         {
-          "name": "Best scanned threshold 0.400",
+          "name": "Best scanned threshold 0.375",
           "status": "pass",
           "note": "F1 1.000"
         }
@@ -1102,7 +1118,7 @@
         {
           "name": "Backup creates valid archive",
           "status": "pass",
-          "note": "32636 bytes"
+          "note": "32590 bytes"
         },
         {
           "name": "Restore from backup succeeds",

@@ -101,6 +101,11 @@ enum Commands {
         #[command(subcommand)]
         command: PassportCommands,
     },
+    /// Inspect, export, replay, or branch memory history
+    History {
+        #[command(subcommand)]
+        command: HistoryCommands,
+    },
     /// Inspect a memory by ID
     Inspect {
         /// Memory UUID
@@ -220,6 +225,54 @@ enum PassportCommands {
         #[arg(long)]
         namespace: Option<String>,
         /// Preview changes without applying them
+        #[arg(long)]
+        dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum HistoryCommands {
+    /// Show the lineage, transitions, and review chain for one memory
+    Show {
+        /// Root memory UUID
+        id: String,
+        /// Namespace to inspect
+        #[arg(long)]
+        namespace: String,
+    },
+    /// Export a deterministic history replay bundle to disk
+    Export {
+        /// Root memory UUID
+        id: String,
+        /// Namespace to inspect
+        #[arg(long)]
+        namespace: String,
+        /// Output path for bundle JSON
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Replay a history bundle into an empty target namespace
+    Replay {
+        /// Path to bundle JSON
+        path: PathBuf,
+        /// Override target namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Preview replay safety without applying it
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Branch one memory lineage into a new empty target namespace
+    Branch {
+        /// Root memory UUID
+        id: String,
+        /// Source namespace to branch from
+        #[arg(long)]
+        namespace: String,
+        /// Target namespace for the new branch
+        #[arg(long = "target-namespace")]
+        target_namespace: String,
+        /// Preview replay safety without applying it
         #[arg(long)]
         dry_run: bool,
     },
@@ -912,6 +965,193 @@ fn run_passport_import(
     println!(
         "Imported passport bundle into {}: imported={} merge={} conflict={}",
         target_namespace, imported, plan.preview.merge_count, plan.preview.conflict_count
+    );
+    Ok(())
+}
+
+fn render_history_report(view: &crate::memory::MemoryHistoryView) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Memory history");
+    let _ = writeln!(output, "Namespace: {}", view.namespace);
+    let _ = writeln!(output, "Root:      {}", view.root_id);
+    let _ = writeln!(output, "Nodes:     {}", view.nodes.len());
+    let _ = writeln!(output, "Visible:   {}", view.visible_memory_ids.len());
+    let _ = writeln!(
+        output,
+        "Branch:    {}",
+        if view.branch_safe { "safe" } else { "unsafe" }
+    );
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Nodes");
+    for node in &view.nodes {
+        let _ = writeln!(
+            output,
+            "- {} [{} visible={} reviews={}] {}",
+            node.id, node.status, node.visible, node.review_event_count, node.preview
+        );
+    }
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Edges");
+    if view.edges.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for edge in &view.edges {
+            let _ = writeln!(output, "- {} {} {}", edge.from, edge.kind, edge.to);
+        }
+    }
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Timeline");
+    if view.timeline.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for event in &view.timeline {
+            let _ = writeln!(
+                output,
+                "- {} [{}] {} {}",
+                event.at, event.kind, event.memory_id, event.summary
+            );
+        }
+    }
+
+    output
+}
+
+fn run_history_show(
+    config: &config::Config,
+    namespace: &str,
+    id: uuid::Uuid,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let memories = doc_engine.list_all_including_archived(namespace)?;
+    let view = crate::memory::build_memory_history_view(namespace, id, &memories)
+        .ok_or_else(|| anyhow::anyhow!("history root not found in namespace {namespace}"))?;
+    print!("{}", render_history_report(&view));
+    Ok(())
+}
+
+fn run_history_export(
+    config: &config::Config,
+    namespace: &str,
+    id: uuid::Uuid,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let memories = doc_engine.list_all_including_archived(namespace)?;
+    let bundle = crate::memory::build_memory_history_bundle(namespace, id, &memories)
+        .ok_or_else(|| anyhow::anyhow!("history root not found in namespace {namespace}"))?;
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let output_path = output.unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "memoryoss-history-{}-{}-{timestamp}.json",
+            namespace, id
+        ))
+    });
+    std::fs::write(&output_path, serde_json::to_vec_pretty(&bundle)?)?;
+    println!(
+        "Exported history bundle {} (root={} memories={})",
+        output_path.display(),
+        id,
+        bundle.memories.len()
+    );
+    Ok(())
+}
+
+fn run_history_replay(
+    config: &config::Config,
+    path: &Path,
+    namespace_override: Option<&str>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let bundle: crate::memory::MemoryHistoryBundle = serde_json::from_slice(&std::fs::read(path)?)?;
+    let target_namespace = namespace_override
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| bundle.namespace.clone());
+    let existing = doc_engine.list_all_including_archived(&target_namespace)?;
+    let plan = crate::memory::plan_memory_history_replay(&target_namespace, &bundle, &existing);
+
+    if dry_run || !plan.preview.can_replay {
+        println!(
+            "History replay preview for {}: can_replay={} create={} visible={} blocked_reason={}",
+            target_namespace,
+            plan.preview.can_replay,
+            plan.preview.create_count,
+            plan.preview.visible_count,
+            plan.preview.blocked_reason.as_deref().unwrap_or("-")
+        );
+        if !plan.preview.can_replay && !dry_run {
+            anyhow::bail!(
+                "{}",
+                plan.preview
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("history replay blocked")
+            );
+        }
+        return Ok(());
+    }
+
+    for memory in &plan.staged_memories {
+        doc_engine.store(memory, "history-replay-cli")?;
+    }
+    println!(
+        "Replayed history bundle into {}: imported={} root={}",
+        target_namespace,
+        plan.staged_memories.len(),
+        bundle.root_id
+    );
+    Ok(())
+}
+
+fn run_history_branch(
+    config: &config::Config,
+    source_namespace: &str,
+    target_namespace: &str,
+    id: uuid::Uuid,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let source_memories = doc_engine.list_all_including_archived(source_namespace)?;
+    let bundle = crate::memory::build_memory_history_bundle(source_namespace, id, &source_memories)
+        .ok_or_else(|| anyhow::anyhow!("history root not found in namespace {source_namespace}"))?;
+    let existing = doc_engine.list_all_including_archived(target_namespace)?;
+    let plan = crate::memory::plan_memory_history_replay(target_namespace, &bundle, &existing);
+
+    if dry_run || !plan.preview.can_replay {
+        println!(
+            "History branch preview {} -> {}: can_replay={} create={} blocked_reason={}",
+            source_namespace,
+            target_namespace,
+            plan.preview.can_replay,
+            plan.preview.create_count,
+            plan.preview.blocked_reason.as_deref().unwrap_or("-")
+        );
+        if !plan.preview.can_replay && !dry_run {
+            anyhow::bail!(
+                "{}",
+                plan.preview
+                    .blocked_reason
+                    .as_deref()
+                    .unwrap_or("history branch blocked")
+            );
+        }
+        return Ok(());
+    }
+
+    for memory in &plan.staged_memories {
+        doc_engine.store(memory, "history-branch-cli")?;
+    }
+    println!(
+        "Branched history root {} from {} into {}: imported={}",
+        id,
+        source_namespace,
+        target_namespace,
+        plan.staged_memories.len()
     );
     Ok(())
 }
@@ -1920,6 +2160,7 @@ async fn main() -> anyhow::Result<()> {
             | Commands::Doctor
             | Commands::Recent { .. }
             | Commands::Passport { .. }
+            | Commands::History { .. }
     );
 
     if operator_command && !cli.config.exists() {
@@ -2073,6 +2314,42 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
             } => {
                 run_passport_import(&config, &path, namespace.as_deref(), dry_run)?;
+            }
+        },
+        Commands::History { command } => match command {
+            HistoryCommands::Show { id, namespace } => {
+                let uuid: uuid::Uuid = id
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("invalid UUID: {id}"))?;
+                run_history_show(&config, &namespace, uuid)?;
+            }
+            HistoryCommands::Export {
+                id,
+                namespace,
+                output,
+            } => {
+                let uuid: uuid::Uuid = id
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("invalid UUID: {id}"))?;
+                run_history_export(&config, &namespace, uuid, output)?;
+            }
+            HistoryCommands::Replay {
+                path,
+                namespace,
+                dry_run,
+            } => {
+                run_history_replay(&config, &path, namespace.as_deref(), dry_run)?;
+            }
+            HistoryCommands::Branch {
+                id,
+                namespace,
+                target_namespace,
+                dry_run,
+            } => {
+                let uuid: uuid::Uuid = id
+                    .parse()
+                    .map_err(|_| anyhow::anyhow!("invalid UUID: {id}"))?;
+                run_history_branch(&config, &namespace, &target_namespace, uuid, dry_run)?;
             }
         },
         Commands::Inspect { id } => {

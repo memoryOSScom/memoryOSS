@@ -3,7 +3,7 @@
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use uuid::Uuid;
 
 pub const MEMORY_RUNTIME_CONTRACT_ID: &str = "memoryoss.runtime.v1alpha1";
@@ -353,24 +353,33 @@ pub fn runtime_contract_document() -> RuntimeContractDocument {
             },
             RuntimeObjectModelEntry {
                 kind: "branch".to_string(),
-                support_level: RuntimeSupportLevel::Planned,
+                support_level: RuntimeSupportLevel::Partial,
                 description:
                     "Forkable runtime lineage for safe experimentation and later merge."
                         .to_string(),
-                current_mapping: Vec::new(),
+                current_mapping: vec![
+                    "MemoryHistoryBundle".to_string(),
+                    "/v1/history/{id}/bundle".to_string(),
+                    "/v1/history/replay".to_string(),
+                ],
                 known_gaps: vec![
-                    "No first-class branch surface or lineage graph yet.".to_string(),
+                    "Branching is currently fail-closed to replay into an empty target namespace."
+                        .to_string(),
                 ],
             },
             RuntimeObjectModelEntry {
                 kind: "replay".to_string(),
-                support_level: RuntimeSupportLevel::Planned,
+                support_level: RuntimeSupportLevel::Partial,
                 description:
                     "Deterministic replay of visible runtime state from recorded events and lineage."
                         .to_string(),
-                current_mapping: Vec::new(),
+                current_mapping: vec![
+                    "MemoryHistoryBundle".to_string(),
+                    "/v1/history/replay".to_string(),
+                ],
                 known_gaps: vec![
-                    "No deterministic replay endpoint or replay artifact format yet.".to_string(),
+                    "Replay is currently supported only for empty target namespaces to stay safe."
+                        .to_string(),
                 ],
             },
         ],
@@ -448,31 +457,58 @@ pub fn runtime_contract_document() -> RuntimeContractDocument {
             },
             RuntimeApiMapping {
                 runtime_operation: "portability_export".to_string(),
-                routes: vec!["/v1/export".to_string()],
+                routes: vec![
+                    "/v1/export".to_string(),
+                    "/v1/passport/export".to_string(),
+                    "/v1/passport/import".to_string(),
+                ],
                 data_model_fields: vec![
                     "Memory without embedding".to_string(),
                     "runtime_contract metadata".to_string(),
+                ],
+            },
+            RuntimeApiMapping {
+                runtime_operation: "history_read".to_string(),
+                routes: vec![
+                    "/v1/history/{id}".to_string(),
+                    "/v1/history/{id}/bundle".to_string(),
+                ],
+                data_model_fields: vec![
+                    "Memory.review_events".to_string(),
+                    "Memory.superseded_by".to_string(),
+                    "Memory.derived_from".to_string(),
+                    "Memory.contradicts_with".to_string(),
+                ],
+            },
+            RuntimeApiMapping {
+                runtime_operation: "history_replay".to_string(),
+                routes: vec!["/v1/history/replay".to_string()],
+                data_model_fields: vec![
+                    "MemoryHistoryBundle".to_string(),
+                    "Memory without embedding".to_string(),
                 ],
             },
         ],
         known_gaps: vec![
             RuntimeGap {
                 area: "import".to_string(),
-                status: RuntimeSupportLevel::Planned,
+                status: RuntimeSupportLevel::Partial,
                 note:
-                    "There is no first-class import endpoint that round-trips the runtime contract yet."
+                    "Selective runtime import exists via passports and history replay, but not every future runtime object has full round-trip import fidelity yet."
                         .to_string(),
             },
             RuntimeGap {
                 area: "branch".to_string(),
-                status: RuntimeSupportLevel::Planned,
-                note: "Branch lineage is not yet a first-class runtime surface.".to_string(),
+                status: RuntimeSupportLevel::Partial,
+                note: "Branch-from-here currently replays only into an empty target namespace."
+                    .to_string(),
             },
             RuntimeGap {
                 area: "replay".to_string(),
-                status: RuntimeSupportLevel::Planned,
-                note: "Replay semantics are specified here but not yet implemented as a deterministic API."
-                    .to_string(),
+                status: RuntimeSupportLevel::Partial,
+                note:
+                    "Replay exists as a deterministic bundle API, but only in the safe empty-target scope."
+                        .to_string(),
             },
             RuntimeGap {
                 area: "typed_policy_and_evidence_objects".to_string(),
@@ -649,6 +685,145 @@ pub struct PassportImportPreview {
 #[derive(Debug, Clone)]
 pub struct PassportImportPlan {
     pub preview: PassportImportPreview,
+    pub staged_memories: Vec<Memory>,
+}
+
+pub const MEMORY_HISTORY_BUNDLE_VERSION: &str = "memoryoss.history.v1alpha1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryHistoryEdgeKind {
+    DerivedFrom,
+    SupersededBy,
+    ContradictsWith,
+}
+
+impl std::fmt::Display for MemoryHistoryEdgeKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::DerivedFrom => write!(f, "derived_from"),
+            Self::SupersededBy => write!(f, "superseded_by"),
+            Self::ContradictsWith => write!(f, "contradicts_with"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryHistoryEventKind {
+    Created,
+    Derived,
+    Contradicted,
+    Review,
+    Superseded,
+    Archived,
+    StateSnapshot,
+}
+
+impl std::fmt::Display for MemoryHistoryEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Created => write!(f, "created"),
+            Self::Derived => write!(f, "derived"),
+            Self::Contradicted => write!(f, "contradicted"),
+            Self::Review => write!(f, "review"),
+            Self::Superseded => write!(f, "superseded"),
+            Self::Archived => write!(f, "archived"),
+            Self::StateSnapshot => write!(f, "state_snapshot"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryEdge {
+    pub from: Uuid,
+    pub to: Uuid,
+    pub kind: MemoryHistoryEdgeKind,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryEvent {
+    pub at: DateTime<Utc>,
+    pub memory_id: Uuid,
+    pub kind: MemoryHistoryEventKind,
+    pub summary: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_status: Option<MemoryStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub to_status: Option<MemoryStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actor: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub via: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub related_ids: Vec<Uuid>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryNode {
+    pub id: Uuid,
+    pub content: String,
+    pub preview: String,
+    pub status: MemoryStatus,
+    pub archived: bool,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub derived_from: Vec<Uuid>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub contradicts_with: Vec<Uuid>,
+    pub review_event_count: usize,
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryView {
+    pub namespace: String,
+    pub root_id: Uuid,
+    pub visible_memory_ids: Vec<Uuid>,
+    pub nodes: Vec<MemoryHistoryNode>,
+    pub edges: Vec<MemoryHistoryEdge>,
+    pub timeline: Vec<MemoryHistoryEvent>,
+    pub branch_safe: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryBundleIntegrity {
+    pub algorithm: String,
+    pub payload_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryBundle {
+    pub bundle_version: String,
+    pub history_id: Uuid,
+    pub root_id: Uuid,
+    pub runtime_contract: RuntimeContractExportMetadata,
+    pub namespace: String,
+    pub exported_at: DateTime<Utc>,
+    pub memories: Vec<MemoryPassportEntry>,
+    pub edges: Vec<MemoryHistoryEdge>,
+    pub timeline: Vec<MemoryHistoryEvent>,
+    pub integrity: MemoryHistoryBundleIntegrity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryHistoryReplayPreview {
+    pub target_namespace: String,
+    pub root_id: Uuid,
+    pub integrity_valid: bool,
+    pub can_replay: bool,
+    pub create_count: usize,
+    pub visible_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blocked_reason: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct MemoryHistoryReplayPlan {
+    pub preview: MemoryHistoryReplayPreview,
     pub staged_memories: Vec<Memory>,
 }
 
@@ -1391,6 +1566,393 @@ pub fn plan_memory_passport_import(
     }
 }
 
+fn collect_memory_history_ids(root_id: Uuid, memories: &[Memory]) -> Option<HashSet<Uuid>> {
+    let by_id: HashMap<Uuid, &Memory> = memories.iter().map(|memory| (memory.id, memory)).collect();
+    if !by_id.contains_key(&root_id) {
+        return None;
+    }
+
+    let mut reverse_edges: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+    for memory in memories {
+        for source_id in &memory.derived_from {
+            reverse_edges.entry(*source_id).or_default().push(memory.id);
+        }
+        if let Some(target_id) = memory.superseded_by {
+            reverse_edges.entry(target_id).or_default().push(memory.id);
+        }
+        for conflict_id in &memory.contradicts_with {
+            reverse_edges
+                .entry(*conflict_id)
+                .or_default()
+                .push(memory.id);
+        }
+    }
+
+    let mut seen = HashSet::new();
+    let mut queue = VecDeque::from([root_id]);
+    while let Some(id) = queue.pop_front() {
+        if !seen.insert(id) {
+            continue;
+        }
+
+        if let Some(memory) = by_id.get(&id) {
+            queue.extend(memory.derived_from.iter().copied());
+            queue.extend(memory.contradicts_with.iter().copied());
+            if let Some(target_id) = memory.superseded_by {
+                queue.push_back(target_id);
+            }
+        }
+
+        if let Some(reverse) = reverse_edges.get(&id) {
+            queue.extend(reverse.iter().copied());
+        }
+    }
+
+    Some(seen)
+}
+
+fn collect_memory_history_nodes(root_id: Uuid, memories: &[Memory]) -> Option<Vec<Memory>> {
+    let ids = collect_memory_history_ids(root_id, memories)?;
+    let mut selected: Vec<Memory> = memories
+        .iter()
+        .filter(|memory| ids.contains(&memory.id))
+        .cloned()
+        .collect();
+    selected.sort_by(|a, b| {
+        a.created_at
+            .cmp(&b.created_at)
+            .then_with(|| a.id.cmp(&b.id))
+    });
+    Some(selected)
+}
+
+fn build_memory_history_edges(selected: &[Memory]) -> Vec<MemoryHistoryEdge> {
+    let selected_ids: HashSet<Uuid> = selected.iter().map(|memory| memory.id).collect();
+    let mut edges = HashSet::new();
+
+    for memory in selected {
+        for source_id in &memory.derived_from {
+            if selected_ids.contains(source_id) {
+                edges.insert((*source_id, memory.id, MemoryHistoryEdgeKind::DerivedFrom));
+            }
+        }
+
+        if let Some(target_id) = memory.superseded_by
+            && selected_ids.contains(&target_id)
+        {
+            edges.insert((memory.id, target_id, MemoryHistoryEdgeKind::SupersededBy));
+        }
+
+        for conflict_id in &memory.contradicts_with {
+            if selected_ids.contains(conflict_id) {
+                let (from, to) = if memory.id <= *conflict_id {
+                    (memory.id, *conflict_id)
+                } else {
+                    (*conflict_id, memory.id)
+                };
+                edges.insert((from, to, MemoryHistoryEdgeKind::ContradictsWith));
+            }
+        }
+    }
+
+    let mut output: Vec<_> = edges
+        .into_iter()
+        .map(|(from, to, kind)| MemoryHistoryEdge { from, to, kind })
+        .collect();
+    output.sort_by(|a, b| a.from.cmp(&b.from).then_with(|| a.to.cmp(&b.to)));
+    output
+}
+
+fn build_memory_history_timeline(selected: &[Memory]) -> Vec<MemoryHistoryEvent> {
+    let selected_ids: HashSet<Uuid> = selected.iter().map(|memory| memory.id).collect();
+    let selected_by_id: HashMap<Uuid, &Memory> =
+        selected.iter().map(|memory| (memory.id, memory)).collect();
+    let mut events = Vec::new();
+    let mut contradiction_pairs = HashSet::new();
+
+    for memory in selected {
+        events.push(MemoryHistoryEvent {
+            at: memory.created_at,
+            memory_id: memory.id,
+            kind: MemoryHistoryEventKind::Created,
+            summary: format!("Memory created: {}", memory_preview(&memory.content)),
+            from_status: None,
+            to_status: None,
+            actor: None,
+            via: None,
+            related_ids: Vec::new(),
+        });
+
+        if !memory.derived_from.is_empty() {
+            events.push(MemoryHistoryEvent {
+                at: memory.created_at,
+                memory_id: memory.id,
+                kind: MemoryHistoryEventKind::Derived,
+                summary: format!("Derived from {} source memories", memory.derived_from.len()),
+                from_status: None,
+                to_status: Some(memory.status),
+                actor: None,
+                via: Some("lineage".to_string()),
+                related_ids: memory.derived_from.clone(),
+            });
+        }
+
+        for review in &memory.review_events {
+            let to_status = match review.action {
+                MemoryFeedbackAction::Confirm => Some(MemoryStatus::Active),
+                MemoryFeedbackAction::Reject => Some(MemoryStatus::Contested),
+                MemoryFeedbackAction::Supersede => Some(MemoryStatus::Stale),
+            };
+            let mut related_ids = Vec::new();
+            if let Some(target) = review.superseded_by {
+                related_ids.push(target);
+            }
+            events.push(MemoryHistoryEvent {
+                at: review.at,
+                memory_id: memory.id,
+                kind: MemoryHistoryEventKind::Review,
+                summary: format!("Review action {} via {}", review.action, review.via),
+                from_status: None,
+                to_status,
+                actor: Some(review.actor.clone()),
+                via: Some(review.via.clone()),
+                related_ids,
+            });
+        }
+
+        if let Some(target_id) = memory.superseded_by
+            && selected_ids.contains(&target_id)
+        {
+            events.push(MemoryHistoryEvent {
+                at: memory.updated_at,
+                memory_id: memory.id,
+                kind: MemoryHistoryEventKind::Superseded,
+                summary: format!("Superseded by {}", target_id),
+                from_status: None,
+                to_status: Some(MemoryStatus::Stale),
+                actor: None,
+                via: Some("lineage".to_string()),
+                related_ids: vec![target_id],
+            });
+        }
+
+        if memory.archived {
+            events.push(MemoryHistoryEvent {
+                at: memory.updated_at,
+                memory_id: memory.id,
+                kind: MemoryHistoryEventKind::Archived,
+                summary: "Archived and removed from visible export surfaces".to_string(),
+                from_status: Some(memory.status),
+                to_status: Some(memory.status),
+                actor: None,
+                via: Some("lifecycle".to_string()),
+                related_ids: Vec::new(),
+            });
+        } else if memory.updated_at > memory.created_at
+            && memory.review_events.is_empty()
+            && memory.superseded_by.is_none()
+        {
+            events.push(MemoryHistoryEvent {
+                at: memory.updated_at,
+                memory_id: memory.id,
+                kind: MemoryHistoryEventKind::StateSnapshot,
+                summary: format!("Current visible state is {}", memory.status),
+                from_status: None,
+                to_status: Some(memory.status),
+                actor: None,
+                via: Some("snapshot".to_string()),
+                related_ids: Vec::new(),
+            });
+        }
+
+        for conflict_id in &memory.contradicts_with {
+            if !selected_ids.contains(conflict_id) {
+                continue;
+            }
+            let (left, right) = if memory.id <= *conflict_id {
+                (memory.id, *conflict_id)
+            } else {
+                (*conflict_id, memory.id)
+            };
+            if !contradiction_pairs.insert((left, right)) {
+                continue;
+            }
+            let at = selected_by_id
+                .get(conflict_id)
+                .map(|other| memory.updated_at.max(other.updated_at))
+                .unwrap_or(memory.updated_at);
+            events.push(MemoryHistoryEvent {
+                at,
+                memory_id: left,
+                kind: MemoryHistoryEventKind::Contradicted,
+                summary: format!("Contradiction recorded between {} and {}", left, right),
+                from_status: None,
+                to_status: Some(MemoryStatus::Contested),
+                actor: None,
+                via: Some("contradiction_detection".to_string()),
+                related_ids: vec![left, right],
+            });
+        }
+    }
+
+    events.sort_by(|a, b| {
+        a.at.cmp(&b.at)
+            .then_with(|| a.memory_id.cmp(&b.memory_id))
+            .then_with(|| a.summary.cmp(&b.summary))
+    });
+    events
+}
+
+pub fn build_memory_history_view(
+    namespace: &str,
+    root_id: Uuid,
+    memories: &[Memory],
+) -> Option<MemoryHistoryView> {
+    let selected = collect_memory_history_nodes(root_id, memories)?;
+    let edges = build_memory_history_edges(&selected);
+    let timeline = build_memory_history_timeline(&selected);
+    let visible_memory_ids = selected
+        .iter()
+        .filter(|memory| !memory.archived)
+        .map(|memory| memory.id)
+        .collect::<Vec<_>>();
+    let nodes = selected
+        .iter()
+        .map(|memory| MemoryHistoryNode {
+            id: memory.id,
+            content: memory.content.clone(),
+            preview: memory_preview(&memory.content),
+            status: memory.status,
+            archived: memory.archived,
+            created_at: memory.created_at,
+            updated_at: memory.updated_at,
+            superseded_by: memory.superseded_by,
+            derived_from: memory.derived_from.clone(),
+            contradicts_with: memory.contradicts_with.clone(),
+            review_event_count: memory.review_events.len(),
+            visible: !memory.archived,
+        })
+        .collect();
+    Some(MemoryHistoryView {
+        namespace: namespace.to_string(),
+        root_id,
+        visible_memory_ids,
+        nodes,
+        edges,
+        timeline,
+        branch_safe: true,
+    })
+}
+
+#[derive(Serialize)]
+struct MemoryHistoryIntegrityPayload<'a> {
+    bundle_version: &'a str,
+    history_id: Uuid,
+    root_id: Uuid,
+    runtime_contract: &'a RuntimeContractExportMetadata,
+    namespace: &'a str,
+    exported_at: DateTime<Utc>,
+    memories: &'a [MemoryPassportEntry],
+    edges: &'a [MemoryHistoryEdge],
+    timeline: &'a [MemoryHistoryEvent],
+}
+
+fn memory_history_payload_sha256(bundle: &MemoryHistoryBundle) -> String {
+    use sha2::{Digest, Sha256};
+    let payload = MemoryHistoryIntegrityPayload {
+        bundle_version: &bundle.bundle_version,
+        history_id: bundle.history_id,
+        root_id: bundle.root_id,
+        runtime_contract: &bundle.runtime_contract,
+        namespace: &bundle.namespace,
+        exported_at: bundle.exported_at,
+        memories: &bundle.memories,
+        edges: &bundle.edges,
+        timeline: &bundle.timeline,
+    };
+    let bytes = serde_json::to_vec(&payload).expect("memory history payload should serialize");
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    hex::encode(hasher.finalize())
+}
+
+pub fn build_memory_history_bundle(
+    namespace: &str,
+    root_id: Uuid,
+    memories: &[Memory],
+) -> Option<MemoryHistoryBundle> {
+    let view = build_memory_history_view(namespace, root_id, memories)?;
+    let mut bundle = MemoryHistoryBundle {
+        bundle_version: MEMORY_HISTORY_BUNDLE_VERSION.to_string(),
+        history_id: Uuid::now_v7(),
+        root_id,
+        runtime_contract: runtime_contract_export_metadata(),
+        namespace: namespace.to_string(),
+        exported_at: Utc::now(),
+        memories: view
+            .nodes
+            .iter()
+            .filter_map(|node| memories.iter().find(|memory| memory.id == node.id))
+            .map(MemoryPassportEntry::from_memory)
+            .collect(),
+        edges: view.edges,
+        timeline: view.timeline,
+        integrity: MemoryHistoryBundleIntegrity {
+            algorithm: "sha256".to_string(),
+            payload_sha256: String::new(),
+        },
+    };
+    bundle.integrity.payload_sha256 = memory_history_payload_sha256(&bundle);
+    Some(bundle)
+}
+
+pub fn verify_memory_history_bundle(bundle: &MemoryHistoryBundle) -> bool {
+    bundle.integrity.algorithm.eq_ignore_ascii_case("sha256")
+        && bundle.integrity.payload_sha256 == memory_history_payload_sha256(bundle)
+}
+
+pub fn plan_memory_history_replay(
+    target_namespace: &str,
+    bundle: &MemoryHistoryBundle,
+    existing: &[Memory],
+) -> MemoryHistoryReplayPlan {
+    let integrity_valid = verify_memory_history_bundle(bundle);
+    let blocked_reason = if !integrity_valid {
+        Some("history bundle integrity check failed".to_string())
+    } else if !existing.is_empty() {
+        Some("target namespace must be empty for safe replay/branch".to_string())
+    } else {
+        None
+    };
+    let can_replay = blocked_reason.is_none();
+    let staged_memories = if can_replay {
+        bundle
+            .memories
+            .iter()
+            .map(|entry| entry.to_memory_for_namespace(target_namespace))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    MemoryHistoryReplayPlan {
+        preview: MemoryHistoryReplayPreview {
+            target_namespace: target_namespace.to_string(),
+            root_id: bundle.root_id,
+            integrity_valid,
+            can_replay,
+            create_count: if can_replay { staged_memories.len() } else { 0 },
+            visible_count: bundle
+                .memories
+                .iter()
+                .filter(|entry| !entry.archived)
+                .count(),
+            blocked_reason,
+        },
+        staged_memories,
+    }
+}
+
 const NEGATION_TOKENS: &[&str] = &[
     "no", "not", "never", "without", "cannot", "cant", "don't", "dont", "doesn't", "doesnt",
     "won't", "wont", "isn't", "isnt", "aren't", "arent",
@@ -1869,11 +2431,12 @@ pub struct ConsolidateResponse {
 #[cfg(test)]
 mod tests {
     use super::{
-        MEMORY_PASSPORT_BUNDLE_VERSION, MEMORY_RUNTIME_CONTRACT_ID,
+        MEMORY_HISTORY_BUNDLE_VERSION, MEMORY_PASSPORT_BUNDLE_VERSION, MEMORY_RUNTIME_CONTRACT_ID,
         MEMORY_RUNTIME_CONTRACT_VERSION, Memory, MemoryFeedbackAction, MemoryStatus,
         PassportImportDecision, PassportScope, ReviewQueueKind, RuntimeSupportLevel,
-        build_memory_passport_bundle, memories_contradict, plan_memory_passport_import,
-        runtime_contract_document, verify_memory_passport_bundle,
+        build_memory_history_bundle, build_memory_history_view, build_memory_passport_bundle,
+        memories_contradict, plan_memory_history_replay, plan_memory_passport_import,
+        runtime_contract_document, verify_memory_history_bundle, verify_memory_passport_bundle,
     };
 
     #[test]
@@ -2047,13 +2610,95 @@ mod tests {
                 .object_model
                 .iter()
                 .any(|entry| entry.kind == "branch"
-                    && entry.support_level == RuntimeSupportLevel::Planned)
+                    && entry.support_level == RuntimeSupportLevel::Partial)
         );
         assert!(
             contract
                 .known_gaps
                 .iter()
-                .any(|entry| entry.area == "replay")
+                .any(|entry| entry.area == "replay"
+                    && entry.status == RuntimeSupportLevel::Partial)
+        );
+    }
+
+    #[test]
+    fn test_memory_history_view_includes_lineage_contradictions_and_review_chain() {
+        let mut old = Memory::new("Use feature branches for deploys.".to_string());
+        old.namespace = Some("test".to_string());
+        let old_id = old.id;
+
+        let mut conflicting = Memory::new("Do not use feature branches for deploys.".to_string());
+        conflicting.namespace = Some("test".to_string());
+        let conflicting_id = conflicting.id;
+        old.mark_contradicted_by(conflicting_id);
+        conflicting.mark_contradicted_by(old_id);
+
+        let mut replacement =
+            Memory::new("Use protected release branches for deploys.".to_string());
+        replacement.namespace = Some("test".to_string());
+        let replacement_id = replacement.id;
+
+        old.apply_feedback_action(MemoryFeedbackAction::Supersede, Some(replacement_id));
+        old.record_review_event(
+            "operator",
+            MemoryFeedbackAction::Supersede,
+            "review_inbox",
+            Some(ReviewQueueKind::Contested),
+            Some(replacement_id),
+        );
+
+        let memories = vec![old.clone(), conflicting.clone(), replacement.clone()];
+        let view = build_memory_history_view("test", old_id, &memories).expect("view");
+
+        assert_eq!(view.root_id, old_id);
+        assert_eq!(view.nodes.len(), 3);
+        assert!(view.nodes.iter().any(|node| node.id == conflicting_id));
+        assert!(view.nodes.iter().any(|node| node.id == replacement_id));
+        assert!(
+            view.edges
+                .iter()
+                .any(|edge| edge.from == old_id && edge.to == replacement_id)
+        );
+        assert!(
+            view.timeline
+                .iter()
+                .any(|event| event.kind == super::MemoryHistoryEventKind::Contradicted)
+        );
+        assert!(
+            view.timeline
+                .iter()
+                .any(|event| event.kind == super::MemoryHistoryEventKind::Review)
+        );
+        assert!(
+            view.timeline
+                .iter()
+                .any(|event| event.kind == super::MemoryHistoryEventKind::Superseded)
+        );
+    }
+
+    #[test]
+    fn test_memory_history_bundle_and_replay_plan_require_empty_target_namespace() {
+        let mut root = Memory::new("Keep OAuth-first auth by default.".to_string());
+        root.namespace = Some("source".to_string());
+        let root_id = root.id;
+
+        let bundle =
+            build_memory_history_bundle("source", root_id, &[root.clone()]).expect("bundle");
+        assert_eq!(bundle.bundle_version, MEMORY_HISTORY_BUNDLE_VERSION);
+        assert!(verify_memory_history_bundle(&bundle));
+
+        let blocked =
+            plan_memory_history_replay("target", &bundle, &[Memory::new("occupied".to_string())]);
+        assert!(!blocked.preview.can_replay);
+        assert_eq!(blocked.preview.create_count, 0);
+
+        let allowed = plan_memory_history_replay("target", &bundle, &[]);
+        assert!(allowed.preview.can_replay);
+        assert_eq!(allowed.preview.create_count, 1);
+        assert_eq!(allowed.staged_memories[0].id, root_id);
+        assert_eq!(
+            allowed.staged_memories[0].namespace.as_deref(),
+            Some("target")
         );
     }
 

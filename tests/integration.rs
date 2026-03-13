@@ -4901,17 +4901,20 @@ async fn test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps() {
             .iter()
             .any(|entry| {
                 entry["kind"].as_str() == Some("branch")
-                    && entry["support_level"].as_str() == Some("planned")
+                    && entry["support_level"].as_str() == Some("partial")
+                    && entry["current_mapping"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|route| route.as_str() == Some("/v1/history/replay"))
             }),
-        "branch should be documented as planned rather than silently implied"
+        "branch should be documented as a partial empty-target replay surface"
     );
     assert!(
-        body["known_gaps"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|entry| entry["area"].as_str() == Some("replay")),
-        "contract should surface replay as an explicit current gap"
+        body["known_gaps"].as_array().unwrap().iter().any(|entry| {
+            entry["area"].as_str() == Some("replay") && entry["status"].as_str() == Some("partial")
+        }),
+        "contract should surface replay as a bounded partial gap"
     );
     assert!(
         body["api_mappings"]
@@ -6302,4 +6305,344 @@ async fn test_cli_passport_export_and_import_roundtrip() {
 
     target_child.kill().await.ok();
     target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_history_api_view_and_replay_roundtrip() {
+    let source_port = free_port();
+    let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
+    let source_data_dir = source_tmp.path().join("data");
+    std::fs::create_dir_all(&source_data_dir).unwrap();
+    let source_config = test_config_http(source_port, source_data_dir.to_str().unwrap());
+    let source_config_path = source_tmp.path().join("history-source.toml");
+    std::fs::write(&source_config_path, &source_config).unwrap();
+
+    let mut source_child = start_server(source_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let source_base = format!("http://127.0.0.1:{source_port}");
+
+    let old_resp = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Project policy: use feature branches for deploys.",
+            "tags": ["policy", "project"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_resp.status(), 200);
+    let old_id = old_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let conflict_resp = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Project policy: do not use feature branches for deploys.",
+            "tags": ["policy", "project"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_resp.status(), 200);
+    let conflict_id = conflict_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let replacement_resp = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Project policy: use protected release branches for deploys.",
+            "tags": ["policy", "project"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replacement_resp.status(), 200);
+    let replacement_id = replacement_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let feedback_resp = client
+        .post(format!("{source_base}/v1/feedback"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": old_id,
+            "action": "supersede",
+            "superseded_by": replacement_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(feedback_resp.status(), 200);
+
+    let history_resp = client
+        .get(format!("{source_base}/v1/history/{old_id}"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(history_resp.status(), 200);
+    let source_history: serde_json::Value = history_resp.json().await.unwrap();
+    assert_eq!(source_history["root_id"].as_str(), Some(old_id.as_str()));
+    assert_eq!(source_history["branch_safe"].as_bool(), Some(true));
+    assert_eq!(source_history["nodes"].as_array().unwrap().len(), 3);
+    assert!(
+        source_history["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|node| node["id"].as_str() == Some(conflict_id.as_str()))
+    );
+    assert!(
+        source_history["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"].as_str() == Some("contradicted"))
+    );
+    assert!(
+        source_history["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"].as_str() == Some("review"))
+    );
+    assert!(
+        source_history["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"].as_str() == Some("superseded"))
+    );
+
+    let bundle_resp = client
+        .get(format!("{source_base}/v1/history/{old_id}/bundle"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_resp.status(), 200);
+    let bundle: serde_json::Value = bundle_resp.json().await.unwrap();
+    assert_eq!(
+        bundle["bundle_version"].as_str(),
+        Some("memoryoss.history.v1alpha1")
+    );
+    assert_eq!(bundle["memories"].as_array().unwrap().len(), 3);
+
+    source_child.kill().await.ok();
+    source_child.wait().await.ok();
+
+    let target_port = free_port();
+    let target_tmp = tempfile::tempdir().expect("failed to create target temp dir");
+    let target_data_dir = target_tmp.path().join("data");
+    std::fs::create_dir_all(&target_data_dir).unwrap();
+    let target_config = test_config_http(target_port, target_data_dir.to_str().unwrap());
+    let target_config_path = target_tmp.path().join("history-target.toml");
+    std::fs::write(&target_config_path, &target_config).unwrap();
+
+    let mut target_child = start_server(target_config_path.to_str().unwrap()).await;
+    let target_base = format!("http://127.0.0.1:{target_port}");
+
+    let dry_run_resp = client
+        .post(format!("{target_base}/v1/history/replay"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "dry_run": true,
+            "bundle": bundle.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dry_run_resp.status(), 200);
+    let dry_run_body: serde_json::Value = dry_run_resp.json().await.unwrap();
+    assert_eq!(dry_run_body["preview"]["can_replay"].as_bool(), Some(true));
+    assert_eq!(dry_run_body["preview"]["create_count"].as_u64(), Some(3));
+
+    let replay_resp = client
+        .post(format!("{target_base}/v1/history/replay"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "bundle": bundle
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay_resp.status(), 200);
+    let replay_body: serde_json::Value = replay_resp.json().await.unwrap();
+    assert_eq!(replay_body["imported"].as_u64(), Some(3));
+
+    let target_history_resp = client
+        .get(format!("{target_base}/v1/history/{old_id}"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(target_history_resp.status(), 200);
+    let target_history: serde_json::Value = target_history_resp.json().await.unwrap();
+    assert_eq!(
+        target_history["visible_memory_ids"],
+        source_history["visible_memory_ids"]
+    );
+    assert_eq!(
+        target_history["timeline"].as_array().unwrap().len(),
+        source_history["timeline"].as_array().unwrap().len()
+    );
+
+    let inspected = inspect_memory(&client, &target_base, "test-key-integration", &old_id).await;
+    assert_eq!(
+        inspected["superseded_by"].as_str(),
+        Some(replacement_id.as_str())
+    );
+    assert!(
+        target_history["timeline"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|event| event["kind"].as_str() == Some("contradicted"))
+    );
+
+    target_child.kill().await.ok();
+    target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_history_branch_into_empty_namespace() {
+    let source_port = free_port();
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let source_config = test_config_http(source_port, data_dir.to_str().unwrap());
+    let source_config_path = tmp.path().join("history-cli-source.toml");
+    std::fs::write(&source_config_path, &source_config).unwrap();
+
+    let mut source_child = start_server(source_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let source_base = format!("http://127.0.0.1:{source_port}");
+
+    let old_resp = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Release notes live in docs/releases.md.",
+            "tags": ["project", "docs"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(old_resp.status(), 200);
+    let old_id = old_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let replacement_resp = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "The release checklist lives in docs/releases/README.md and is owned by the release captain.",
+            "tags": ["project", "docs"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replacement_resp.status(), 200);
+    let replacement_id = replacement_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let feedback_resp = client
+        .post(format!("{source_base}/v1/feedback"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": old_id,
+            "action": "supersede",
+            "superseded_by": replacement_id
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(feedback_resp.status(), 200);
+
+    source_child.kill().await.ok();
+    source_child.wait().await.ok();
+
+    let dry_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            source_config_path.to_str().unwrap(),
+            "history",
+            "branch",
+            &old_id,
+            "--namespace",
+            "test",
+            "--target-namespace",
+            "branch",
+            "--dry-run",
+        ])
+        .output()
+        .await
+        .expect("failed to run history branch dry-run");
+    assert!(
+        dry_run.status.success(),
+        "history branch dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let dry_run_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    assert!(dry_run_stdout.contains("can_replay=true"));
+    assert!(dry_run_stdout.contains("create=2"));
+
+    let branch = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            source_config_path.to_str().unwrap(),
+            "history",
+            "branch",
+            &old_id,
+            "--namespace",
+            "test",
+            "--target-namespace",
+            "branch",
+        ])
+        .output()
+        .await
+        .expect("failed to run history branch");
+    assert!(
+        branch.status.success(),
+        "history branch failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&branch.stdout),
+        String::from_utf8_lossy(&branch.stderr)
+    );
+    let branch_stdout = String::from_utf8_lossy(&branch.stdout);
+    assert!(branch_stdout.contains("Branched history root"));
+
+    let branch_port = free_port();
+    let branch_config = test_config_http(branch_port, data_dir.to_str().unwrap())
+        .replace("namespace = \"test\"", "namespace = \"branch\"");
+    let branch_config_path = tmp.path().join("history-cli-branch.toml");
+    std::fs::write(&branch_config_path, &branch_config).unwrap();
+
+    let mut branch_child = start_server(branch_config_path.to_str().unwrap()).await;
+    let branch_base = format!("http://127.0.0.1:{branch_port}");
+    let history_resp = client
+        .get(format!("{branch_base}/v1/history/{old_id}"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(history_resp.status(), 200);
+    let history_body: serde_json::Value = history_resp.json().await.unwrap();
+    assert_eq!(history_body["root_id"].as_str(), Some(old_id.as_str()));
+    assert_eq!(history_body["nodes"].as_array().unwrap().len(), 2);
+
+    branch_child.kill().await.ok();
+    branch_child.wait().await.ok();
 }

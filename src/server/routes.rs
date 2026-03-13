@@ -26,11 +26,13 @@ use crate::memory::{
     BatchRecallRequest, BatchRecallResponse, BatchStoreRequest, BatchStoreResponse,
     ConsolidateRequest, ConsolidateResponse, ConsolidationGroup, FeedbackRequest, FeedbackResponse,
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction,
-    MemoryPassportBundle, MemoryStatus, PassportImportPlan, PassportScope, RecallRequest,
-    RecallResponse, ReviewQueueKind, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
-    build_memory_passport_bundle, contradiction_signature, contradiction_signatures_conflict,
-    memories_contradict, plan_memory_passport_import, runtime_contract_document,
-    runtime_contract_export_metadata, verify_memory_passport_bundle,
+    MemoryHistoryBundle, MemoryHistoryReplayPlan, MemoryPassportBundle, MemoryStatus,
+    PassportImportPlan, PassportScope, RecallRequest, RecallResponse, ReviewQueueKind,
+    ScoredMemory, StoreRequest, StoreResponse, UpdateRequest, build_memory_history_bundle,
+    build_memory_history_view, build_memory_passport_bundle, contradiction_signature,
+    contradiction_signatures_conflict, memories_contradict, plan_memory_history_replay,
+    plan_memory_passport_import, runtime_contract_document, runtime_contract_export_metadata,
+    verify_memory_history_bundle, verify_memory_passport_bundle,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -561,6 +563,9 @@ pub fn router(state: AppState) -> axum::Router {
         )
         .route("/v1/sharing/accessible", get(accessible_shared_ns))
         .route("/v1/export", get(gdpr_export))
+        .route("/v1/history/replay", post(history_replay))
+        .route("/v1/history/{id}/bundle", get(history_bundle))
+        .route("/v1/history/{id}", get(history_view))
         .route("/v1/passport/export", get(passport_export))
         .route("/v1/passport/import", post(passport_import))
         .route("/v1/runtime/contract", get(runtime_contract))
@@ -2897,6 +2902,29 @@ struct PassportImportResponse {
     imported_ids: Vec<uuid::Uuid>,
 }
 
+#[derive(Deserialize)]
+struct HistoryParams {
+    #[serde(default)]
+    namespace: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct HistoryReplayRequest {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+    bundle: MemoryHistoryBundle,
+}
+
+#[derive(Serialize)]
+struct HistoryReplayResponse {
+    dry_run: bool,
+    imported: usize,
+    preview: crate::memory::MemoryHistoryReplayPreview,
+    imported_ids: Vec<uuid::Uuid>,
+}
+
 /// GET /v1/passport/export?scope=project — selective portable memory passport bundle.
 async fn passport_export(
     State(state): State<AppState>,
@@ -2993,6 +3021,134 @@ async fn passport_import(
 
     Ok(Json(PassportImportResponse {
         dry_run: req.dry_run,
+        imported: imported_ids.len(),
+        preview: plan.preview,
+        imported_ids,
+    })
+    .into_response())
+}
+
+/// GET /v1/history/{id} — inspect lineage, transitions, contradictions, and review chain.
+async fn history_view(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<HistoryParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let root_id = id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| AppError::BadRequest("invalid UUID".to_string()))?;
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let view = build_memory_history_view(namespace, root_id, &memories)
+        .ok_or_else(|| AppError::NotFound("history root not found".to_string()))?;
+    Ok(Json(view).into_response())
+}
+
+/// GET /v1/history/{id}/bundle — export deterministic replay bundle for one lineage closure.
+async fn history_bundle(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    axum::extract::Query(params): axum::extract::Query<HistoryParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let root_id = id
+        .parse::<uuid::Uuid>()
+        .map_err(|_| AppError::BadRequest("invalid UUID".to_string()))?;
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let bundle = build_memory_history_bundle(namespace, root_id, &memories)
+        .ok_or_else(|| AppError::NotFound("history root not found".to_string()))?;
+    Ok(Json(bundle).into_response())
+}
+
+fn apply_history_replay_plan(
+    state: &AppState,
+    namespace: &str,
+    plan: &MemoryHistoryReplayPlan,
+    subject: &str,
+) -> Result<Vec<uuid::Uuid>, AppError> {
+    let mut imported_ids = Vec::new();
+    for memory in &plan.staged_memories {
+        state
+            .doc_engine
+            .store(memory, subject)
+            .map_err(AppError::Internal)?;
+        imported_ids.push(memory.id);
+    }
+
+    if !imported_ids.is_empty() {
+        refresh_review_queue_summary(state, namespace).map_err(AppError::Internal)?;
+    }
+
+    Ok(imported_ids)
+}
+
+/// POST /v1/history/replay — replay a lineage bundle into an empty target namespace.
+async fn history_replay(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<HistoryReplayRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_store(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions for store"));
+    }
+    if let Err(retry_ms) = state.rate_limiter.check(&claims.sub) {
+        return Err(AppError::RateLimited(retry_ms));
+    }
+    if state.indexer_state.lag() > BACKPRESSURE_THRESHOLD {
+        return Err(AppError::RateLimited(1000));
+    }
+
+    let target_requested = req.namespace.as_deref().unwrap_or(&req.bundle.namespace);
+    let target_namespace = enforce_namespace(&claims, Some(target_requested))?.to_string();
+    let existing = state
+        .doc_engine
+        .list_all_including_archived(&target_namespace)?;
+    let plan = plan_memory_history_replay(&target_namespace, &req.bundle, &existing);
+
+    if req.dry_run {
+        return Ok(Json(HistoryReplayResponse {
+            dry_run: true,
+            imported: 0,
+            preview: plan.preview,
+            imported_ids: Vec::new(),
+        })
+        .into_response());
+    }
+
+    if !verify_memory_history_bundle(&req.bundle) {
+        return Err(AppError::BadRequest(
+            "history bundle integrity check failed".to_string(),
+        ));
+    }
+    if !plan.preview.can_replay {
+        return Err(AppError::BadRequest(
+            plan.preview
+                .blocked_reason
+                .clone()
+                .unwrap_or_else(|| "history replay blocked".to_string()),
+        ));
+    }
+
+    let imported_ids =
+        apply_history_replay_plan(&state, &target_namespace, &plan, "history-replay-api")?;
+
+    Ok(Json(HistoryReplayResponse {
+        dry_run: false,
         imported: imported_ids.len(),
         preview: plan.preview,
         imported_ids,

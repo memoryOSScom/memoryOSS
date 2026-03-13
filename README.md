@@ -356,7 +356,7 @@ Stable runtime semantics today:
 
 Explicitly outside the stable runtime contract for now:
 - retrieval strategy details like confidence gating and identifier-first routing
-- first-class branch and replay APIs
+- broad replay/branch semantics beyond the current safe empty-target scope
 - first-class typed policy and evidence objects with full import/export fidelity
 
 ### Sharing (cross-namespace collaboration)
@@ -376,6 +376,9 @@ Explicitly outside the stable runtime contract for now:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/export` | GET | Data export (all memories) |
+| `/v1/history/{id}` | GET | Inspect lineage, review chain, contradictions, and state transitions |
+| `/v1/history/{id}/bundle` | GET | Export a deterministic time-machine replay bundle |
+| `/v1/history/replay` | POST | Replay a history bundle into an empty target namespace |
 | `/v1/passport/export` | GET | Selective portable memory passport bundle export |
 | `/v1/passport/import` | POST | Dry-run or apply a portable memory passport bundle |
 | `/v1/runtime/contract` | GET | Versioned portable memory runtime contract |
@@ -514,6 +517,10 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss review supersede --namespace test --item 1 --with-item 2` | Supersede one queue item with another by inbox position |
 | `memoryoss passport export --namespace test --scope project -o passport.json` | Export a selective portable memory passport bundle |
 | `memoryoss passport import passport.json --namespace test --dry-run` | Preview merge/conflict results before applying a bundle |
+| `memoryoss history show <id> --namespace test` | Show lineage, transitions, and review chain for one memory |
+| `memoryoss history export <id> --namespace test -o history.json` | Export a deterministic history replay bundle |
+| `memoryoss history replay history.json --namespace test --dry-run` | Preview a safe replay into an empty target namespace |
+| `memoryoss history branch <id> --namespace test --target-namespace branch --dry-run` | Preview a branch-from-here into a new empty namespace |
 | `memoryoss inspect <id>` | Inspect a memory |
 | `memoryoss backup -o backup.tar.zst` | Backup all data |
 | `memoryoss restore <path>` | Restore from backup |
