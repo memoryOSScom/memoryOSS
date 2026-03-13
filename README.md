@@ -329,6 +329,8 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/query-explain` | POST | Query debug/explain |
 | `/v1/admin/lifecycle` | GET | Lifecycle state summary and latest memories |
 | `/v1/admin/recent` | GET | Recent injections, extractions, feedbacks, and consolidations |
+| `/v1/admin/review-queue` | GET | Candidate / contested / rejected review inbox with suggested actions |
+| `/v1/admin/review/action` | POST | Confirm, reject, or supersede via review keys |
 | `/v1/admin/intent-cache/stats` | GET | Intent cache statistics |
 | `/v1/admin/intent-cache/flush` | POST | Flush intent cache |
 | `/v1/admin/prefetch/stats` | GET | Prefetch statistics |
@@ -483,6 +485,10 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss status` | Show namespace health, lifecycle counts, worker state, and index health |
 | `memoryoss doctor` | Diagnose config, auth, database, and index issues (non-zero on error) |
 | `memoryoss recent` | Show recent injections, extractions, feedbacks, and consolidations |
+| `memoryoss review queue --namespace test` | List the current review inbox without raw UUIDs |
+| `memoryoss review confirm --namespace test --item 1` | Confirm a queue item by inbox position |
+| `memoryoss review reject --namespace test --item 2` | Reject a queue item by inbox position |
+| `memoryoss review supersede --namespace test --item 1 --with-item 2` | Supersede one queue item with another by inbox position |
 | `memoryoss inspect <id>` | Inspect a memory |
 | `memoryoss backup -o backup.tar.zst` | Backup all data |
 | `memoryoss restore <path>` | Restore from backup |

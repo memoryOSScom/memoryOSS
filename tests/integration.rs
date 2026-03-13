@@ -152,6 +152,25 @@ async fn inspect_memory(
     resp.json().await.unwrap()
 }
 
+async fn review_queue(
+    client: &reqwest::Client,
+    base: &str,
+    api_key: &str,
+    namespace: &str,
+    limit: usize,
+) -> serde_json::Value {
+    let resp = client
+        .get(format!(
+            "{base}/v1/admin/review-queue?namespace={namespace}&limit={limit}"
+        ))
+        .header("Authorization", format!("Bearer {api_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200, "review queue failed");
+    resp.json().await.unwrap()
+}
+
 async fn assert_contested_pair(
     client: &reqwest::Client,
     base: &str,
@@ -4846,6 +4865,517 @@ async fn test_decay_and_migrate_cli_connections() {
                     )
             }),
         "archived legacy memory should not be recalled"
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_review_queue_lists_candidate_and_confirm_records_audit_trail() {
+    let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = true
+extract_provider = "claude"
+extract_model = "claude-test-promote"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("review-candidate.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Summarize the rollout checklist."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 1).await;
+
+    let queue_body = review_queue(&client, &base, "test-key-integration", "test", 10).await;
+    assert_eq!(queue_body["summary"]["candidate"].as_u64(), Some(1));
+    let item = queue_body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["preview"]
+                .as_str()
+                .unwrap_or("")
+                .contains("Promotion fact alpha")
+        })
+        .cloned()
+        .expect("expected candidate review item");
+    assert_eq!(item["queue_kind"].as_str(), Some("candidate"));
+    assert_eq!(item["suggested_action"].as_str(), Some("confirm"));
+    assert_eq!(item["source"].as_str(), Some("proxy-extraction"));
+    assert!(item["trust_score"].as_f64().unwrap_or(0.0) > 0.0);
+    let review_key = item["review_key"].as_str().unwrap().to_string();
+
+    let action_resp = client
+        .post(format!("{base}/v1/admin/review/action"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "namespace": "test",
+            "review_key": review_key,
+            "action": "confirm"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(action_resp.status(), 200);
+    let action_body: serde_json::Value = action_resp.json().await.unwrap();
+    assert_eq!(action_body["memory"]["status"].as_str(), Some("active"));
+    assert_eq!(
+        action_body["memory"]["review_event_count"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        action_body["memory"]["last_review"]["via"].as_str(),
+        Some("review_inbox")
+    );
+
+    let queue_after = review_queue(&client, &base, "test-key-integration", "test", 10).await;
+    assert_eq!(queue_after["summary"]["pending"].as_u64(), Some(0));
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    let memory_id = export_body["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|memory| {
+            memory["content"]
+                .as_str()
+                == Some("Promotion fact alpha: use the rollout checklist before every production release.")
+        })
+        .and_then(|memory| memory["id"].as_str())
+        .expect("candidate memory should be exportable")
+        .to_string();
+    let inspected = inspect_memory(&client, &base, "test-key-integration", &memory_id).await;
+    assert_eq!(inspected["status"].as_str(), Some("active"));
+    assert_eq!(
+        inspected["review_events"][0]["queue_kind"].as_str(),
+        Some("candidate")
+    );
+    assert_eq!(
+        inspected["review_events"][0]["via"].as_str(),
+        Some("review_inbox")
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_review_queue_supersede_uses_review_keys_and_records_audit_trail() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("review-supersede.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_store.status(), 200);
+    let first_id = first_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let second_store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Production deploys do not require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_store.status(), 200);
+    let second_id = second_store.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let queue_body = review_queue(&client, &base, "test-key-integration", "test", 10).await;
+    assert_eq!(queue_body["summary"]["contested"].as_u64(), Some(2));
+    let first_item = queue_body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["preview"]
+                .as_str()
+                .unwrap_or("")
+                .contains("require staging approval")
+        })
+        .cloned()
+        .expect("expected first contested item");
+    assert_eq!(first_item["queue_kind"].as_str(), Some("contested"));
+    assert_eq!(first_item["suggested_action"].as_str(), Some("supersede"));
+    let replacement_key = first_item["replacement_options"][0]["review_key"]
+        .as_str()
+        .expect("replacement review key missing")
+        .to_string();
+
+    let action_resp = client
+        .post(format!("{base}/v1/admin/review/action"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "namespace": "test",
+            "review_key": first_item["review_key"].as_str().unwrap(),
+            "action": "supersede",
+            "supersede_with_review_key": replacement_key
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(action_resp.status(), 200);
+    let action_body: serde_json::Value = action_resp.json().await.unwrap();
+    assert_eq!(action_body["memory"]["status"].as_str(), Some("stale"));
+    assert_eq!(
+        action_body["replacement"]["status"].as_str(),
+        Some("active")
+    );
+
+    let first = inspect_memory(&client, &base, "test-key-integration", &first_id).await;
+    assert_eq!(first["status"].as_str(), Some("stale"));
+    assert_eq!(
+        first["review_events"][0]["action"].as_str(),
+        Some("supersede")
+    );
+    assert_eq!(
+        first["review_events"][0]["queue_kind"].as_str(),
+        Some("contested")
+    );
+
+    let second = inspect_memory(&client, &base, "test-key-integration", &second_id).await;
+    assert_eq!(second["status"].as_str(), Some("active"));
+    assert_eq!(
+        second["review_events"][0]["via"].as_str(),
+        Some("review_inbox_supersede_target")
+    );
+
+    let queue_after = review_queue(&client, &base, "test-key-integration", "test", 10).await;
+    assert_eq!(queue_after["summary"]["pending"].as_u64(), Some(0));
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_review_queue_and_confirm_use_queue_indexes() {
+    let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = true
+extract_provider = "claude"
+extract_model = "claude-test-promote"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("review-cli.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{"role": "user", "content": "Summarize the rollout checklist."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 1).await;
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+
+    let queue = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "review",
+            "queue",
+            "--namespace",
+            "test",
+            "--limit",
+            "10",
+        ])
+        .output()
+        .await
+        .expect("failed to run review queue");
+    assert!(
+        queue.status.success(),
+        "review queue failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&queue.stdout),
+        String::from_utf8_lossy(&queue.stderr)
+    );
+    let queue_stdout = String::from_utf8_lossy(&queue.stdout);
+    assert!(queue_stdout.contains("Pending review items: 1"));
+    assert!(queue_stdout.contains("[candidate -> confirm]"));
+
+    let confirm = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "review",
+            "confirm",
+            "--namespace",
+            "test",
+            "--item",
+            "1",
+        ])
+        .output()
+        .await
+        .expect("failed to run review confirm");
+    assert!(
+        confirm.status.success(),
+        "review confirm failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&confirm.stdout),
+        String::from_utf8_lossy(&confirm.stderr)
+    );
+    let confirm_stdout = String::from_utf8_lossy(&confirm.stdout);
+    assert!(confirm_stdout.contains("Applied confirm to item 1 in namespace test"));
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let queue_after = review_queue(&client, &base, "test-key-integration", "test", 10).await;
+    assert_eq!(queue_after["summary"]["pending"].as_u64(), Some(0));
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    let memory_id = export_body["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|memory| {
+            memory["content"]
+                .as_str()
+                == Some("Promotion fact alpha: use the rollout checklist before every production release.")
+        })
+        .and_then(|memory| memory["id"].as_str())
+        .expect("candidate memory should still exist")
+        .to_string();
+    let inspected = inspect_memory(&client, &base, "test-key-integration", &memory_id).await;
+    assert_eq!(
+        inspected["review_events"][0]["via"].as_str(),
+        Some("review_cli")
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_query_explain_and_proxy_debug_stats_only_expose_review_queue_summary() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#;
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        extra_sections,
+    );
+    let config_path = tmp_dir.path().join("review-summary.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Rejected review queue fact for explain and proxy summary coverage."
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+    let memory_id = store_resp.json::<serde_json::Value>().await.unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+
+    let reject_resp = client
+        .post(format!("{base}/v1/feedback"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": memory_id,
+            "action": "reject"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reject_resp.status(), 200);
+
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "rejected review queue fact",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["review_queue_summary"]["pending"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        explain_body["review_queue_summary"]["rejected"].as_u64(),
+        Some(1)
+    );
+    assert!(
+        explain_body["review_queue_summary"]["items"].is_null(),
+        "query explain should only expose summary counts"
+    );
+
+    let proxy_stats = client
+        .get(format!("{base}/proxy/v1/debug/stats"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_stats.status(), 200);
+    let proxy_body: serde_json::Value = proxy_stats.json().await.unwrap();
+    assert_eq!(
+        proxy_body["review_queue_summary"]["pending"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        proxy_body["review_queue_summary"]["rejected"].as_u64(),
+        Some(1)
+    );
+    assert!(
+        proxy_body["review_queue_summary"]["items"].is_null(),
+        "proxy debug stats should only expose summary counts"
     );
 
     child.kill().await.ok();

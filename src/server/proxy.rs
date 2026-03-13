@@ -262,6 +262,7 @@ async fn confirm_existing_extracted_fact(
         .write_seq
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     state.indexer_state.wake();
+    let _ = super::routes::refresh_review_queue_summary(state, namespace);
     state.intent_cache.invalidate_namespace(namespace).await;
 
     Ok(true)
@@ -1887,6 +1888,7 @@ async fn extract_and_store_facts(
             .proxy_facts_extracted
             .fetch_add(stored_count as u64, std::sync::atomic::Ordering::Relaxed);
         // Invalidate intent cache since new memories were added
+        let _ = super::routes::refresh_review_queue_summary(state, namespace);
         state.intent_cache.invalidate_namespace(namespace).await;
         tracing::info!(namespace, stored_count, "proxy extracted and stored facts");
     }
@@ -4120,6 +4122,7 @@ pub async fn proxy_debug_stats(State(state): State<AppState>, headers: HeaderMap
     }
 
     let metrics = &state.metrics;
+    let review_queue_summary = super::routes::cached_global_review_queue_summary(&state);
     // Do NOT expose upstream_url or internal config details
     Json(serde_json::json!({
         "proxy_enabled": state.config.proxy.enabled,
@@ -4128,6 +4131,7 @@ pub async fn proxy_debug_stats(State(state): State<AppState>, headers: HeaderMap
         "min_recall_score": state.config.proxy.min_recall_score,
         "log_privacy_mode": state.config.proxy.privacy_mode,
         "key_mappings": state.config.proxy.key_mapping.len(),
+        "review_queue_summary": review_queue_summary,
         "metrics": {
             "total_requests": metrics.proxy_requests.load(std::sync::atomic::Ordering::Relaxed),
             "memories_injected": metrics.proxy_memories_injected.load(std::sync::atomic::Ordering::Relaxed),

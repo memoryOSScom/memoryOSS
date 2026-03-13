@@ -91,6 +91,11 @@ enum Commands {
         #[arg(long, default_value_t = server::routes::DEFAULT_RECENT_ACTIVITY_LIMIT)]
         limit: usize,
     },
+    /// Review candidate, contested, and rejected memories without raw UUIDs
+    Review {
+        #[command(subcommand)]
+        command: ReviewCommands,
+    },
     /// Inspect a memory by ID
     Inspect {
         /// Memory UUID
@@ -142,6 +147,49 @@ enum Commands {
         /// Show progress without making changes
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReviewCommands {
+    /// List the current review inbox
+    Queue {
+        /// Only inspect a specific namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Maximum entries per namespace
+        #[arg(long, default_value_t = server::routes::DEFAULT_REVIEW_QUEUE_LIMIT)]
+        limit: usize,
+    },
+    /// Confirm a queue item by its inbox position
+    Confirm {
+        /// Namespace to inspect
+        #[arg(long)]
+        namespace: String,
+        /// 1-based queue position from `memoryoss review queue`
+        #[arg(long)]
+        item: usize,
+    },
+    /// Reject a queue item by its inbox position
+    Reject {
+        /// Namespace to inspect
+        #[arg(long)]
+        namespace: String,
+        /// 1-based queue position from `memoryoss review queue`
+        #[arg(long)]
+        item: usize,
+    },
+    /// Supersede a queue item with another queue item
+    Supersede {
+        /// Namespace to inspect
+        #[arg(long)]
+        namespace: String,
+        /// 1-based queue position to supersede
+        #[arg(long)]
+        item: usize,
+        /// 1-based queue position that should replace the target
+        #[arg(long = "with-item")]
+        with_item: usize,
     },
 }
 
@@ -546,6 +594,65 @@ fn render_recent_report(activities: &[(String, serde_json::Value)], limit: usize
     output
 }
 
+fn render_review_queue_report(
+    queues: &[(String, crate::server::routes::ReviewQueueView)],
+    limit: usize,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Review inbox (limit {})", limit);
+
+    for (namespace, queue) in queues {
+        let _ = writeln!(output);
+        let _ = writeln!(output, "Namespace: {}", namespace);
+        let _ = writeln!(
+            output,
+            "  Pending review items: {} (candidate={} contested={} rejected={})",
+            queue.summary.pending,
+            queue.summary.candidate,
+            queue.summary.contested,
+            queue.summary.rejected
+        );
+        let _ = writeln!(
+            output,
+            "  Suggested actions: confirm={} reject={} supersede={}",
+            queue.summary.suggested_confirm,
+            queue.summary.suggested_reject,
+            queue.summary.suggested_supersede
+        );
+        if queue.items.is_empty() {
+            let _ = writeln!(output, "  - none");
+            continue;
+        }
+
+        for (idx, item) in queue.items.iter().enumerate() {
+            let _ = writeln!(
+                output,
+                "  {}. [{} -> {}] trust={:.2} age={}h source={}",
+                idx + 1,
+                item.queue_kind,
+                item.suggested_action,
+                item.trust_score,
+                item.age_hours,
+                item.source
+            );
+            let _ = writeln!(output, "     {}", item.preview);
+            if !item.replacement_options.is_empty() {
+                let replacements = item
+                    .replacement_options
+                    .iter()
+                    .map(|option| option.preview.clone())
+                    .collect::<Vec<_>>()
+                    .join(" | ");
+                let _ = writeln!(output, "     replacements: {}", replacements);
+            }
+        }
+    }
+
+    output
+}
+
 fn run_status(
     config: &config::Config,
     config_path: &Path,
@@ -578,6 +685,122 @@ fn run_recent(
         })
         .collect();
     print!("{}", render_recent_report(&activities, limit));
+    Ok(())
+}
+
+fn run_review_queue(
+    config: &config::Config,
+    namespace_filter: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let trust_scorer = crate::security::trust::TrustScorer::new(config.trust.threshold);
+    let _ = trust_scorer.load_from_redb(doc_engine.db());
+    let namespace_memories = collect_namespace_memories(config, &doc_engine, namespace_filter)?;
+    let queues: Vec<_> = namespace_memories
+        .into_iter()
+        .map(|(namespace, memories)| {
+            let queue =
+                server::routes::build_review_queue(&memories, &trust_scorer, &namespace, limit);
+            (namespace, queue)
+        })
+        .collect();
+    print!("{}", render_review_queue_report(&queues, limit));
+    Ok(())
+}
+
+fn run_review_action(
+    config: &config::Config,
+    namespace: &str,
+    item: usize,
+    action: crate::memory::MemoryFeedbackAction,
+    supersede_with_item: Option<usize>,
+) -> anyhow::Result<()> {
+    if item == 0 {
+        anyhow::bail!("item must be >= 1");
+    }
+    if matches!(action, crate::memory::MemoryFeedbackAction::Supersede)
+        && supersede_with_item.is_none()
+    {
+        anyhow::bail!("supersede requires --with-item");
+    }
+
+    let doc_engine = open_operator_doc_engine(config)?;
+    let trust_scorer = crate::security::trust::TrustScorer::new(config.trust.threshold);
+    let _ = trust_scorer.load_from_redb(doc_engine.db());
+    let memories = doc_engine.list_all_including_archived(namespace)?;
+    let queue = server::routes::build_review_queue(&memories, &trust_scorer, namespace, usize::MAX);
+    if queue.items.is_empty() {
+        anyhow::bail!("review inbox is empty for namespace {namespace}");
+    }
+    let target = queue.items.get(item - 1).ok_or_else(|| {
+        anyhow::anyhow!(
+            "item {} is out of range ({} queue items)",
+            item,
+            queue.items.len()
+        )
+    })?;
+    let target_id =
+        server::routes::decode_review_key(&target.review_key).map_err(anyhow::Error::msg)?;
+
+    let mut memory = doc_engine
+        .get(target_id, namespace)?
+        .ok_or_else(|| anyhow::anyhow!("review target not found"))?;
+
+    let mut superseded_by = None;
+    let mut replacement_preview = None;
+    if let Some(with_item) = supersede_with_item {
+        if with_item == 0 {
+            anyhow::bail!("with-item must be >= 1");
+        }
+        let replacement = queue.items.get(with_item - 1).ok_or_else(|| {
+            anyhow::anyhow!(
+                "with-item {} is out of range ({} queue items)",
+                with_item,
+                queue.items.len()
+            )
+        })?;
+        let replacement_id = server::routes::decode_review_key(&replacement.review_key)
+            .map_err(anyhow::Error::msg)?;
+        if replacement_id == target_id {
+            anyhow::bail!("item cannot supersede itself");
+        }
+        superseded_by = Some(replacement_id);
+        replacement_preview = Some(replacement.preview.clone());
+        let mut replacement_memory = doc_engine
+            .get(replacement_id, namespace)?
+            .ok_or_else(|| anyhow::anyhow!("replacement memory not found"))?;
+        server::routes::apply_feedback_to_memory(
+            &mut replacement_memory,
+            crate::memory::MemoryFeedbackAction::Confirm,
+            None,
+            "local-review-cli",
+            "review_cli_supersede_target",
+        );
+        doc_engine.replace(&replacement_memory, "local-review-cli")?;
+    }
+
+    server::routes::apply_feedback_to_memory(
+        &mut memory,
+        action,
+        superseded_by,
+        "local-review-cli",
+        "review_cli",
+    );
+    doc_engine.replace(&memory, "local-review-cli")?;
+
+    if let Some(replacement_preview) = replacement_preview {
+        println!(
+            "Applied {} to item {} in namespace {} using replacement: {}",
+            action, item, namespace, replacement_preview
+        );
+    } else {
+        println!(
+            "Applied {} to item {} in namespace {}",
+            action, item, namespace
+        );
+    }
+
     Ok(())
 }
 
@@ -1682,6 +1905,42 @@ async fn main() -> anyhow::Result<()> {
         Commands::Recent { namespace, limit } => {
             run_recent(&config, namespace.as_deref(), limit)?;
         }
+        Commands::Review { command } => match command {
+            ReviewCommands::Queue { namespace, limit } => {
+                run_review_queue(&config, namespace.as_deref(), limit)?;
+            }
+            ReviewCommands::Confirm { namespace, item } => {
+                run_review_action(
+                    &config,
+                    &namespace,
+                    item,
+                    crate::memory::MemoryFeedbackAction::Confirm,
+                    None,
+                )?;
+            }
+            ReviewCommands::Reject { namespace, item } => {
+                run_review_action(
+                    &config,
+                    &namespace,
+                    item,
+                    crate::memory::MemoryFeedbackAction::Reject,
+                    None,
+                )?;
+            }
+            ReviewCommands::Supersede {
+                namespace,
+                item,
+                with_item,
+            } => {
+                run_review_action(
+                    &config,
+                    &namespace,
+                    item,
+                    crate::memory::MemoryFeedbackAction::Supersede,
+                    Some(with_item),
+                )?;
+            }
+        },
         Commands::Inspect { id } => {
             let uuid: uuid::Uuid = id
                 .parse()

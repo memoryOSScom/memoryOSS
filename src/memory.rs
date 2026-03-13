@@ -48,6 +48,36 @@ impl std::fmt::Display for MemoryStatus {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReviewQueueKind {
+    Candidate,
+    Contested,
+    Rejected,
+}
+
+impl std::fmt::Display for ReviewQueueKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Candidate => write!(f, "candidate"),
+            Self::Contested => write!(f, "contested"),
+            Self::Rejected => write!(f, "rejected"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryReviewEvent {
+    pub at: DateTime<Utc>,
+    pub actor: String,
+    pub action: MemoryFeedbackAction,
+    pub via: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub queue_kind: Option<ReviewQueueKind>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub superseded_by: Option<Uuid>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub id: Uuid,
@@ -109,6 +139,8 @@ pub struct Memory {
     pub last_reused_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_outcome_at: Option<DateTime<Utc>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub review_events: Vec<MemoryReviewEvent>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,6 +183,7 @@ impl Memory {
             last_injected_at: None,
             last_reused_at: None,
             last_outcome_at: None,
+            review_events: Vec::new(),
         }
     }
 
@@ -180,6 +213,108 @@ impl Memory {
 
     pub fn eligible_for_injection(&self) -> bool {
         matches!(self.status, MemoryStatus::Active) && !self.archived
+    }
+
+    pub fn review_queue_kind(&self) -> Option<ReviewQueueKind> {
+        if self.archived {
+            return None;
+        }
+        if self.reject_count > 0 && self.status != MemoryStatus::Active {
+            return Some(ReviewQueueKind::Rejected);
+        }
+        match self.status {
+            MemoryStatus::Candidate => Some(ReviewQueueKind::Candidate),
+            MemoryStatus::Contested => Some(ReviewQueueKind::Contested),
+            MemoryStatus::Active | MemoryStatus::Stale => None,
+        }
+    }
+
+    pub fn suggested_review_action(&self) -> MemoryFeedbackAction {
+        match self.review_queue_kind() {
+            Some(ReviewQueueKind::Candidate) => MemoryFeedbackAction::Confirm,
+            Some(ReviewQueueKind::Contested) => {
+                if !self.contradicts_with.is_empty() || self.superseded_by.is_some() {
+                    MemoryFeedbackAction::Supersede
+                } else {
+                    MemoryFeedbackAction::Reject
+                }
+            }
+            Some(ReviewQueueKind::Rejected) => {
+                if !self.contradicts_with.is_empty() || self.superseded_by.is_some() {
+                    MemoryFeedbackAction::Supersede
+                } else {
+                    MemoryFeedbackAction::Reject
+                }
+            }
+            None => MemoryFeedbackAction::Confirm,
+        }
+    }
+
+    pub fn apply_feedback_action(
+        &mut self,
+        action: MemoryFeedbackAction,
+        superseded_by: Option<Uuid>,
+    ) {
+        let now = Utc::now();
+        self.updated_at = now;
+        self.version = self.version.saturating_add(1);
+        self.record_feedback_outcome(action);
+
+        match action {
+            MemoryFeedbackAction::Confirm => {
+                self.status = MemoryStatus::Active;
+                self.evidence_count = self.evidence_count.saturating_add(1);
+                self.last_verified_at = Some(now);
+                self.superseded_by = None;
+                self.clear_contradictions();
+                if let Some(conf) = self.confidence {
+                    self.confidence = Some((conf + 0.25).min(1.0));
+                }
+            }
+            MemoryFeedbackAction::Reject => {
+                self.status = MemoryStatus::Contested;
+                self.superseded_by = None;
+                self.confidence = Some((self.confidence.unwrap_or(0.6) * 0.5).clamp(0.0, 1.0));
+            }
+            MemoryFeedbackAction::Supersede => {
+                self.status = MemoryStatus::Stale;
+                self.superseded_by = superseded_by;
+                self.clear_contradictions();
+            }
+        }
+    }
+
+    pub fn record_review_event(
+        &mut self,
+        actor: &str,
+        action: MemoryFeedbackAction,
+        via: &str,
+        queue_kind: Option<ReviewQueueKind>,
+        superseded_by: Option<Uuid>,
+    ) {
+        let actor = actor.trim();
+        let via = via.trim();
+        self.review_events.push(MemoryReviewEvent {
+            at: Utc::now(),
+            actor: if actor.is_empty() {
+                "unknown".to_string()
+            } else {
+                actor.to_string()
+            },
+            action,
+            via: if via.is_empty() {
+                "review".to_string()
+            } else {
+                via.to_string()
+            },
+            queue_kind,
+            superseded_by,
+        });
+        let max_events = 20usize;
+        if self.review_events.len() > max_events {
+            let excess = self.review_events.len() - max_events;
+            self.review_events.drain(0..excess);
+        }
     }
 
     pub fn mark_contradicted_by(&mut self, other_id: Uuid) -> bool {
@@ -659,6 +794,16 @@ pub enum MemoryFeedbackAction {
     Supersede,
 }
 
+impl std::fmt::Display for MemoryFeedbackAction {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Confirm => write!(f, "confirm"),
+            Self::Reject => write!(f, "reject"),
+            Self::Supersede => write!(f, "supersede"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FeedbackRequest {
     pub id: Uuid,
@@ -804,7 +949,7 @@ pub struct ConsolidateResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{Memory, MemoryStatus, memories_contradict};
+    use super::{Memory, MemoryFeedbackAction, MemoryStatus, ReviewQueueKind, memories_contradict};
 
     #[test]
     fn test_confirm_from_signal_promotes_candidate() {
@@ -901,5 +1046,55 @@ mod tests {
 
         assert!(!result.changed);
         assert!(result.archive);
+    }
+
+    #[test]
+    fn test_review_queue_kind_distinguishes_candidate_contested_and_rejected() {
+        let mut candidate = Memory::new("Candidate fact".to_string());
+        candidate.status = MemoryStatus::Candidate;
+        assert_eq!(
+            candidate.review_queue_kind(),
+            Some(ReviewQueueKind::Candidate)
+        );
+
+        let mut contested = Memory::new("Contested fact".to_string());
+        contested.status = MemoryStatus::Contested;
+        assert_eq!(
+            contested.review_queue_kind(),
+            Some(ReviewQueueKind::Contested)
+        );
+
+        let mut rejected = Memory::new("Rejected fact".to_string());
+        rejected.status = MemoryStatus::Contested;
+        rejected.reject_count = 1;
+        assert_eq!(
+            rejected.review_queue_kind(),
+            Some(ReviewQueueKind::Rejected)
+        );
+    }
+
+    #[test]
+    fn test_apply_feedback_action_and_review_event_capture_auditable_trail() {
+        let mut memory = Memory::new("Candidate fact".to_string());
+        memory.status = MemoryStatus::Candidate;
+
+        memory.apply_feedback_action(MemoryFeedbackAction::Confirm, None);
+        memory.record_review_event(
+            "operator",
+            MemoryFeedbackAction::Confirm,
+            "review_inbox",
+            Some(ReviewQueueKind::Candidate),
+            None,
+        );
+
+        assert_eq!(memory.status, MemoryStatus::Active);
+        assert_eq!(memory.confirm_count, 1);
+        assert_eq!(memory.review_events.len(), 1);
+        assert_eq!(memory.review_events[0].actor, "operator");
+        assert_eq!(memory.review_events[0].via, "review_inbox");
+        assert_eq!(
+            memory.review_events[0].queue_kind,
+            Some(ReviewQueueKind::Candidate)
+        );
     }
 }

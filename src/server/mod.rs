@@ -144,6 +144,18 @@ pub fn build_shared_state(
     }
     trust_scorer.replace_ip_allowlists(allowlists);
 
+    let mut review_queue_summaries = std::collections::HashMap::new();
+    if let Ok(namespaces) = doc_engine.list_namespaces() {
+        for namespace in namespaces {
+            if let Ok(memories) = doc_engine.list_all_including_archived(&namespace) {
+                review_queue_summaries.insert(
+                    namespace.clone(),
+                    routes::build_review_queue_summary(&memories),
+                );
+            }
+        }
+    }
+
     Arc::new(SharedState {
         config: config.clone(),
         config_path,
@@ -161,6 +173,7 @@ pub fn build_shared_state(
         intent_cache,
         prefetcher: Arc::new(crate::prefetch::SessionPrefetcher::new()),
         metrics: Arc::new(routes::MetricsCounters::new()),
+        review_queue_summaries: std::sync::RwLock::new(review_queue_summaries),
         last_messages_hash: std::sync::RwLock::new(std::collections::HashMap::new()),
     })
 }

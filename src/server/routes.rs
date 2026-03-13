@@ -10,7 +10,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 use crate::config::{Config, Role};
@@ -26,8 +26,8 @@ use crate::memory::{
     BatchRecallRequest, BatchRecallResponse, BatchStoreRequest, BatchStoreResponse,
     ConsolidateRequest, ConsolidateResponse, ConsolidationGroup, FeedbackRequest, FeedbackResponse,
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction, MemoryStatus,
-    RecallRequest, RecallResponse, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
-    contradiction_signature, contradiction_signatures_conflict, memories_contradict,
+    RecallRequest, RecallResponse, ReviewQueueKind, ScoredMemory, StoreRequest, StoreResponse,
+    UpdateRequest, contradiction_signature, contradiction_signatures_conflict, memories_contradict,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -44,6 +44,8 @@ const BACKPRESSURE_THRESHOLD: u64 = 1000;
 const FILTER_DELETE_SCAN_LIMIT: usize = 10_000;
 pub(crate) const DEFAULT_RECENT_ACTIVITY_LIMIT: usize = 10;
 const MAX_RECENT_ACTIVITY_LIMIT: usize = 100;
+pub(crate) const DEFAULT_REVIEW_QUEUE_LIMIT: usize = 20;
+const MAX_REVIEW_QUEUE_LIMIT: usize = 100;
 
 pub struct SharedState {
     pub config: Config,
@@ -62,6 +64,8 @@ pub struct SharedState {
     pub intent_cache: Arc<IntentCache>,
     pub prefetcher: Arc<SessionPrefetcher>,
     pub metrics: Arc<MetricsCounters>,
+    pub review_queue_summaries:
+        std::sync::RwLock<std::collections::HashMap<String, ReviewQueueSummary>>,
     /// Delta-turn detection: last seen messages hash per namespace.
     /// Prevents re-extracting facts from messages already processed.
     pub last_messages_hash: std::sync::RwLock<std::collections::HashMap<String, String>>,
@@ -526,6 +530,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/admin/trust-stats", get(trust_stats))
         .route("/v1/admin/lifecycle", get(lifecycle_view))
         .route("/v1/admin/recent", get(recent_activity_view))
+        .route("/v1/admin/review-queue", get(review_queue_view))
+        .route("/v1/admin/review/action", post(review_queue_action))
         .route("/v1/admin/intent-cache/stats", get(intent_cache_stats))
         .route("/v1/admin/intent-cache/flush", post(flush_intent_cache))
         .route("/v1/admin/prefetch/stats", get(prefetch_stats))
@@ -750,6 +756,250 @@ pub(crate) fn build_recent_activity(memories: &[Memory], limit: usize) -> serde_
         "feedbacks": feedbacks,
         "consolidations": consolidations,
     })
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReviewQueueReplacementOption {
+    pub(crate) review_key: String,
+    pub(crate) preview: String,
+    pub(crate) status: MemoryStatus,
+    pub(crate) relation: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReviewQueueItem {
+    pub(crate) review_key: String,
+    pub(crate) queue_kind: ReviewQueueKind,
+    pub(crate) status: MemoryStatus,
+    pub(crate) suggested_action: MemoryFeedbackAction,
+    pub(crate) available_actions: Vec<MemoryFeedbackAction>,
+    pub(crate) age_hours: i64,
+    pub(crate) preview: String,
+    pub(crate) source: String,
+    pub(crate) confidence: Option<f64>,
+    pub(crate) evidence_count: u32,
+    pub(crate) trust_score: f64,
+    pub(crate) trust_confidence_low: f64,
+    pub(crate) trust_confidence_high: f64,
+    pub(crate) low_trust: bool,
+    pub(crate) tags: Vec<String>,
+    pub(crate) agent: Option<String>,
+    pub(crate) session: Option<String>,
+    pub(crate) contradiction_count: usize,
+    pub(crate) review_event_count: usize,
+    pub(crate) last_review_at: Option<chrono::DateTime<chrono::Utc>>,
+    pub(crate) last_review_action: Option<MemoryFeedbackAction>,
+    pub(crate) replacement_options: Vec<ReviewQueueReplacementOption>,
+}
+
+#[derive(Debug, Clone, Serialize, Default)]
+pub(crate) struct ReviewQueueSummary {
+    pub(crate) pending: usize,
+    pub(crate) candidate: usize,
+    pub(crate) contested: usize,
+    pub(crate) rejected: usize,
+    pub(crate) suggested_confirm: usize,
+    pub(crate) suggested_reject: usize,
+    pub(crate) suggested_supersede: usize,
+    pub(crate) oldest_age_hours: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct ReviewQueueView {
+    pub(crate) summary: ReviewQueueSummary,
+    pub(crate) items: Vec<ReviewQueueItem>,
+}
+
+pub(crate) fn encode_review_key(id: uuid::Uuid) -> String {
+    format!("review:{id}")
+}
+
+pub(crate) fn decode_review_key(review_key: &str) -> Result<uuid::Uuid, String> {
+    let raw = review_key
+        .strip_prefix("review:")
+        .or_else(|| review_key.strip_prefix("rq:"))
+        .unwrap_or(review_key);
+    raw.parse::<uuid::Uuid>()
+        .map_err(|_| format!("invalid review key: {review_key}"))
+}
+
+fn review_available_actions(memory: &Memory) -> Vec<MemoryFeedbackAction> {
+    let mut actions = vec![MemoryFeedbackAction::Confirm, MemoryFeedbackAction::Reject];
+    if !memory.contradicts_with.is_empty() || memory.superseded_by.is_some() {
+        actions.push(MemoryFeedbackAction::Supersede);
+    }
+    actions
+}
+
+fn review_priority(kind: ReviewQueueKind) -> u8 {
+    match kind {
+        ReviewQueueKind::Contested => 0,
+        ReviewQueueKind::Rejected => 1,
+        ReviewQueueKind::Candidate => 2,
+    }
+}
+
+fn review_source_label(memory: &Memory) -> String {
+    memory
+        .source_key
+        .clone()
+        .or_else(|| memory.agent.clone())
+        .unwrap_or_else(|| "manual".to_string())
+}
+
+pub(crate) fn build_review_queue_summary(memories: &[Memory]) -> ReviewQueueSummary {
+    let now = chrono::Utc::now();
+    let mut summary = ReviewQueueSummary {
+        pending: 0,
+        candidate: 0,
+        contested: 0,
+        rejected: 0,
+        suggested_confirm: 0,
+        suggested_reject: 0,
+        suggested_supersede: 0,
+        oldest_age_hours: 0,
+    };
+
+    for memory in memories {
+        let Some(kind) = memory.review_queue_kind() else {
+            continue;
+        };
+        summary.pending += 1;
+        match kind {
+            ReviewQueueKind::Candidate => summary.candidate += 1,
+            ReviewQueueKind::Contested => summary.contested += 1,
+            ReviewQueueKind::Rejected => summary.rejected += 1,
+        }
+        match memory.suggested_review_action() {
+            MemoryFeedbackAction::Confirm => summary.suggested_confirm += 1,
+            MemoryFeedbackAction::Reject => summary.suggested_reject += 1,
+            MemoryFeedbackAction::Supersede => summary.suggested_supersede += 1,
+        }
+        let age_hours = (now - memory.lifecycle_anchor()).num_hours().max(0);
+        summary.oldest_age_hours = summary.oldest_age_hours.max(age_hours);
+    }
+
+    summary
+}
+
+pub(crate) fn merge_review_queue_summaries<'a>(
+    summaries: impl IntoIterator<Item = &'a ReviewQueueSummary>,
+) -> ReviewQueueSummary {
+    let mut merged = ReviewQueueSummary::default();
+    for summary in summaries {
+        merged.pending += summary.pending;
+        merged.candidate += summary.candidate;
+        merged.contested += summary.contested;
+        merged.rejected += summary.rejected;
+        merged.suggested_confirm += summary.suggested_confirm;
+        merged.suggested_reject += summary.suggested_reject;
+        merged.suggested_supersede += summary.suggested_supersede;
+        merged.oldest_age_hours = merged.oldest_age_hours.max(summary.oldest_age_hours);
+    }
+    merged
+}
+
+pub(crate) fn cached_review_queue_summary(
+    state: &SharedState,
+    namespace: &str,
+) -> ReviewQueueSummary {
+    state
+        .review_queue_summaries
+        .read()
+        .ok()
+        .and_then(|summaries| summaries.get(namespace).cloned())
+        .unwrap_or_default()
+}
+
+pub(crate) fn cached_global_review_queue_summary(state: &SharedState) -> ReviewQueueSummary {
+    state
+        .review_queue_summaries
+        .read()
+        .ok()
+        .map(|summaries| merge_review_queue_summaries(summaries.values()))
+        .unwrap_or_default()
+}
+
+pub(crate) fn refresh_review_queue_summary(
+    state: &SharedState,
+    namespace: &str,
+) -> anyhow::Result<()> {
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let summary = build_review_queue_summary(&memories);
+    if let Ok(mut summaries) = state.review_queue_summaries.write() {
+        summaries.insert(namespace.to_string(), summary);
+    }
+    Ok(())
+}
+
+pub(crate) fn build_review_queue(
+    memories: &[Memory],
+    trust_scorer: &TrustScorer,
+    namespace: &str,
+    limit: usize,
+) -> ReviewQueueView {
+    let now = chrono::Utc::now();
+    let summary = build_review_queue_summary(memories);
+    let lookup: std::collections::HashMap<uuid::Uuid, &Memory> =
+        memories.iter().map(|memory| (memory.id, memory)).collect();
+
+    let mut items: Vec<(u8, chrono::DateTime<chrono::Utc>, ReviewQueueItem)> = memories
+        .iter()
+        .filter_map(|memory| {
+            let queue_kind = memory.review_queue_kind()?;
+            let trust = trust_scorer.score_memory(memory, namespace);
+            let replacement_options: Vec<_> = memory
+                .contradicts_with
+                .iter()
+                .filter_map(|conflict_id| lookup.get(conflict_id).copied())
+                .take(3)
+                .map(|candidate| ReviewQueueReplacementOption {
+                    review_key: encode_review_key(candidate.id),
+                    preview: preview_text(&candidate.content, 80),
+                    status: candidate.status,
+                    relation: "contradiction",
+                })
+                .collect();
+            let last_review = memory.review_events.last();
+            Some((
+                review_priority(queue_kind),
+                memory.updated_at,
+                ReviewQueueItem {
+                    review_key: encode_review_key(memory.id),
+                    queue_kind,
+                    status: memory.status,
+                    suggested_action: memory.suggested_review_action(),
+                    available_actions: review_available_actions(memory),
+                    age_hours: (now - memory.lifecycle_anchor()).num_hours().max(0),
+                    preview: preview_text(&memory.content, 100),
+                    source: review_source_label(memory),
+                    confidence: memory.confidence,
+                    evidence_count: memory.evidence_count,
+                    trust_score: trust.score,
+                    trust_confidence_low: trust.confidence_low,
+                    trust_confidence_high: trust.confidence_high,
+                    low_trust: trust.low_trust,
+                    tags: memory.tags.clone(),
+                    agent: memory.agent.clone(),
+                    session: memory.session.clone(),
+                    contradiction_count: memory.contradicts_with.len(),
+                    review_event_count: memory.review_events.len(),
+                    last_review_at: last_review.map(|event| event.at),
+                    last_review_action: last_review.map(|event| event.action),
+                    replacement_options,
+                },
+            ))
+        })
+        .collect();
+
+    items.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| b.1.cmp(&a.1)));
+    let items = items
+        .into_iter()
+        .take(limit.max(1))
+        .map(|(_, _, item)| item)
+        .collect();
+
+    ReviewQueueView { summary, items }
 }
 
 /// AGPL-3.0 Section 13 compliance: provide source code location to network users.
@@ -1148,6 +1398,7 @@ async fn store(
         .group_committer
         .store(memory.clone(), claims.sub.clone())
         .await?;
+    refresh_review_queue_summary(&state, &namespace)?;
 
     // Invalidate intent cache for this namespace (data changed)
     state.intent_cache.invalidate_namespace(&namespace).await;
@@ -1360,6 +1611,7 @@ async fn store_batch(
 
     // Invalidate intent cache for affected namespace (consistent with single store)
     for touched in &touched_namespaces {
+        refresh_review_queue_summary(&state, touched)?;
         state.intent_cache.invalidate_namespace(touched).await;
     }
 
@@ -1822,38 +2074,16 @@ async fn consolidate(
     Ok(Json(response).into_response())
 }
 
-fn apply_feedback_to_memory(
+pub(crate) fn apply_feedback_to_memory(
     memory: &mut Memory,
     action: MemoryFeedbackAction,
     superseded_by: Option<uuid::Uuid>,
+    actor: &str,
+    via: &str,
 ) {
-    let now = chrono::Utc::now();
-    memory.updated_at = now;
-    memory.version += 1;
-    memory.record_feedback_outcome(action);
-
-    match action {
-        MemoryFeedbackAction::Confirm => {
-            memory.status = MemoryStatus::Active;
-            memory.evidence_count = memory.evidence_count.saturating_add(1);
-            memory.last_verified_at = Some(now);
-            memory.superseded_by = None;
-            memory.clear_contradictions();
-            if let Some(conf) = memory.confidence {
-                memory.confidence = Some((conf + 0.25).min(1.0));
-            }
-        }
-        MemoryFeedbackAction::Reject => {
-            memory.status = MemoryStatus::Contested;
-            memory.superseded_by = None;
-            memory.confidence = Some((memory.confidence.unwrap_or(0.6) * 0.5).clamp(0.0, 1.0));
-        }
-        MemoryFeedbackAction::Supersede => {
-            memory.status = MemoryStatus::Stale;
-            memory.superseded_by = superseded_by;
-            memory.clear_contradictions();
-        }
-    }
+    let queue_kind = memory.review_queue_kind();
+    memory.apply_feedback_action(action, superseded_by);
+    memory.record_review_event(actor, action, via, queue_kind, superseded_by);
 }
 
 async fn feedback(
@@ -1894,7 +2124,13 @@ async fn feedback(
         ));
     }
 
-    apply_feedback_to_memory(&mut memory, req.action, req.superseded_by);
+    apply_feedback_to_memory(
+        &mut memory,
+        req.action,
+        req.superseded_by,
+        &claims.sub,
+        "feedback_api",
+    );
     state.doc_engine.replace(&memory, &claims.sub)?;
     state.trust_scorer.record_feedback(
         memory.source_key.as_deref(),
@@ -1903,7 +2139,13 @@ async fn feedback(
 
     if let Some(mut target) = replacement {
         if matches!(req.action, MemoryFeedbackAction::Supersede) {
-            apply_feedback_to_memory(&mut target, MemoryFeedbackAction::Confirm, None);
+            apply_feedback_to_memory(
+                &mut target,
+                MemoryFeedbackAction::Confirm,
+                None,
+                &claims.sub,
+                "feedback_api_supersede_target",
+            );
             state.doc_engine.replace(&target, &claims.sub)?;
             state
                 .trust_scorer
@@ -1916,6 +2158,7 @@ async fn feedback(
         .write_seq
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     state.indexer_state.wake();
+    refresh_review_queue_summary(&state, namespace)?;
     state.intent_cache.invalidate_namespace(namespace).await;
 
     Ok(Json(FeedbackResponse {
@@ -1978,6 +2221,8 @@ async fn update(
                 std::sync::atomic::Ordering::Relaxed,
             );
             state.indexer_state.wake();
+            refresh_review_queue_summary(&state, &namespace)?;
+            state.intent_cache.invalidate_namespace(&namespace).await;
             Ok(Json(json!({
                 "id": memory.id,
                 "version": memory.version,
@@ -2053,6 +2298,7 @@ async fn forget(
     if deleted > 0 {
         state.indexer_state.wake();
         // Invalidate intent cache (data changed)
+        refresh_review_queue_summary(&state, namespace)?;
         state.intent_cache.invalidate_namespace(namespace).await;
     }
 
@@ -2338,6 +2584,7 @@ async fn query_explain(
         .iter()
         .map(|(id, score)| json!({"id": id, "score": score}))
         .collect();
+    let review_queue_summary = cached_review_queue_summary(&state, namespace);
 
     Ok(Json(json!({
         "query": req.query,
@@ -2364,6 +2611,7 @@ async fn query_explain(
         "vector_results": vector_explain,
         "fts_results": fts_explain,
         "exact_results": exact_explain,
+        "review_queue_summary": review_queue_summary,
         "final_results": explained,
     }))
     .into_response())
@@ -2451,6 +2699,9 @@ async fn inspect_memory(
                 "last_injected_at": mem.last_injected_at,
                 "last_reused_at": mem.last_reused_at,
                 "last_outcome_at": mem.last_outcome_at,
+                "review_queue_kind": mem.review_queue_kind(),
+                "suggested_review_action": mem.suggested_review_action(),
+                "review_events": mem.review_events,
             }))
             .into_response())
         }
@@ -3069,6 +3320,24 @@ struct RecentActivityParams {
     limit: Option<usize>,
 }
 
+#[derive(Debug, Deserialize)]
+struct ReviewQueueParams {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ReviewActionRequest {
+    #[serde(default)]
+    namespace: Option<String>,
+    review_key: String,
+    action: MemoryFeedbackAction,
+    #[serde(default)]
+    supersede_with_review_key: Option<String>,
+}
+
 /// GET /v1/admin/lifecycle — Status breakdown and latest memories by lifecycle state.
 async fn lifecycle_view(
     State(state): State<AppState>,
@@ -3180,6 +3449,149 @@ async fn recent_activity_view(
         "namespace": namespace,
         "limit": limit,
         "recent": recent,
+    }))
+    .into_response())
+}
+
+/// GET /v1/admin/review-queue — candidate/contested/rejected memories with suggested actions.
+async fn review_queue_view(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<ReviewQueueParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for review queue"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_REVIEW_QUEUE_LIMIT)
+        .clamp(1, MAX_REVIEW_QUEUE_LIMIT);
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let queue = build_review_queue(&memories, &state.trust_scorer, namespace, limit);
+
+    Ok(Json(json!({
+        "namespace": namespace,
+        "limit": limit,
+        "summary": queue.summary,
+        "items": queue.items,
+    }))
+    .into_response())
+}
+
+/// POST /v1/admin/review/action — review queue action using review keys instead of raw UUIDs.
+async fn review_queue_action(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<ReviewActionRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for review actions"));
+    }
+
+    let namespace = enforce_namespace(&claims, req.namespace.as_deref())?;
+    let review_id =
+        decode_review_key(&req.review_key).map_err(|msg| AppError::BadRequest(msg.to_string()))?;
+    let superseded_by = req
+        .supersede_with_review_key
+        .as_deref()
+        .map(decode_review_key)
+        .transpose()
+        .map_err(|msg| AppError::BadRequest(msg.to_string()))?;
+
+    if superseded_by == Some(review_id) {
+        return Err(AppError::BadRequest(
+            "memory cannot supersede itself".to_string(),
+        ));
+    }
+    if matches!(req.action, MemoryFeedbackAction::Supersede) && superseded_by.is_none() {
+        return Err(AppError::BadRequest(
+            "supersede action requires supersede_with_review_key".to_string(),
+        ));
+    }
+
+    let mut memory = state
+        .doc_engine
+        .get(review_id, namespace)?
+        .ok_or_else(|| AppError::NotFound("review memory not found".to_string()))?;
+    let mut replacement = if let Some(target_id) = superseded_by {
+        Some(
+            state
+                .doc_engine
+                .get(target_id, namespace)?
+                .ok_or_else(|| AppError::NotFound("replacement memory not found".to_string()))?,
+        )
+    } else {
+        None
+    };
+    let queue_kind_before = memory.review_queue_kind();
+
+    apply_feedback_to_memory(
+        &mut memory,
+        req.action,
+        superseded_by,
+        &claims.sub,
+        "review_inbox",
+    );
+    state.doc_engine.replace(&memory, &claims.sub)?;
+    state.trust_scorer.record_feedback(
+        memory.source_key.as_deref(),
+        matches!(req.action, MemoryFeedbackAction::Confirm),
+    );
+
+    let mut replacement_review_event_count = None;
+    if let Some(target) = replacement.as_mut()
+        && matches!(req.action, MemoryFeedbackAction::Supersede)
+    {
+        apply_feedback_to_memory(
+            target,
+            MemoryFeedbackAction::Confirm,
+            None,
+            &claims.sub,
+            "review_inbox_supersede_target",
+        );
+        state.doc_engine.replace(target, &claims.sub)?;
+        state
+            .trust_scorer
+            .record_feedback(target.source_key.as_deref(), true);
+        replacement_review_event_count = Some(target.review_events.len());
+    }
+
+    state
+        .indexer_state
+        .write_seq
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    state.indexer_state.wake();
+    refresh_review_queue_summary(&state, namespace)?;
+    state.intent_cache.invalidate_namespace(namespace).await;
+
+    Ok(Json(json!({
+        "review_key": req.review_key,
+        "queue_kind_before": queue_kind_before,
+        "action": req.action,
+        "namespace": namespace,
+        "memory": {
+            "review_key": encode_review_key(memory.id),
+            "status": memory.status,
+            "confidence": memory.confidence,
+            "evidence_count": memory.evidence_count,
+            "superseded_by": memory.superseded_by,
+            "contradicts_with": memory.contradicts_with,
+            "confirm_count": memory.confirm_count,
+            "reject_count": memory.reject_count,
+            "supersede_count": memory.supersede_count,
+            "review_event_count": memory.review_events.len(),
+            "last_review": memory.review_events.last(),
+        },
+        "replacement": replacement.as_ref().map(|target| json!({
+            "review_key": encode_review_key(target.id),
+            "status": target.status,
+            "review_event_count": replacement_review_event_count.unwrap_or(target.review_events.len()),
+            "last_review": target.review_events.last(),
+        })),
     }))
     .into_response())
 }
