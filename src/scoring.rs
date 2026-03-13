@@ -251,6 +251,379 @@ pub fn detect_task_context(query: &str) -> Option<TaskContext> {
     })
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IdentifierKind {
+    Path,
+    Endpoint,
+    EnvVar,
+    BranchPattern,
+    Commit,
+    Policy,
+}
+
+impl IdentifierKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Path => "path",
+            Self::Endpoint => "endpoint",
+            Self::EnvVar => "env_var",
+            Self::BranchPattern => "branch_pattern",
+            Self::Commit => "commit",
+            Self::Policy => "policy",
+        }
+    }
+}
+
+pub(crate) fn identifier_matches_kind(identifier: &str, kind: IdentifierKind) -> bool {
+    let lowered = normalize_identifier_text(identifier);
+    match kind {
+        IdentifierKind::Path => {
+            lowered.starts_with('/')
+                || lowered.contains(".rs")
+                || lowered.contains(".toml")
+                || lowered.contains(".json")
+                || lowered.contains(".yaml")
+                || lowered.contains(".yml")
+        }
+        IdentifierKind::Endpoint => {
+            lowered.contains("/v1/")
+                || lowered.contains("/proxy/")
+                || lowered.starts_with("http://")
+                || lowered.starts_with("https://")
+        }
+        IdentifierKind::EnvVar => contains_env_var(identifier),
+        IdentifierKind::BranchPattern => {
+            lowered.starts_with("feat/") || lowered.starts_with("fix/")
+        }
+        IdentifierKind::Commit => contains_hex_commit(&lowered),
+        IdentifierKind::Policy => false,
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IdentifierRouteProfile {
+    pub active: bool,
+    pub identifiers: Vec<String>,
+    pub kinds: Vec<IdentifierKind>,
+    pub matched_terms: Vec<String>,
+    pub focus_terms: Vec<String>,
+}
+
+impl IdentifierRouteProfile {
+    pub fn labels(&self) -> Vec<&'static str> {
+        self.kinds.iter().map(|kind| kind.as_str()).collect()
+    }
+}
+
+fn normalize_identifier_text(text: &str) -> String {
+    text.trim().to_lowercase()
+}
+
+fn tokenized_identifier_parts(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if ch.is_alphanumeric() {
+            current.push(ch.to_ascii_lowercase());
+        } else if !current.is_empty() {
+            if current.len() >= 2 {
+                tokens.push(std::mem::take(&mut current));
+            } else {
+                current.clear();
+            }
+        }
+    }
+    if current.len() >= 2 {
+        tokens.push(current);
+    }
+    tokens.sort_unstable();
+    tokens.dedup();
+    tokens
+}
+
+fn contains_hex_commit(text: &str) -> bool {
+    text.split(|ch: char| !ch.is_ascii_hexdigit())
+        .any(|token| token.len() >= 7 && token.len() <= 40)
+}
+
+fn contains_env_var(text: &str) -> bool {
+    text.split(|ch: char| !ch.is_ascii_alphanumeric() && ch != '_')
+        .any(|token| {
+            token.len() >= 6
+                && token.contains('_')
+                && token
+                    .chars()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == '_')
+        })
+}
+
+fn query_keyword_present(query: &str, keywords: &[&str]) -> Vec<String> {
+    collect_context_hits(query, keywords)
+}
+
+pub fn detect_identifier_route(query: &str) -> Option<IdentifierRouteProfile> {
+    let identifiers = extract_identifiers(query);
+    let mut kinds = Vec::new();
+    let mut matched_terms = Vec::new();
+    let normalized = normalize_task_text(query);
+    let padded = format!(" {normalized} ");
+
+    let path_terms = query_keyword_present(
+        query,
+        &[
+            "path",
+            "paths",
+            "file",
+            "config",
+            "binary",
+            "directory",
+            "location",
+        ],
+    );
+    if !path_terms.is_empty()
+        || identifiers.iter().any(|ident| {
+            let lowered = ident.to_lowercase();
+            lowered.starts_with('/') || lowered.contains(".rs") || lowered.contains(".toml")
+        })
+    {
+        kinds.push(IdentifierKind::Path);
+        matched_terms.extend(path_terms);
+    }
+
+    let endpoint_terms = query_keyword_present(
+        query,
+        &[
+            "endpoint",
+            "endpoints",
+            "route",
+            "routes",
+            "url",
+            "urls",
+            "api",
+        ],
+    );
+    if !endpoint_terms.is_empty()
+        || identifiers.iter().any(|ident| {
+            let lowered = ident.to_lowercase();
+            lowered.contains("/v1/") || lowered.contains("http://") || lowered.contains("https://")
+        })
+    {
+        kinds.push(IdentifierKind::Endpoint);
+        matched_terms.extend(endpoint_terms);
+    }
+
+    let env_terms = query_keyword_present(
+        query,
+        &[
+            "env",
+            "environment variable",
+            "environment variables",
+            "variable",
+            "variables",
+            "export",
+        ],
+    );
+    if !env_terms.is_empty() || identifiers.iter().any(|ident| ident.contains('_')) {
+        kinds.push(IdentifierKind::EnvVar);
+        matched_terms.extend(env_terms);
+    }
+
+    let branch_terms = query_keyword_present(query, &["branch", "branches", "branching"]);
+    if !branch_terms.is_empty()
+        || identifiers.iter().any(|ident| {
+            let lowered = ident.to_lowercase();
+            lowered.starts_with("feat/") || lowered.starts_with("fix/")
+        })
+    {
+        kinds.push(IdentifierKind::BranchPattern);
+        matched_terms.extend(branch_terms);
+    }
+
+    let commit_terms = query_keyword_present(query, &["commit", "sha", "revision", "hash"]);
+    if !commit_terms.is_empty()
+        || identifiers
+            .iter()
+            .any(|ident| contains_hex_commit(&normalize_identifier_text(ident)))
+    {
+        kinds.push(IdentifierKind::Commit);
+        matched_terms.extend(commit_terms);
+    }
+
+    let policy_terms = query_keyword_present(
+        query,
+        &[
+            "policy",
+            "rule",
+            "rules",
+            "preference",
+            "preferences",
+            "convention",
+            "conventions",
+            "canonical",
+            "source of truth",
+        ],
+    );
+    if !policy_terms.is_empty()
+        || (padded.contains(" required ")
+            || padded.contains(" never ")
+            || padded.contains(" must ")
+            || padded.contains(" canonical ")
+            || padded.contains(" source of truth "))
+    {
+        kinds.push(IdentifierKind::Policy);
+        matched_terms.extend(policy_terms);
+    }
+
+    kinds.sort_by_key(|kind| kind.as_str());
+    kinds.dedup();
+    matched_terms.sort_unstable();
+    matched_terms.dedup();
+
+    if identifiers.is_empty() && kinds.is_empty() {
+        return None;
+    }
+
+    let matched_terms_set: std::collections::HashSet<&str> =
+        matched_terms.iter().map(String::as_str).collect();
+    let stop_terms = [
+        "which", "what", "should", "there", "here", "through", "after", "before", "about", "proxy",
+        "mode", "messages", "message", "store", "stores",
+    ];
+    let mut focus_terms: Vec<String> = normalize_task_text(query)
+        .split_whitespace()
+        .filter(|term| term.len() >= 5)
+        .filter(|term| !matched_terms_set.contains(*term))
+        .filter(|term| !stop_terms.contains(term))
+        .map(ToString::to_string)
+        .collect();
+    focus_terms.sort_unstable();
+    focus_terms.dedup();
+
+    Some(IdentifierRouteProfile {
+        active: true,
+        identifiers,
+        kinds,
+        matched_terms,
+        focus_terms,
+    })
+}
+
+pub(crate) fn content_matches_identifier_kind(content: &str, kind: IdentifierKind) -> bool {
+    let lowered = normalize_identifier_text(content);
+    match kind {
+        IdentifierKind::Path => {
+            lowered.contains('/')
+                || lowered.contains(".rs")
+                || lowered.contains(".toml")
+                || lowered.contains(".json")
+                || lowered.contains(".yaml")
+                || lowered.contains(".yml")
+        }
+        IdentifierKind::Endpoint => {
+            lowered.contains("/v1/")
+                || lowered.contains("/proxy/")
+                || lowered.contains("http://")
+                || lowered.contains("https://")
+        }
+        IdentifierKind::EnvVar => contains_env_var(content),
+        IdentifierKind::BranchPattern => {
+            lowered.contains("feat/") || lowered.contains("fix/") || lowered.contains("<ticket>")
+        }
+        IdentifierKind::Commit => contains_hex_commit(&lowered),
+        IdentifierKind::Policy => {
+            lowered.contains(" must ")
+                || lowered.starts_with("must ")
+                || lowered.contains(" never ")
+                || lowered.starts_with("never ")
+                || lowered.contains(" always ")
+                || lowered.contains(" should ")
+                || lowered.contains(" do not ")
+                || lowered.contains(" don't ")
+                || lowered.contains("source of truth")
+                || lowered.contains("canonical")
+                || lowered.contains("preferred")
+                || lowered.contains("required")
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct IdentifierRouteSignal {
+    literal_match_count: usize,
+    fragment_match_count: usize,
+    kind_match_count: usize,
+    focus_term_match_count: usize,
+    partial_literal_only: bool,
+    matched_literals: Vec<String>,
+    matched_kinds: Vec<IdentifierKind>,
+    matched_focus_terms: Vec<String>,
+}
+
+fn analyze_identifier_signal(
+    memory: &crate::memory::Memory,
+    route: &IdentifierRouteProfile,
+) -> IdentifierRouteSignal {
+    let text = format!(
+        "{} {} {} {} {}",
+        memory.content,
+        memory.tags.join(" "),
+        memory.agent.as_deref().unwrap_or(""),
+        memory.session.as_deref().unwrap_or(""),
+        memory.source_key.as_deref().unwrap_or("")
+    );
+    let lowered = normalize_identifier_text(&text);
+    let mut signal = IdentifierRouteSignal::default();
+
+    for ident in &route.identifiers {
+        let normalized_ident = normalize_identifier_text(ident);
+        if normalized_ident.len() < 3 {
+            continue;
+        }
+        if lowered.contains(&normalized_ident) {
+            signal.literal_match_count += 1;
+            signal.matched_literals.push(normalized_ident);
+            continue;
+        }
+
+        let parts = tokenized_identifier_parts(&normalized_ident);
+        if parts.len() >= 2 {
+            let matched = parts
+                .iter()
+                .filter(|part| lowered.contains(part.as_str()))
+                .count();
+            if matched >= parts.len().min(3) {
+                signal.fragment_match_count += 1;
+            }
+        }
+    }
+
+    signal.partial_literal_only =
+        signal.literal_match_count == 0 && signal.fragment_match_count > 0;
+
+    for kind in &route.kinds {
+        if content_matches_identifier_kind(&text, *kind) {
+            signal.kind_match_count += 1;
+            signal.matched_kinds.push(*kind);
+        }
+    }
+
+    for focus_term in &route.focus_terms {
+        if lowered.contains(focus_term) {
+            signal.focus_term_match_count += 1;
+            signal.matched_focus_terms.push(focus_term.clone());
+        }
+    }
+
+    signal.matched_literals.sort_unstable();
+    signal.matched_literals.dedup();
+    signal.matched_kinds.sort_by_key(|kind| kind.as_str());
+    signal.matched_kinds.dedup();
+    signal.matched_focus_terms.sort_unstable();
+    signal.matched_focus_terms.dedup();
+    signal
+}
+
 fn task_context_boost(
     memory: &crate::memory::Memory,
     task_context: &TaskContext,
@@ -567,18 +940,25 @@ fn build_gate_summary(
                 RetrievalConfidenceDecision::Abstain
             }
         } else {
+            let top_has_identifier = has_strong_identifier_provenance(&top_entry.provenance);
+            let second_has_identifier =
+                second.is_some_and(|other| has_strong_identifier_provenance(&other.provenance));
             if (qualified.len() >= 2 || (entries.len() > 1 && looks_like_next_step_query(query)))
                 && is_under_specified_query(query)
             {
                 reasons.push("query_under_specified".to_string());
             }
-            if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP) {
+            if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP)
+                && (!top_has_identifier || second_has_identifier)
+            {
                 reasons.push("top_candidates_too_close".to_string());
             }
             if top_entry.max_channel_score < GATE_LOW_SUPPORT_MAX_CHANNEL {
                 reasons.push("top_candidate_low_channel_support".to_string());
             }
-            if top_entry.final_score < min_recall_score + GATE_WEAK_MARGIN {
+            if top_entry.final_score < min_recall_score + GATE_WEAK_MARGIN
+                && !has_strong_identifier_provenance(&top_entry.provenance)
+            {
                 reasons.push("top_candidate_near_threshold".to_string());
             }
             if top_entry.memory.confidence.unwrap_or(1.0) < GATE_LOW_CONFIDENCE_THRESHOLD
@@ -621,6 +1001,18 @@ fn build_gate_summary(
         top_trust_score: top.map(|entry| entry.trust_score),
         top_confidence: top.map(|entry| entry.memory.confidence.unwrap_or(1.0)),
     }
+}
+
+fn has_strong_identifier_provenance(provenance: &[String]) -> bool {
+    provenance.iter().any(|entry| {
+        entry.starts_with("identifier_match:")
+            || entry == "identifier_kind_match:endpoint"
+            || entry == "identifier_kind_match:env_var"
+            || entry == "identifier_kind_match:path"
+            || entry == "identifier_kind_match:branch_pattern"
+            || entry == "identifier_kind_match:commit"
+            || entry == "identifier_kind_match:policy"
+    })
 }
 
 pub fn apply_retrieval_confidence_gate(
@@ -688,15 +1080,22 @@ pub fn apply_scored_retrieval_confidence_gate(
                 RetrievalConfidenceDecision::Abstain
             }
         } else {
+            let top_has_identifier = has_strong_identifier_provenance(&top_entry.provenance);
+            let second_has_identifier =
+                second.is_some_and(|other| has_strong_identifier_provenance(&other.provenance));
             if (qualified.len() >= 2 || (memories.len() > 1 && looks_like_next_step_query(query)))
                 && is_under_specified_query(query)
             {
                 reasons.push("query_under_specified".to_string());
             }
-            if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP) {
+            if score_gap.is_some_and(|gap| gap < GATE_AMBIGUOUS_GAP)
+                && (!top_has_identifier || second_has_identifier)
+            {
                 reasons.push("top_candidates_too_close".to_string());
             }
-            if top_entry.score < min_recall_score + GATE_WEAK_MARGIN {
+            if top_entry.score < min_recall_score + GATE_WEAK_MARGIN
+                && !has_strong_identifier_provenance(&top_entry.provenance)
+            {
                 reasons.push("top_candidate_near_threshold".to_string());
             }
             if top_entry.memory.confidence.unwrap_or(1.0) < GATE_LOW_CONFIDENCE_THRESHOLD
@@ -793,6 +1192,8 @@ pub struct MergeOptions {
     pub diversity_factor: f64,
     /// Optional lightweight task context classifier used for re-ranking.
     pub task_context: Option<TaskContext>,
+    /// Optional identifier-first lexical routing profile for code-, path-, and policy-heavy queries.
+    pub identifier_route: Option<IdentifierRouteProfile>,
 }
 
 impl Default for MergeOptions {
@@ -808,6 +1209,7 @@ impl Default for MergeOptions {
             agent_filter: None,
             diversity_factor: 0.0,
             task_context: None,
+            identifier_route: None,
         }
     }
 }
@@ -901,13 +1303,11 @@ pub fn exact_match_search(
     // Build a tantivy phrase query for each identifier
     let mut results: HashMap<Uuid, f32> = HashMap::new();
     for ident in identifiers {
-        // Use tantivy's query syntax: exact phrase in quotes
-        let phrase_query = format!("\"{}\"", ident.replace('"', ""));
-        if let Ok(hits) = fts_engine.search(&phrase_query, limit) {
+        let specificity = identifier_specificity(ident);
+        if let Ok(hits) = fts_engine.search_identifier(ident, limit) {
             for (uuid, score) in hits {
                 let entry = results.entry(uuid).or_insert(0.0);
-                // Boost: exact identifier matches get high score
-                *entry = (*entry + score).min(f32::MAX);
+                *entry = (*entry).max(score * specificity);
             }
         }
     }
@@ -932,6 +1332,47 @@ const FTS_ABS_FLOOR: f32 = 1.0;
 /// Maximum IDF boost multiplier to prevent rare-term domination.
 const MAX_IDF_BOOST: f64 = 1.5;
 
+fn identifier_specificity(identifier: &str) -> f32 {
+    let lowered = normalize_identifier_text(identifier);
+    if lowered.contains("/v1/") || lowered.contains("http://") || lowered.contains("https://") {
+        1.65
+    } else if lowered.starts_with('/') || lowered.contains(".rs") || lowered.contains(".toml") {
+        1.5
+    } else if contains_env_var(identifier) {
+        1.45
+    } else if lowered.starts_with("feat/") || lowered.starts_with("fix/") {
+        1.35
+    } else if contains_hex_commit(&lowered) {
+        1.5
+    } else if lowered.contains("policy") || lowered.contains("preference") {
+        1.2
+    } else {
+        1.0
+    }
+}
+
+fn route_adjusted_channel_weights(
+    weights: &ScoringWeights,
+    identifier_route: Option<&IdentifierRouteProfile>,
+) -> (f64, f64, f64) {
+    let mut vector = weights.vector;
+    let mut fts = weights.fts;
+    let mut exact = weights.exact;
+    if identifier_route.is_some_and(|route| route.active) {
+        vector *= 0.68;
+        fts *= 1.2;
+        exact *= 1.55;
+    }
+    let original_total = weights.vector + weights.fts + weights.exact;
+    let routed_total = vector + fts + exact;
+    let scale = if routed_total > 0.0 && original_total > 0.0 {
+        original_total / routed_total
+    } else {
+        1.0
+    };
+    (vector * scale, fts * scale, exact * scale)
+}
+
 /// Core scoring and explanation function.
 /// Takes raw results from vector, FTS, and exact-match channels,
 /// merges them with configurable weights, applies IDF boost, precision gate,
@@ -953,6 +1394,9 @@ pub fn score_and_explain(
     options: &MergeOptions,
 ) -> Vec<ScoreExplainEntry> {
     let weights = &options.weights;
+    let identifier_route = options.identifier_route.as_ref();
+    let (vector_weight, fts_weight, exact_weight) =
+        route_adjusted_channel_weights(weights, identifier_route);
 
     // P1+P6: Floor-based normalization with cold-start guard.
     // If a channel has fewer than MIN_CHANNEL_RESULTS results, its scores are zeroed
@@ -967,6 +1411,12 @@ pub fn score_and_explain(
 
     let vec_reliable = vector_results.len() >= MIN_CHANNEL_RESULTS;
     let fts_reliable = fts_results.len() >= MIN_CHANNEL_RESULTS;
+    let identifier_route_has_strong_support = identifier_route.is_some_and(|route| {
+        route.active
+            && (!route.identifiers.is_empty()
+                || exact_max > 0.0
+                || fts_results.len() >= MIN_CHANNEL_RESULTS)
+    });
 
     let mut channel_map: HashMap<Uuid, ChannelScores> = HashMap::new();
 
@@ -1053,9 +1503,9 @@ pub fn score_and_explain(
 
             // Weighted score
             let mut provenance = channels.provenance.clone();
-            let base_score = channels.vector * weights.vector
-                + channels.fts * weights.fts
-                + channels.exact * weights.exact;
+            let base_score = channels.vector * vector_weight
+                + channels.fts * fts_weight
+                + channels.exact * exact_weight;
 
             // P2: Recency with 7-day time scale (consistent with trust recency)
             let age_hours = (chrono::Utc::now() - memory.created_at).num_hours().max(0) as f64;
@@ -1076,6 +1526,107 @@ pub fn score_and_explain(
             }
 
             let mut final_score = base_score + recency + task_boost;
+
+            if let Some(route) = identifier_route {
+                let signal = analyze_identifier_signal(&memory, route);
+                if signal.literal_match_count > 0 {
+                    final_score += 0.08 * signal.literal_match_count.min(2) as f64;
+                    for literal in signal.matched_literals.iter().take(2) {
+                        let label = literal.chars().take(48).collect::<String>();
+                        let provenance_signal = format!("identifier_match:{label}");
+                        if !provenance.contains(&provenance_signal) {
+                            provenance.push(provenance_signal);
+                        }
+                    }
+                }
+                if signal.kind_match_count > 0 {
+                    let kind_bonus: f64 = signal
+                        .matched_kinds
+                        .iter()
+                        .map(|kind| match kind {
+                            IdentifierKind::EnvVar
+                            | IdentifierKind::Endpoint
+                            | IdentifierKind::Path => 0.07,
+                            IdentifierKind::BranchPattern | IdentifierKind::Commit => 0.055,
+                            IdentifierKind::Policy => 0.04,
+                        })
+                        .sum::<f64>()
+                        .min(0.16);
+                    final_score += kind_bonus;
+                    for kind in signal.matched_kinds.iter().take(2) {
+                        let provenance_signal = format!("identifier_kind_match:{}", kind.as_str());
+                        if !provenance.contains(&provenance_signal) {
+                            provenance.push(provenance_signal);
+                        }
+                    }
+                }
+                if signal.focus_term_match_count > 0 {
+                    final_score += 0.03 * signal.focus_term_match_count.min(3) as f64;
+                    for term in signal.matched_focus_terms.iter().take(2) {
+                        let provenance_signal = format!("identifier_focus_match:{term}");
+                        if !provenance.contains(&provenance_signal) {
+                            provenance.push(provenance_signal);
+                        }
+                    }
+                }
+
+                let has_lexical_support = channels.exact > 0.0
+                    || channels.fts >= 0.2
+                    || signal.literal_match_count > 0
+                    || signal.kind_match_count > 0
+                    || signal.focus_term_match_count > 0;
+
+                if signal.partial_literal_only {
+                    final_score *= 0.82;
+                    if !provenance
+                        .iter()
+                        .any(|entry| entry == "identifier_route:ambiguous_fragment")
+                    {
+                        provenance.push("identifier_route:ambiguous_fragment".to_string());
+                    }
+                }
+
+                if identifier_route_has_strong_support && !has_lexical_support {
+                    final_score *= 0.64;
+                    if !provenance
+                        .iter()
+                        .any(|entry| entry == "identifier_route:vector_demoted")
+                    {
+                        provenance.push("identifier_route:vector_demoted".to_string());
+                    }
+                } else if !route.identifiers.is_empty()
+                    && signal.literal_match_count == 0
+                    && signal.fragment_match_count == 0
+                    && channels.exact == 0.0
+                {
+                    final_score *= 0.78;
+                    if !provenance
+                        .iter()
+                        .any(|entry| entry == "identifier_route:missing_literal")
+                    {
+                        provenance.push("identifier_route:missing_literal".to_string());
+                    }
+                } else if route.identifiers.is_empty()
+                    && !route.kinds.is_empty()
+                    && signal.kind_match_count == 0
+                {
+                    final_score *= 0.65;
+                    if !provenance
+                        .iter()
+                        .any(|entry| entry == "identifier_route:kind_mismatch")
+                    {
+                        provenance.push("identifier_route:kind_mismatch".to_string());
+                    }
+                } else if !route.focus_terms.is_empty() && signal.focus_term_match_count == 0 {
+                    final_score *= 0.78;
+                    if !provenance
+                        .iter()
+                        .any(|entry| entry == "identifier_route:focus_mismatch")
+                    {
+                        provenance.push("identifier_route:focus_mismatch".to_string());
+                    }
+                }
+            }
 
             // P4: Quadratic confidence penalty (harsher on low-confidence proxy-extracted memories)
             // conf=0.3 → 0.363 (was 0.65), conf=0.7 → 0.643, conf=1.0 → 1.0
@@ -1298,6 +1849,19 @@ mod tests {
     }
 
     #[test]
+    fn test_detect_identifier_route_finds_env_and_endpoint_queries() {
+        let route = detect_identifier_route("which env var should Claude proxy mode use?")
+            .expect("expected identifier route");
+        assert!(route.active);
+        assert!(route.kinds.contains(&IdentifierKind::EnvVar));
+
+        let endpoint_route =
+            detect_identifier_route("which endpoint handles Anthropic messages through the proxy?")
+                .expect("expected endpoint route");
+        assert!(endpoint_route.kinds.contains(&IdentifierKind::Endpoint));
+    }
+
+    #[test]
     fn test_task_context_boost_prefers_matching_tags() {
         let context = TaskContext {
             kind: TaskContextKind::Review,
@@ -1419,5 +1983,22 @@ mod tests {
         );
         assert_eq!(gate.decision, RetrievalConfidenceDecision::Abstain);
         assert!(qualified.is_empty());
+    }
+
+    #[test]
+    fn test_identifier_route_analysis_detects_literal_and_kind_matches() {
+        let route =
+            detect_identifier_route("which endpoint handles Anthropic messages through the proxy?")
+                .expect("expected identifier route");
+        let memory =
+            Memory::new("Claude proxy endpoint is /proxy/anthropic/v1/messages.".to_string());
+        let signal = analyze_identifier_signal(&memory, &route);
+        assert!(signal.kind_match_count >= 1);
+
+        let literal_route =
+            detect_identifier_route("what is /proxy/anthropic/v1/messages used for?")
+                .expect("expected literal route");
+        let literal_signal = analyze_identifier_signal(&memory, &literal_route);
+        assert!(literal_signal.literal_match_count >= 1);
     }
 }

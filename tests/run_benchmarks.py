@@ -58,8 +58,14 @@ EXPERIMENTAL_MEMORY_MODE = os.environ.get(
 CONFIDENCE_GATE_ENABLED = os.environ.get(
     "BENCHMARK_CONFIDENCE_GATE_ENABLED", "true"
 ).strip().lower() not in ("0", "false", "no", "off")
+IDENTIFIER_FIRST_ROUTING_ENABLED = os.environ.get(
+    "BENCHMARK_IDENTIFIER_FIRST_ROUTING_ENABLED", "true"
+).strip().lower() not in ("0", "false", "no", "off")
 EXPERIMENTAL_CONFIDENCE_GATE = os.environ.get(
     "BENCHMARK_EXPERIMENTAL_CONFIDENCE_GATE", ""
+).strip()
+EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING = os.environ.get(
+    "BENCHMARK_EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING", ""
 ).strip()
 
 MIN_SUBSTRING_TOKENS = 5
@@ -71,6 +77,7 @@ PROBE_PROXY_KEY = "probe-proxy-key"
 
 RETRIEVAL_INJECTION_METRICS = [
     ("positive_injection_hit_rate", "higher_is_better"),
+    ("identifier_case_hit_rate", "higher_is_better"),
     ("wrong_injection_rate", "lower_is_better"),
     ("abstain_precision", "higher_is_better"),
     ("abstain_recall", "higher_is_better"),
@@ -89,8 +96,16 @@ RETRIEVAL_PROBE_MEMORIES = [
         "tags": ["probe", "systemd", "host"],
     },
     {
-        "content": "For this repo, name feature branches feat/<ticket>-<slug> and bugfix branches fix/<ticket>-<slug>.",
-        "tags": ["probe", "git", "branches"],
+        "content": "Legacy staging installs used /opt/memoryoss/bin/memoryoss and /etc/memoryoss/staging.toml before the stable binary path changed.",
+        "tags": ["probe", "legacy", "systemd"],
+    },
+    {
+        "content": "For this repo, name feature branches feat/<ticket>-<slug>.",
+        "tags": ["probe", "git", "feature-branches"],
+    },
+    {
+        "content": "For this repo, name bugfix branches fix/<ticket>-<slug>.",
+        "tags": ["probe", "git", "bugfix-branches"],
     },
     {
         "content": "Never show raw MemoryOSS entries unless the user explicitly asks; short summaries or counts are enough.",
@@ -112,6 +127,18 @@ RETRIEVAL_PROBE_MEMORIES = [
         "content": "For review responses, keep findings first and summaries brief.",
         "tags": ["probe", "review", "style"],
     },
+    {
+        "content": "Claude proxy mode should export ANTHROPIC_BASE_URL=http://127.0.0.1:8000/proxy/anthropic/v1.",
+        "tags": ["probe", "claude", "env"],
+    },
+    {
+        "content": "OpenAI proxy mode should export OPENAI_BASE_URL=http://127.0.0.1:8000/proxy/v1.",
+        "tags": ["probe", "openai", "env"],
+    },
+    {
+        "content": "The Anthropic proxy endpoint is /proxy/anthropic/v1/messages and the OpenAI chat endpoint is /proxy/v1/chat/completions.",
+        "tags": ["probe", "proxy", "endpoint"],
+    },
 ]
 
 RETRIEVAL_INJECTION_CASES = [
@@ -124,14 +151,16 @@ RETRIEVAL_INJECTION_CASES = [
     {
         "id": "RI02",
         "expected_action": "inject",
-        "query": "what path should systemd use on this host?",
+        "query": "what config path should systemd use on this host for the stable binary?",
         "expected_anchor": "/root/memoryoss.toml",
+        "identifier_case": True,
     },
     {
         "id": "RI03",
         "expected_action": "inject",
-        "query": "how should feature branches be named here?",
-        "expected_anchor": "feat/<ticket>-<slug>",
+        "query": "how should bugfix branches be named here?",
+        "expected_anchor": "fix/<ticket>-<slug>",
+        "identifier_case": True,
     },
     {
         "id": "RI04",
@@ -197,6 +226,20 @@ RETRIEVAL_INJECTION_CASES = [
         "id": "RI15",
         "expected_action": "need_more_evidence",
         "query": "what should happen after smoke passes?",
+    },
+    {
+        "id": "RI16",
+        "expected_action": "inject",
+        "query": "which env var should Claude proxy mode use?",
+        "expected_anchor": "ANTHROPIC_BASE_URL",
+        "identifier_case": True,
+    },
+    {
+        "id": "RI17",
+        "expected_action": "inject",
+        "query": "which endpoint handles Anthropic messages through the proxy?",
+        "expected_anchor": "/proxy/anthropic/v1/messages",
+        "identifier_case": True,
     },
 ]
 
@@ -354,6 +397,7 @@ def build_proxy_sections(
     *,
     min_recall_score: float,
     confidence_gate: bool,
+    identifier_first_routing: bool,
     default_memory_mode: str = "full",
 ) -> str:
     return f"""
@@ -364,6 +408,7 @@ upstream_url = "http://127.0.0.1:{upstream_port}/v1"
 default_memory_mode = "{default_memory_mode}"
 min_recall_score = {min_recall_score}
 confidence_gate = {"true" if confidence_gate else "false"}
+identifier_first_routing = {"true" if identifier_first_routing else "false"}
 extraction_enabled = false
 
 [[proxy.key_mapping]]
@@ -515,6 +560,8 @@ def run_retrieval_injection_lane(
     expected_abstain = 0
     expected_need_more_evidence = 0
     positive_hits = 0
+    identifier_expected = 0
+    identifier_hits = 0
     wrong_injections = 0
     missed_evidence = 0
     abstains = 0
@@ -567,6 +614,10 @@ def run_retrieval_injection_lane(
             hit = injected and anchor_match
             wrong = injected and not anchor_match
             missed = not hit
+            if case.get("identifier_case"):
+                identifier_expected += 1
+                if hit:
+                    identifier_hits += 1
             if hit:
                 positive_hits += 1
             if wrong:
@@ -596,6 +647,7 @@ def run_retrieval_injection_lane(
                 "expected_action": case["expected_action"],
                 "query": case["query"],
                 "expected_anchor": case.get("expected_anchor"),
+                "identifier_case": bool(case.get("identifier_case")),
                 "proxy_injected": injected,
                 "anchor_match": anchor_match,
                 "gate_decision": gate_decision,
@@ -619,9 +671,13 @@ def run_retrieval_injection_lane(
         "expected_inject_cases": expected_inject,
         "expected_abstain_cases": expected_abstain,
         "expected_need_more_evidence_cases": expected_need_more_evidence,
+        "expected_identifier_cases": identifier_expected,
         "positive_injection_hit_rate": round(positive_hits / expected_inject, 4)
         if expected_inject
         else 0.0,
+        "identifier_case_hit_rate": round(identifier_hits / identifier_expected, 4)
+        if identifier_expected
+        else 1.0,
         "wrong_injection_rate": round(wrong_injections / len(RETRIEVAL_INJECTION_CASES), 4),
         "abstain_precision": round(abstain_precision, 4),
         "abstain_recall": round(abstain_recall, 4),
@@ -762,6 +818,7 @@ namespace = "probe"
         upstream_port,
         min_recall_score=THRESHOLD,
         confidence_gate=CONFIDENCE_GATE_ENABLED,
+        identifier_first_routing=IDENTIFIER_FIRST_ROUTING_ENABLED,
         default_memory_mode="full",
     )
     write_test_config(
@@ -1048,6 +1105,7 @@ namespace = "probe"
             EXPERIMENTAL_MIN_RECALL_SCORE
             or EXPERIMENTAL_MEMORY_MODE
             or EXPERIMENTAL_CONFIDENCE_GATE
+            or EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING
         ):
             experimental_port = free_port()
             experimental_config_path = tmp / "benchmark-experimental.toml"
@@ -1063,6 +1121,12 @@ namespace = "probe"
                 if EXPERIMENTAL_CONFIDENCE_GATE
                 else CONFIDENCE_GATE_ENABLED
             )
+            experimental_identifier_first_routing = (
+                EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING.lower()
+                not in ("0", "false", "no", "off")
+                if EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING
+                else IDENTIFIER_FIRST_ROUTING_ENABLED
+            )
             stop_process(process)
             write_test_config(
                 experimental_config_path,
@@ -1073,6 +1137,7 @@ namespace = "probe"
                     upstream_port,
                     min_recall_score=experimental_threshold,
                     confidence_gate=experimental_confidence_gate,
+                    identifier_first_routing=experimental_identifier_first_routing,
                     default_memory_mode=experimental_memory_mode,
                 ),
             )

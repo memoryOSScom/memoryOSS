@@ -196,6 +196,40 @@ impl FtsEngine {
         Ok(results)
     }
 
+    /// Identifier-oriented search: try a quoted literal first, then fall back to a
+    /// sanitized token search when the literal contains parser-unfriendly punctuation.
+    pub fn search_identifier(
+        &self,
+        identifier: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<(Uuid, f32)>> {
+        let cleaned = identifier.trim();
+        if cleaned.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut combined = std::collections::HashMap::new();
+        let phrase_query = format!("\"{}\"", cleaned.replace('"', ""));
+        for (uuid, score) in self.search(&phrase_query, limit)? {
+            combined.insert(uuid, score * 1.5);
+        }
+
+        let sanitized = sanitize_user_query(cleaned);
+        if !sanitized.is_empty() && sanitized != cleaned {
+            for (uuid, score) in self.search(&sanitized, limit)? {
+                combined
+                    .entry(uuid)
+                    .and_modify(|existing| *existing = existing.max(score))
+                    .or_insert(score);
+            }
+        }
+
+        let mut results: Vec<(Uuid, f32)> = combined.into_iter().collect();
+        results.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+        results.truncate(limit);
+        Ok(results)
+    }
+
     /// Filter by structured metadata fields — returns matching UUIDs.
     /// Uses tantivy boolean queries instead of O(n) redb scan.
     pub fn search_metadata(

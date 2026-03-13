@@ -375,6 +375,7 @@ async fn run_sub_query(
         limit,
         agent_filter: sub_query.agent_filter.clone(),
         task_context: crate::scoring::detect_task_context(&sub_query.query),
+        identifier_route: crate::scoring::detect_identifier_route(&sub_query.query),
         ..Default::default()
     };
 

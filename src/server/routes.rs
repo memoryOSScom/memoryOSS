@@ -1739,6 +1739,11 @@ async fn recall_inner(
     }
 
     let task_context = crate::scoring::detect_task_context(&req.query);
+    let identifier_route = if state.config.proxy.identifier_first_routing {
+        crate::scoring::detect_identifier_route(&req.query)
+    } else {
+        None
+    };
 
     // Intent cache: check for cached results (canonical query matching)
     if req.cursor.is_none()
@@ -1929,6 +1934,7 @@ async fn recall_inner(
         agent_filter: req.agent.clone(),
         diversity_factor: state.config.proxy.diversity_factor.unwrap_or(0.0),
         task_context: task_context.clone(),
+        identifier_route: identifier_route.clone(),
     };
 
     let mut scored = crate::scoring::score_and_merge(
@@ -1999,7 +2005,7 @@ async fn recall_inner(
         true
     });
 
-    scored = crate::fusion::collapse_scored_memories(scored);
+    scored = crate::fusion::collapse_scored_memories_for_query(scored, identifier_route.as_ref());
 
     // Cursor pagination: skip results before cursor position
     if let Some(ref cursor) = req.cursor
@@ -2512,6 +2518,11 @@ async fn query_explain(
 
     let weights = req.weights.unwrap_or_default().clamped();
     let identifiers = crate::scoring::extract_identifiers(&req.query);
+    let identifier_route = if state.config.proxy.identifier_first_routing {
+        crate::scoring::detect_identifier_route(&req.query)
+    } else {
+        None
+    };
     let exact_results = if use_fts && !identifiers.is_empty() {
         crate::scoring::exact_match_search(&state.fts_engine, &identifiers, overfetch)
     } else {
@@ -2533,6 +2544,7 @@ async fn query_explain(
         agent_filter: req.agent.clone(),
         diversity_factor,
         task_context: task_context.clone(),
+        identifier_route: identifier_route.clone(),
     };
 
     let mut explained = crate::scoring::score_and_explain(
@@ -2570,7 +2582,8 @@ async fn query_explain(
         }
         true
     });
-    explained = crate::fusion::collapse_explained_entries(explained);
+    explained =
+        crate::fusion::collapse_explained_entries_for_query(explained, identifier_route.as_ref());
     explained.truncate(req.limit);
     let (retrieval_gate, _) = crate::scoring::apply_retrieval_confidence_gate(
         &explained,
@@ -2607,6 +2620,14 @@ async fn query_explain(
         "consistency": if eventual { "eventual" } else { "strong" },
         "candidate_filter_count": candidate_ids.as_ref().map(|ids| ids.len()),
         "identifiers": identifiers,
+        "identifier_route": identifier_route.as_ref().map(|route| json!({
+            "active": route.active,
+            "identifiers": route.identifiers,
+            "kinds": route.labels(),
+            "matched_terms": route.matched_terms,
+            "focus_terms": route.focus_terms,
+            "enabled": state.config.proxy.identifier_first_routing,
+        })),
         "task_context": task_context.as_ref().map(|ctx| json!({
             "kind": ctx.label(),
             "matched_terms": ctx.matched_terms,

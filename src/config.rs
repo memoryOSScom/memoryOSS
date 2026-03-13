@@ -537,6 +537,10 @@ pub struct ProxyConfig {
     /// instead of relying only on a raw score threshold.
     #[serde(default = "default_true")]
     pub confidence_gate: bool,
+    /// Route identifier-, path-, endpoint-, branch- and policy-heavy queries through
+    /// a lexical-first reranking path before dense recall dominates.
+    #[serde(default = "default_true")]
+    pub identifier_first_routing: bool,
     /// Default memory mode: "full", "off", or "after" (default: "full").
     /// Overridden by X-Memory-Mode header if allow_client_memory_control is true.
     #[serde(default = "default_memory_mode")]
@@ -580,6 +584,7 @@ impl Default for ProxyConfig {
             min_channel_score: None,
             diversity_factor: None,
             confidence_gate: true,
+            identifier_first_routing: true,
             default_memory_mode: default_memory_mode(),
             memory_after_date: None,
         }
@@ -612,6 +617,7 @@ impl std::fmt::Debug for ProxyConfig {
             .field("min_channel_score", &self.min_channel_score)
             .field("diversity_factor", &self.diversity_factor)
             .field("confidence_gate", &self.confidence_gate)
+            .field("identifier_first_routing", &self.identifier_first_routing)
             .field("default_memory_mode", &self.default_memory_mode)
             .field("memory_after_date", &self.memory_after_date)
             .finish()

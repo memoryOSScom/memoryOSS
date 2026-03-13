@@ -186,12 +186,84 @@ fn prefer_explained(candidate: &ScoreExplainEntry, existing: &ScoreExplainEntry)
             && candidate.memory.content.len() > existing.memory.content.len())
 }
 
+fn content_matches_route_identifier(content: &str, identifier: &str) -> bool {
+    let lowered = content.to_lowercase();
+    let ident = identifier.trim().to_lowercase();
+    if ident.is_empty() {
+        return false;
+    }
+    if lowered.contains(&ident) {
+        return true;
+    }
+    let parts: Vec<String> = ident
+        .split(|ch: char| !ch.is_alphanumeric())
+        .filter(|part| part.len() >= 2)
+        .map(ToString::to_string)
+        .collect();
+    parts.len() >= 2 && parts.iter().all(|part| lowered.contains(part))
+}
+
+fn content_identifier_anchors(
+    content: &str,
+    route: &crate::scoring::IdentifierRouteProfile,
+) -> HashSet<String> {
+    crate::scoring::extract_identifiers(content)
+        .into_iter()
+        .map(|identifier| identifier.trim().to_lowercase())
+        .filter(|identifier| !identifier.is_empty())
+        .filter(|identifier| {
+            route
+                .kinds
+                .iter()
+                .any(|kind| crate::scoring::identifier_matches_kind(identifier, *kind))
+        })
+        .collect()
+}
+
+fn are_identifier_route_duplicates(
+    a: &str,
+    b: &str,
+    route: &crate::scoring::IdentifierRouteProfile,
+) -> bool {
+    if are_structural_duplicates(a, b) {
+        return true;
+    }
+    let shared_anchor = route.identifiers.iter().any(|ident| {
+        content_matches_route_identifier(a, ident) && content_matches_route_identifier(b, ident)
+    });
+    if shared_anchor {
+        return true;
+    }
+
+    let a_anchors = content_identifier_anchors(a, route);
+    if a_anchors.is_empty() {
+        return false;
+    }
+
+    let b_anchors = content_identifier_anchors(b, route);
+    !b_anchors.is_empty() && !a_anchors.is_disjoint(&b_anchors)
+}
+
 pub fn collapse_scored_memories(scored: Vec<ScoredMemory>) -> Vec<ScoredMemory> {
+    collapse_scored_memories_for_query(scored, None)
+}
+
+pub fn collapse_scored_memories_for_query(
+    scored: Vec<ScoredMemory>,
+    route: Option<&crate::scoring::IdentifierRouteProfile>,
+) -> Vec<ScoredMemory> {
     let mut collapsed: Vec<ScoredMemory> = Vec::new();
 
     for candidate in scored {
         if let Some(existing) = collapsed.iter_mut().find(|entry| {
             are_structural_duplicates(&entry.memory.content, &candidate.memory.content)
+                || route.is_some_and(|route| {
+                    are_identifier_route_duplicates(
+                        &entry.memory.content,
+                        &candidate.memory.content,
+                        route,
+                    )
+                })
         }) {
             let mut merged = if prefer_scored(&candidate, existing) {
                 candidate.clone()
@@ -224,12 +296,27 @@ pub fn collapse_scored_memories(scored: Vec<ScoredMemory>) -> Vec<ScoredMemory> 
     collapsed
 }
 
+#[allow(dead_code)]
 pub fn collapse_explained_entries(explained: Vec<ScoreExplainEntry>) -> Vec<ScoreExplainEntry> {
+    collapse_explained_entries_for_query(explained, None)
+}
+
+pub fn collapse_explained_entries_for_query(
+    explained: Vec<ScoreExplainEntry>,
+    route: Option<&crate::scoring::IdentifierRouteProfile>,
+) -> Vec<ScoreExplainEntry> {
     let mut collapsed: Vec<ScoreExplainEntry> = Vec::new();
 
     for candidate in explained {
         if let Some(existing) = collapsed.iter_mut().find(|entry| {
             are_structural_duplicates(&entry.memory.content, &candidate.memory.content)
+                || route.is_some_and(|route| {
+                    are_identifier_route_duplicates(
+                        &entry.memory.content,
+                        &candidate.memory.content,
+                        route,
+                    )
+                })
         }) {
             let mut merged = if prefer_explained(&candidate, existing) {
                 candidate.clone()
@@ -397,7 +484,7 @@ mod tests {
 
     use super::{
         are_structural_duplicates, collapse_explained_entries, collapse_scored_memories,
-        fuse_contents,
+        collapse_scored_memories_for_query, fuse_contents,
     };
 
     #[test]
@@ -518,6 +605,66 @@ mod tests {
             collapsed[0]
                 .provenance
                 .contains(&"fused_duplicate".to_string())
+        );
+    }
+
+    #[test]
+    fn test_identifier_route_collapse_merges_shared_endpoint_anchor_without_literal_query() {
+        let route = crate::scoring::detect_identifier_route(
+            "which endpoint handles Anthropic messages through the proxy?",
+        )
+        .expect("expected identifier route");
+
+        let collapsed = collapse_scored_memories_for_query(
+            vec![
+                ScoredMemory {
+                    memory: Memory::new(
+                        "Claude proxy endpoint is /proxy/anthropic/v1/messages and Claude proxy mode should export ANTHROPIC_BASE_URL."
+                            .to_string(),
+                    ),
+                    score: 0.8,
+                    provenance: vec!["fts".to_string()],
+                    trust_score: 0.9,
+                    low_trust: false,
+                },
+                ScoredMemory {
+                    memory: Memory::new(
+                        "Use /proxy/anthropic/v1/messages for Anthropic Messages API requests through the proxy."
+                            .to_string(),
+                    ),
+                    score: 0.82,
+                    provenance: vec!["exact".to_string()],
+                    trust_score: 0.91,
+                    low_trust: false,
+                },
+                ScoredMemory {
+                    memory: Memory::new(
+                        "OpenAI chat proxy requests go to /proxy/v1/chat/completions and use OPENAI_BASE_URL."
+                            .to_string(),
+                    ),
+                    score: 0.5,
+                    provenance: vec!["fts".to_string()],
+                    trust_score: 0.8,
+                    low_trust: false,
+                },
+            ],
+            Some(&route),
+        );
+
+        assert_eq!(collapsed.len(), 2);
+        let anthropic = collapsed
+            .iter()
+            .find(|entry| {
+                entry
+                    .memory
+                    .content
+                    .contains("/proxy/anthropic/v1/messages")
+            })
+            .expect("missing anthropic endpoint entry");
+        assert!(
+            anthropic.memory.content.contains("ANTHROPIC_BASE_URL")
+                || anthropic.memory.content.contains("Anthropic Messages API"),
+            "collapsed content should preserve details from both fragments"
         );
     }
 }

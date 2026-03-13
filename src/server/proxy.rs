@@ -1414,6 +1414,11 @@ async fn recall_for_proxy(
 ) -> anyhow::Result<Vec<ScoredMemory>> {
     let limit = 10;
     let task_context = crate::scoring::detect_task_context(query);
+    let identifier_route = if state.config.proxy.identifier_first_routing {
+        crate::scoring::detect_identifier_route(query)
+    } else {
+        None
+    };
 
     // RLM: Heuristic decomposition for large namespaces (no LLM call — latency safe)
     let decompose_config = crate::config::DecomposeConfig {
@@ -1497,6 +1502,7 @@ async fn recall_for_proxy(
         agent_filter: None,
         diversity_factor: diversity,
         task_context,
+        identifier_route: identifier_route.clone(),
     };
 
     let mut scored = crate::scoring::score_and_merge(
@@ -1507,7 +1513,7 @@ async fn recall_for_proxy(
         Some(&state.trust_scorer),
         &options,
     );
-    scored = crate::fusion::collapse_scored_memories(scored);
+    scored = crate::fusion::collapse_scored_memories_for_query(scored, identifier_route.as_ref());
     scored.truncate(limit);
     Ok(scored)
 }
@@ -4105,6 +4111,7 @@ pub async fn proxy_debug_stats(State(state): State<AppState>, headers: HeaderMap
         "max_memory_pct": state.config.proxy.max_memory_pct,
         "min_recall_score": state.config.proxy.min_recall_score,
         "confidence_gate": state.config.proxy.confidence_gate,
+        "identifier_first_routing": state.config.proxy.identifier_first_routing,
         "log_privacy_mode": state.config.proxy.privacy_mode,
         "key_mappings": state.config.proxy.key_mapping.len(),
         "review_queue_summary": review_queue_summary,

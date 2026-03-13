@@ -285,6 +285,11 @@ def retrieval_injection_lane_items(label: str, summary: dict) -> list[dict]:
             format_rate(summary.get("positive_injection_hit_rate")),
         ),
         item(
+            f"{prefix}identifier-case hit rate",
+            "pass",
+            format_rate(summary.get("identifier_case_hit_rate")),
+        ),
+        item(
             f"{prefix}wrong injection rate",
             "pass",
             format_rate(summary.get("wrong_injection_rate")),

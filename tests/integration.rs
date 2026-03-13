@@ -1302,7 +1302,6 @@ namespace = "test"
             .and_then(|v| v.to_str().ok()),
         Some("inject")
     );
-
     let requests = upstream_state.requests.lock().unwrap().clone();
     let upstream_req = requests
         .iter()
@@ -1458,6 +1457,193 @@ namespace = "test"
         stats_body["metrics"]["gate_need_more_evidence"].as_u64(),
         Some(1)
     );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_identifier_first_routing_prefers_matching_endpoint_and_collapses_fragments() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+default_memory_mode = "full"
+identifier_first_routing = true
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-identifiers.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Claude proxy endpoint is /proxy/anthropic/v1/messages and Claude proxy mode should export ANTHROPIC_BASE_URL.",
+                    "tags": ["proxy", "claude", "endpoint"]
+                },
+                {
+                    "content": "Use /proxy/anthropic/v1/messages for Anthropic Messages API requests through the proxy.",
+                    "tags": ["proxy", "anthropic", "endpoint"]
+                },
+                {
+                    "content": "OpenAI chat proxy requests go to /proxy/v1/chat/completions and use OPENAI_BASE_URL.",
+                    "tags": ["proxy", "openai", "endpoint"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let query = "which endpoint handles Anthropic messages through the proxy?";
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": query,
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["identifier_route"]["enabled"].as_bool(),
+        Some(true)
+    );
+    let route_kinds = explain_body["identifier_route"]["kinds"]
+        .as_array()
+        .expect("missing identifier route kinds");
+    assert!(
+        route_kinds
+            .iter()
+            .any(|kind| kind.as_str() == Some("endpoint")),
+        "query explain should detect endpoint-first route"
+    );
+    let final_results = explain_body["final_results"].as_array().unwrap();
+    assert!(
+        final_results[0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/proxy/anthropic/v1/messages"),
+        "endpoint route should rank anthropic endpoint first"
+    );
+
+    let literal_explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "what is /proxy/anthropic/v1/messages used for?",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(literal_explain_resp.status(), 200);
+    let literal_explain_body: serde_json::Value = literal_explain_resp.json().await.unwrap();
+    let literal_results = literal_explain_body["final_results"].as_array().unwrap();
+    let anthropic_hits = literal_results
+        .iter()
+        .filter(|entry| {
+            entry["memory"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .contains("/proxy/anthropic/v1/messages")
+        })
+        .count();
+    assert_eq!(
+        anthropic_hits, 1,
+        "literal endpoint queries should collapse fragmented anthropic endpoint memories"
+    );
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": query}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-gate-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("inject")
+    );
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-injected-count")
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "identifier-first routing should collapse duplicate endpoint fragments before injection"
+    );
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    let upstream_req = requests
+        .iter()
+        .find(|req| {
+            req["path"].as_str() == Some("/v1/chat/completions")
+                && req["body"]["messages"][0]["role"].as_str() == Some("system")
+        })
+        .expect("missing upstream chat request with injected system prompt");
+    let system_content = upstream_req["body"]["messages"][0]["content"]
+        .as_str()
+        .expect("system content missing");
+    assert!(
+        system_content.contains("/proxy/anthropic/v1/messages"),
+        "matching anthropic endpoint should be injected"
+    );
+    if system_content.contains("/proxy/v1/chat/completions") {
+        let anthropic_pos = system_content.find("/proxy/anthropic/v1/messages").unwrap();
+        let openai_pos = system_content.find("/proxy/v1/chat/completions").unwrap();
+        assert!(
+            anthropic_pos < openai_pos,
+            "matching endpoint should appear before the openai distractor"
+        );
+    }
 
     child.kill().await.ok();
     upstream_handle.abort();
