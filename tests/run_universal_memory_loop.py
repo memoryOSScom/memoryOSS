@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
+import argparse
 import json
 import os
+import shutil
 import subprocess
 import tempfile
 import time
@@ -22,7 +24,7 @@ from runner_common import (
 )
 
 
-OUTPUT_JSON = Path(
+DEFAULT_OUTPUT_JSON = Path(
     os.environ.get(
         "UNIVERSAL_LOOP_OUTPUT_JSON",
         ROOT_DIR / "tests" / "universal-memory-loop-report.json",
@@ -366,8 +368,30 @@ def build_items(
     ]
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Run the universal memory loop proof across passport portability, "
+            "review queue, guardrails, and history replay."
+        )
+    )
+    parser.add_argument(
+        "--output-json",
+        default=str(DEFAULT_OUTPUT_JSON),
+        help="Path for the generated loop report JSON.",
+    )
+    parser.add_argument(
+        "--keep-temp",
+        action="store_true",
+        help="Keep the temporary workspace instead of deleting it on success.",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = parse_args()
     started = time.time()
+    success = False
     tmp = Path(tempfile.mkdtemp(prefix="memoryoss-universal-loop-"))
     source_data_dir = tmp / "source-data"
     target_data_dir = tmp / "target-data"
@@ -889,6 +913,8 @@ namespace = "{TARGET_NAMESPACE}"
             "runner": "tests/run_universal_memory_loop.py",
             "generated_at": iso_now(),
             "duration_seconds": int(time.time() - started),
+            "status": "pass",
+            "workspace": str(tmp),
             "summary": {
                 "demo_clients": [
                     "http_api_store",
@@ -1018,8 +1044,30 @@ namespace = "{TARGET_NAMESPACE}"
                 },
             },
         }
-        OUTPUT_JSON.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+        output_json = Path(args.output_json)
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
         print(json.dumps(report["summary"], indent=2), flush=True)
+        success = True
+    except Exception as exc:
+        output_json = Path(args.output_json)
+        output_json.parent.mkdir(parents=True, exist_ok=True)
+        output_json.write_text(
+            json.dumps(
+                {
+                    "runner": "tests/run_universal_memory_loop.py",
+                    "generated_at": iso_now(),
+                    "duration_seconds": int(time.time() - started),
+                    "status": "fail",
+                    "workspace": str(tmp),
+                    "error": str(exc),
+                },
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        raise
     finally:
         if source_process is not None:
             stop_process(source_process)
@@ -1028,6 +1076,8 @@ namespace = "{TARGET_NAMESPACE}"
         upstream_server.shutdown()
         upstream_server.server_close()
         upstream_thread.join(timeout=2)
+        if success and not args.keep_temp:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 if __name__ == "__main__":

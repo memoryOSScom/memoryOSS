@@ -547,6 +547,8 @@ The repository now has two intentionally separate distribution paths that share 
 - `release.yml` for real `v*` tags
 - `release-smoke.yml` for tagless validation on `smoke/*` or manual dispatch
 - `build-release-artifacts.yml` as the shared build/package/upload path
+- both paths now attach artifact attestations
+- smoke additionally proves install -> checksum verify -> update/rollback recovery on Linux/macOS/Windows
 
 ```mermaid
 stateDiagram-v2
@@ -559,11 +561,18 @@ stateDiagram-v2
     SmokeValidation --> SharedArtifactBuild
 
     SharedArtifactBuild --> UploadArtifacts
-    UploadArtifacts --> CreateGitHubRelease
+    UploadArtifacts --> ReleaseAttestation: release path
+    UploadArtifacts --> SmokeAttestation: smoke path
+    UploadArtifacts --> InstallUpgradeSmoke: smoke path
+
+    ReleaseAttestation --> CreateGitHubRelease
     CreateGitHubRelease --> PublishCrate
-    UploadArtifacts --> PublishContainer
-    UploadArtifacts --> OptionalSmokeContainer: smoke run and push_container = true
-    UploadArtifacts --> EndSmoke: smoke run and push_container = false
+    CreateGitHubRelease --> PublishContainer
+
+    SmokeAttestation --> InstallUpgradeSmoke
+    InstallUpgradeSmoke --> UploadUpdatePlaneReport
+    UploadUpdatePlaneReport --> OptionalSmokeContainer: push_container = true
+    UploadUpdatePlaneReport --> EndSmoke: push_container = false
     OptionalSmokeContainer --> EndSmoke
 
     PublishCrate --> [*]
@@ -573,3 +582,127 @@ stateDiagram-v2
 
 Audit note:
 - release and smoke now share the same reusable artifact-build workflow, so matrix drift between the two paths is removed at the source
+- the update-plane smoke report is now a first-class artifact instead of an orphaned side effect
+
+## 18. Governed Team Memory and Review Queue
+
+This is the stateful merge path behind governed team memory:
+- team governance proposes candidate writes without dedup rejection
+- review queue classifies candidate/contested/rejected work
+- only listed owners can confirm or supersede governed review-required scopes
+- accepted merges survive passport export/import and history replay
+
+```mermaid
+stateDiagram-v2
+    [*] --> Proposed: /v1/admin/team/governance/propose
+
+    Proposed --> CandidateQueue: review_required = false or candidate memory
+    Proposed --> GovernedReviewQueue: review_required = true
+
+    CandidateQueue --> Confirmed: review action confirm
+    CandidateQueue --> Rejected: review action reject
+    CandidateQueue --> Superseded: review action supersede
+
+    GovernedReviewQueue --> OwnerRejected: non-owner tries confirm/supersede
+    GovernedReviewQueue --> Confirmed: listed owner confirms
+    GovernedReviewQueue --> Superseded: listed owner supersedes
+
+    Confirmed --> ActiveMemory
+    Superseded --> StaleLineage
+    Rejected --> ContestedMemory
+
+    ActiveMemory --> PassportExport
+    ActiveMemory --> HistoryReplay
+    PassportExport --> ImportedWithGovernance
+    HistoryReplay --> ImportedWithGovernance
+
+    OwnerRejected --> [*]
+    ImportedWithGovernance --> [*]
+```
+
+## 19. Portable Artifact Trust and Reader Paths
+
+The portability stack is now a connected machine rather than separate isolated features:
+- bundle/passport/history export can be signed
+- verify/reader/validate share the same trust fabric
+- revoke/restore changes reader trust state without mutating the raw artifact
+- import and replay stay dry-runnable before any write
+
+```mermaid
+stateDiagram-v2
+    [*] --> PortableArtifact
+
+    PortableArtifact --> Unsigned: export without signature
+    PortableArtifact --> Signed: bundle export or admin trust/sign
+
+    Signed --> Trusted: trust/verify or reader open with valid identity
+    Signed --> Revoked: signing identity revoked
+    Signed --> InvalidSignature: signature mismatch
+    Signed --> UnknownIdentity: signer missing from trust fabric
+    Unsigned --> VerificationUnavailable: reader open without trust context
+
+    Trusted --> ReaderOpen
+    Trusted --> BundleValidate
+    Trusted --> PassportImportDryRun
+    Trusted --> HistoryReplayDryRun
+
+    Revoked --> RestoreIdentity
+    RestoreIdentity --> Trusted
+
+    BundleValidate --> [*]
+    ReaderOpen --> [*]
+    PassportImportDryRun --> ApplyImport
+    HistoryReplayDryRun --> ApplyReplay
+    ApplyImport --> [*]
+    ApplyReplay --> [*]
+    InvalidSignature --> [*]
+    UnknownIdentity --> [*]
+    VerificationUnavailable --> [*]
+```
+
+## 20. Report Publication Pipeline
+
+This was the main missing connection found during the state-machine audit:
+- `run_all.sh` already executed `update_plane` and `compatibility_lts`
+- but the generated report/website path did not surface either one as report sections or summary metrics
+- that link is now wired through `tests/generate_report.py` into `website/tests-report.json`
+
+```mermaid
+stateDiagram-v2
+    [*] --> RunAll
+
+    RunAll --> StepLogs
+    RunAll --> UpdatePlaneArtifact: tests/update-plane-report.json
+    RunAll --> UniversalLoopArtifact
+    RunAll --> BenchmarkArtifact
+    RunAll --> CalibrationArtifact
+    RunAll --> CoverageArtifact
+
+    StepLogs --> GenerateReport
+    UpdatePlaneArtifact --> GenerateReport
+    UniversalLoopArtifact --> GenerateReport
+    BenchmarkArtifact --> GenerateReport
+    CalibrationArtifact --> GenerateReport
+    CoverageArtifact --> GenerateReport
+
+    GenerateReport --> ReportJson: tests/report.json
+    GenerateReport --> WebsiteJson: website/tests-report.json
+    GenerateReport --> MarkdownReport: tests/report.md
+
+    ReportJson --> WebsiteCards
+    WebsiteJson --> WebsiteSummary
+    WebsiteSummary --> VisibleUpdatePlaneSection
+    WebsiteSummary --> VisibleCompatibilityLtsSection
+
+    VisibleUpdatePlaneSection --> [*]
+    VisibleCompatibilityLtsSection --> [*]
+```
+
+## 21. Current Audit Findings
+
+State-machine audit result on the current codebase:
+
+- No confirmed dead runtime path was found in the governed memory, portability, trust, or release/update planes.
+- One real missing connection existed in the reporting plane: `update_plane` and `compatibility_lts` were executed but not surfaced into generated report sections or website summary metrics.
+- The report summary status is now also driven by real step failures instead of staying implicitly green when the runner exits through the failure trap.
+- Those missing report-plane connections are now fixed in `tests/run_all.sh`, `tests/generate_report.py`, and `website/tests.js`.

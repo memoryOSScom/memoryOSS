@@ -2,6 +2,11 @@ function createSummary(report) {
   const summary = document.createElement("div");
   summary.className = "summary-bar";
   const metrics = [
+    {
+      num: (report.summary.status || "unknown").toUpperCase(),
+      label: "Runner Status",
+      color: report.summary.status === "fail" ? "var(--red)" : "var(--green)",
+    },
     { num: report.summary.total_checks_passed, label: "Passed Checks", color: "var(--green)" },
     { num: report.summary.sections, label: "Sections" },
     { num: report.summary.rust_unit_tests, label: "Rust Unit" },
@@ -14,6 +19,14 @@ function createSummary(report) {
     { num: report.summary.repeated_context_elimination_rate ? `${(report.summary.repeated_context_elimination_rate * 100).toFixed(1)}%` : "-", label: "Context Elim" },
     { num: report.summary.review_throughput_per_minute ? `${report.summary.review_throughput_per_minute.toFixed(1)}/m` : "-", label: "Review Throughput" },
     { num: report.summary.blocked_bad_actions_rate ? `${(report.summary.blocked_bad_actions_rate * 100).toFixed(1)}%` : "-", label: "Guardrail Rate" },
+    {
+      num:
+        report.summary.update_plane_rollback_recovery_rate != null
+          ? `${(report.summary.update_plane_rollback_recovery_rate * 100).toFixed(1)}%`
+          : "-",
+      label: "Rollback Recovery",
+    },
+    { num: report.summary.compatibility_lts_tests ?? "-", label: "LTS Checks" },
     { num: report.duration_seconds + "s", label: "Duration" },
   ];
 

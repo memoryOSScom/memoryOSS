@@ -42,6 +42,8 @@ INTEGRATION_DISPLAY = {
     "test_gdpr_connections_cover_export_access_and_certified_forget": "GDPR export, access, and certified forget roundtrip",
     "test_key_rotation_connections_cover_rotate_list_revoke_and_read": "Key rotation paths cover rotate, list, revoke, readability",
     "test_decay_and_migrate_cli_connections": "Decay and migrate CLI commands work against real data",
+    "test_lts_compatibility_fixtures_support_n_n1_n2_import_and_replay_paths": "Published N/N-1/N-2 fixtures stay importable and replayable",
+    "test_lts_compatibility_matrix_supports_n_n1_n2_for_runtime_bundle_and_reader": "Runtime, bundle, and reader keep N/N-1/N-2 compatibility",
 }
 
 INTEGRATION_GROUPS = {
@@ -130,6 +132,33 @@ def artifact_suffix(report: dict | None, step: dict | None = None) -> str:
     return f" ({'; '.join(fragments)})" if fragments else ""
 
 
+def step_passed(step: dict | None) -> bool:
+    return step is not None and step.get("status") == "pass"
+
+
+def current_artifact(report: dict | None, step: dict | None) -> dict | None:
+    if report is None:
+        return None
+    if step is None or step_passed(step):
+        return report
+    return None
+
+
+def artifact_fallback_section(title: str, step: dict | None, report: dict | None = None) -> dict | None:
+    if not step:
+        return None
+    note = f"{step['duration_seconds']}s"
+    if report is not None:
+        note += f" — current run step {step['status']}; previous artifact retained{artifact_suffix(report)}"
+    else:
+        note += " — report artifact not available"
+    return {
+        "title": title,
+        "count": 1,
+        "items": [item(step["label"], step["status"], note)],
+    }
+
+
 def parse_cargo_tests(log_text: str):
     current = None
     unit = []
@@ -156,6 +185,15 @@ def parse_typescript_tests(log_text: str):
     tests = []
     for line in log_text.splitlines():
         match = re.match(r"^\s+ok \d+ - (.+)$", line)
+        if match:
+            tests.append(match.group(1))
+    return tests
+
+
+def parse_ok_tests(log_text: str):
+    tests = []
+    for line in log_text.splitlines():
+        match = re.match(r"^test (.+) \.\.\. ok$", line.strip())
         if match:
             tests.append(match.group(1))
     return tests
@@ -367,6 +405,7 @@ def build_sections(
     coverage_gaps_report=None,
     long_memory_report=None,
     token_savings_report=None,
+    update_plane_report=None,
     universal_loop_report=None,
 ):
     step_by_slug = {step["slug"]: step for step in steps}
@@ -456,11 +495,12 @@ def build_sections(
     )
 
     wizard_matrix_step = step_by_slug.get("wizard_matrix")
-    if wizard_matrix:
+    current_wizard_matrix = current_artifact(wizard_matrix, wizard_matrix_step)
+    if current_wizard_matrix:
         sections.append(
             {
                 "title": "Wizard Scenario Matrix",
-                "count": len(wizard_matrix["scenarios"]),
+                "count": len(current_wizard_matrix["scenarios"]),
                 "items": [
                     item(
                         scenario["name"],
@@ -473,35 +513,24 @@ def build_sections(
                             f"assertions={scenario['assertion_count']}"
                         ),
                     )
-                    for scenario in wizard_matrix["scenarios"]
+                    for scenario in current_wizard_matrix["scenarios"]
                 ],
             }
         )
     elif wizard_matrix_step:
-        sections.append(
-            {
-                "title": "Wizard Scenario Matrix",
-                "count": 1,
-                "items": [
-                    item(
-                        wizard_matrix_step["label"],
-                        wizard_matrix_step["status"],
-                        f"{wizard_matrix_step['duration_seconds']}s — report artifact not available",
-                    )
-                ],
-            }
-        )
+        sections.append(artifact_fallback_section("Wizard Scenario Matrix", wizard_matrix_step, wizard_matrix))
 
     benchmark_step = step_by_slug.get("benchmark")
-    if benchmark_report:
+    current_benchmark_report = current_artifact(benchmark_report, benchmark_step)
+    if current_benchmark_report:
         sections.append(
             {
                 "title": "20k Scaling Benchmark",
-                "count": len(benchmark_report["items"]),
-                "items": benchmark_report["items"],
+                "count": len(current_benchmark_report["items"]),
+                "items": current_benchmark_report["items"],
             }
         )
-        retrieval_eval = benchmark_report.get("retrieval_injection_eval")
+        retrieval_eval = current_benchmark_report.get("retrieval_injection_eval")
         if retrieval_eval:
             stable_lane = retrieval_eval.get("lanes", {}).get("stable")
             experimental_lane = retrieval_eval.get("lanes", {}).get("experimental")
@@ -532,7 +561,7 @@ def build_sections(
                         f"{dataset_size} cases "
                         f"({expected_inject} inject, {expected_abstain} abstain, "
                         f"{expected_need_more_evidence} need_more_evidence)"
-                        f"{artifact_suffix(benchmark_report, benchmark_step)}"
+                        f"{artifact_suffix(current_benchmark_report, benchmark_step)}"
                     ),
                 )
             ]
@@ -559,19 +588,7 @@ def build_sections(
                 }
             )
     elif benchmark_step:
-        sections.append(
-            {
-                "title": "20k Scaling Benchmark",
-                "count": 1,
-                "items": [
-                    item(
-                        benchmark_step["label"],
-                        benchmark_step["status"],
-                        f"{benchmark_step['duration_seconds']}s — report artifact not available",
-                    )
-                ],
-            }
-        )
+        sections.append(artifact_fallback_section("20k Scaling Benchmark", benchmark_step, benchmark_report))
 
     if long_memory_report:
         recall = long_memory_report.get("recall", {})
@@ -605,10 +622,11 @@ def build_sections(
         )
 
     calibration_step = step_by_slug.get("calibration")
-    if calibration_report:
-        distribution = calibration_report["score_distribution"]
-        current = calibration_report["current_threshold_row"]
-        optimal = calibration_report["optimal_threshold_row"]
+    current_calibration_report = current_artifact(calibration_report, calibration_step)
+    if current_calibration_report:
+        distribution = current_calibration_report["score_distribution"]
+        current = current_calibration_report["current_threshold_row"]
+        optimal = current_calibration_report["optimal_threshold_row"]
         sections.append(
             {
                 "title": "Scoring Calibration",
@@ -618,10 +636,10 @@ def build_sections(
                         "Calibration corpus",
                         "pass",
                         (
-                            f"{calibration_report['summary']['queries']:,} queries "
-                            f"({calibration_report['summary']['exact_queries']} exact, "
-                            f"{calibration_report['summary']['related_queries']} related, "
-                            f"{calibration_report['summary']['noise_queries']:,} noise)"
+                            f"{current_calibration_report['summary']['queries']:,} queries "
+                            f"({current_calibration_report['summary']['exact_queries']} exact, "
+                            f"{current_calibration_report['summary']['related_queries']} related, "
+                            f"{current_calibration_report['summary']['noise_queries']:,} noise)"
                         ),
                     ),
                     item(
@@ -676,27 +694,16 @@ def build_sections(
             }
         )
     elif calibration_step:
-        sections.append(
-            {
-                "title": "Scoring Calibration",
-                "count": 1,
-                "items": [
-                    item(
-                        calibration_step["label"],
-                        calibration_step["status"],
-                        f"{calibration_step['duration_seconds']}s — report artifact not available",
-                    )
-                ],
-            }
-        )
+        sections.append(artifact_fallback_section("Scoring Calibration", calibration_step, calibration_report))
 
     extraction_eval_step = step_by_slug.get("extraction_eval")
-    if extraction_eval_report:
-        stable_lane = extraction_eval_report.get("lanes", {}).get("stable")
-        experimental_lane = extraction_eval_report.get("lanes", {}).get("experimental")
-        comparison = extraction_eval_report.get("comparison")
-        summary = stable_lane["summary"] if stable_lane else extraction_eval_report["summary"]
-        dataset_meta = extraction_eval_report.get("dataset_meta", {})
+    current_extraction_eval_report = current_artifact(extraction_eval_report, extraction_eval_step)
+    if current_extraction_eval_report:
+        stable_lane = current_extraction_eval_report.get("lanes", {}).get("stable")
+        experimental_lane = current_extraction_eval_report.get("lanes", {}).get("experimental")
+        comparison = current_extraction_eval_report.get("comparison")
+        summary = stable_lane["summary"] if stable_lane else current_extraction_eval_report["summary"]
+        dataset_meta = current_extraction_eval_report.get("dataset_meta", {})
         items = [
             item(
                 "Dataset coverage",
@@ -706,7 +713,7 @@ def build_sections(
                     f"({summary['positive_cases']} positive, "
                     f"{summary['negative_cases']} negative; "
                     f"{dataset_meta.get('base_cases', 0)} base + {dataset_meta.get('template_cases', 0)} template)"
-                    f"{artifact_suffix(extraction_eval_report, extraction_eval_step)}"
+                    f"{artifact_suffix(current_extraction_eval_report, extraction_eval_step)}"
                 ),
             )
         ]
@@ -734,17 +741,9 @@ def build_sections(
         )
     elif extraction_eval_step:
         sections.append(
-            {
-                "title": "Extraction Quality Evaluation",
-                "count": 1,
-                "items": [
-                    item(
-                        extraction_eval_step["label"],
-                        extraction_eval_step["status"],
-                        f"{extraction_eval_step['duration_seconds']}s — report artifact not available",
-                    )
-                ],
-            }
+            artifact_fallback_section(
+                "Extraction Quality Evaluation", extraction_eval_step, extraction_eval_report
+            )
         )
 
     if token_savings_report:
@@ -786,10 +785,63 @@ def build_sections(
             }
         )
 
+    update_plane_step = step_by_slug.get("update_plane")
+    current_update_plane_report = current_artifact(update_plane_report, update_plane_step)
+    if current_update_plane_report:
+        update_items = list(current_update_plane_report.get("items", []))
+        if current_update_plane_report.get("channel"):
+            update_items.insert(
+                0,
+                item(
+                    "Release/update channel",
+                    "pass",
+                    f"{current_update_plane_report['channel']}{artifact_suffix(current_update_plane_report, update_plane_step)}",
+                ),
+            )
+        sections.append(
+            {
+                "title": "Zero-Friction Update Plane",
+                "count": len(update_items),
+                "items": update_items,
+            }
+        )
+    elif update_plane_step:
+        sections.append(
+            artifact_fallback_section("Zero-Friction Update Plane", update_plane_step, update_plane_report)
+        )
+
+    compatibility_lts_step = step_by_slug.get("compatibility_lts")
+    if compatibility_lts_step:
+        compatibility_log = Path(compatibility_lts_step["log_path"]).read_text(encoding="utf-8")
+        compatibility_tests = parse_ok_tests(compatibility_log)
+        compatibility_items = [
+            item(
+                INTEGRATION_DISPLAY.get(name, name),
+                compatibility_lts_step["status"],
+            )
+            for name in compatibility_tests
+        ]
+        if not compatibility_items:
+            compatibility_items = [
+                item(
+                    compatibility_lts_step["label"],
+                    compatibility_lts_step["status"],
+                    f"{compatibility_lts_step['duration_seconds']}s",
+                )
+            ]
+        sections.append(
+            {
+                "title": "Compatibility & LTS",
+                "count": len(compatibility_items),
+                "items": compatibility_items,
+            }
+        )
+
     universal_loop_step = step_by_slug.get("universal_memory_loop")
-    if universal_loop_report:
-        utility_items = list(universal_loop_report.get("items", []))
-        for loop in universal_loop_report.get("loops", []):
+    current_universal_loop_report = current_artifact(universal_loop_report, universal_loop_step)
+    if current_universal_loop_report:
+        utility_items = list(current_universal_loop_report.get("items", []))
+        for loop in current_universal_loop_report.get("loops", []):
             utility_items.append(
                 item(
                     loop["title"],
@@ -809,7 +861,7 @@ def build_sections(
         )
         claim_items = []
         for lane in ("stable", "experimental", "moonshot"):
-            for claim in universal_loop_report.get("claims", {}).get(lane, []):
+            for claim in current_universal_loop_report.get("claims", {}).get(lane, []):
                 claim_items.append(item(f"{lane.title()} claim", "pass", claim))
         if claim_items:
             sections.append(
@@ -822,31 +874,21 @@ def build_sections(
         sections.append(
             {
                 "title": "Universal Memory Loop Proof",
-                "count": len(universal_loop_report.get("items", [])),
-                "items": universal_loop_report.get("items", []),
+                "count": len(current_universal_loop_report.get("items", [])),
+                "items": current_universal_loop_report.get("items", []),
             }
         )
     elif universal_loop_step:
         sections.append(
-            {
-                "title": "Universal Memory Loop Proof",
-                "count": 1,
-                "items": [
-                    item(
-                        universal_loop_step["label"],
-                        universal_loop_step["status"],
-                        (
-                            f"{universal_loop_step['duration_seconds']}s"
-                            " — report artifact not available"
-                        ),
-                    )
-                ],
-            }
+            artifact_fallback_section(
+                "Universal Memory Loop Proof", universal_loop_step, universal_loop_report
+            )
         )
 
     coverage_gaps_step = step_by_slug.get("coverage_gaps")
-    if coverage_gaps_report:
-        for group in coverage_gaps_report.get("groups", []):
+    current_coverage_gaps_report = current_artifact(coverage_gaps_report, coverage_gaps_step)
+    if current_coverage_gaps_report:
+        for group in current_coverage_gaps_report.get("groups", []):
             sections.append(
                 {
                     "title": group["title"],
@@ -856,17 +898,7 @@ def build_sections(
             )
     elif coverage_gaps_step:
         sections.append(
-            {
-                "title": "Coverage Gap Tests",
-                "count": 1,
-                "items": [
-                    item(
-                        coverage_gaps_step["label"],
-                        coverage_gaps_step["status"],
-                        f"{coverage_gaps_step['duration_seconds']}s — report artifact not available",
-                    )
-                ],
-            }
+            artifact_fallback_section("Coverage Gap Tests", coverage_gaps_step, coverage_gaps_report)
         )
 
     return sections
@@ -882,16 +914,40 @@ def build_report(
     coverage_gaps_report=None,
     long_memory_report=None,
     token_savings_report=None,
+    update_plane_report=None,
     universal_loop_report=None,
 ):
     cargo_step = next((step for step in steps if step["slug"] == "cargo_test"), None)
     ts_step = next((step for step in steps if step["slug"] == "typescript_sdk"), None)
+    wizard_matrix_step = next((step for step in steps if step["slug"] == "wizard_matrix"), None)
+    benchmark_step = next((step for step in steps if step["slug"] == "benchmark"), None)
+    calibration_step = next((step for step in steps if step["slug"] == "calibration"), None)
+    extraction_eval_step = next((step for step in steps if step["slug"] == "extraction_eval"), None)
+    coverage_gaps_step = next((step for step in steps if step["slug"] == "coverage_gaps"), None)
+    update_plane_step = next((step for step in steps if step["slug"] == "update_plane"), None)
+    universal_loop_step = next((step for step in steps if step["slug"] == "universal_memory_loop"), None)
+    failed_steps = sum(1 for step in steps if step["status"] == "fail")
+    skipped_steps = sum(1 for step in steps if step["status"] == "skip")
 
     cargo_log = Path(cargo_step["log_path"]).read_text(encoding="utf-8") if cargo_step else ""
     ts_log = Path(ts_step["log_path"]).read_text(encoding="utf-8") if ts_step else ""
+    compatibility_step = next((step for step in steps if step["slug"] == "compatibility_lts"), None)
+    compatibility_log = (
+        Path(compatibility_step["log_path"]).read_text(encoding="utf-8")
+        if compatibility_step
+        else ""
+    )
 
     unit_tests, integration_tests = parse_cargo_tests(cargo_log)
     ts_tests = parse_typescript_tests(ts_log)
+    compatibility_tests = parse_ok_tests(compatibility_log)
+    current_wizard_matrix = current_artifact(wizard_matrix, wizard_matrix_step)
+    current_benchmark_report = current_artifact(benchmark_report, benchmark_step)
+    current_calibration_report = current_artifact(calibration_report, calibration_step)
+    current_extraction_eval_report = current_artifact(extraction_eval_report, extraction_eval_step)
+    current_coverage_gaps_report = current_artifact(coverage_gaps_report, coverage_gaps_step)
+    current_update_plane_report = current_artifact(update_plane_report, update_plane_step)
+    current_universal_loop_report = current_artifact(universal_loop_report, universal_loop_step)
 
     sections = build_sections(
         steps,
@@ -905,6 +961,7 @@ def build_report(
         coverage_gaps_report,
         long_memory_report,
         token_savings_report,
+        update_plane_report,
         universal_loop_report,
     )
 
@@ -912,7 +969,9 @@ def build_report(
         1 for section in sections for entry in section["items"] if entry["status"] == "pass"
     )
     wizard_assertions = (
-        wizard_matrix["summary"]["assertions_passed"] if wizard_matrix else len(WIZARD_ASSERTIONS)
+        current_wizard_matrix["summary"]["assertions_passed"]
+        if current_wizard_matrix
+        else len(WIZARD_ASSERTIONS)
     )
 
     return {
@@ -920,23 +979,29 @@ def build_report(
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "duration_seconds": duration_seconds,
         "summary": {
-            "status": "pass",
+            "status": "fail" if failed_steps else "pass",
             "total_checks_passed": total_checks,
             "sections": len(sections),
+            "failed_steps": failed_steps,
+            "skipped_steps": skipped_steps,
             "rust_unit_tests": len(unit_tests),
             "rust_integration_tests": len(integration_tests),
             "typescript_tests": len(ts_tests),
             "wizard_assertions": wizard_assertions,
-            "wizard_scenarios": wizard_matrix["summary"]["scenarios"] if wizard_matrix else 0,
+            "wizard_scenarios": (
+                current_wizard_matrix["summary"]["scenarios"] if current_wizard_matrix else 0
+            ),
             "benchmark_memories": (
-                benchmark_report["write"]["memories_stored"] if benchmark_report else 0
+                current_benchmark_report["write"]["memories_stored"] if current_benchmark_report else 0
             ),
             "calibration_queries": (
-                calibration_report["summary"]["queries"] if calibration_report else 0
+                current_calibration_report["summary"]["queries"]
+                if current_calibration_report
+                else 0
             ),
             "extraction_eval_cases": (
-                extraction_eval_report["summary"]["dataset_size"]
-                if extraction_eval_report
+                current_extraction_eval_report["summary"]["dataset_size"]
+                if current_extraction_eval_report
                 else 0
             ),
             "long_memory_total_memories": (
@@ -948,33 +1013,43 @@ def build_report(
                 else 0
             ),
             "universal_loop_portability_rate": (
-                universal_loop_report["summary"]["portability_success_rate"]
-                if universal_loop_report
+                current_universal_loop_report["summary"]["portability_success_rate"]
+                if current_universal_loop_report
                 else 0
             ),
             "universal_loop_replay_fidelity": (
-                universal_loop_report["summary"]["replay_fidelity"]
-                if universal_loop_report
+                current_universal_loop_report["summary"]["replay_fidelity"]
+                if current_universal_loop_report
                 else 0
             ),
             "repeated_context_elimination_rate": (
-                universal_loop_report["summary"].get("repeated_context_elimination_rate", 0)
-                if universal_loop_report
+                current_universal_loop_report["summary"].get("repeated_context_elimination_rate", 0)
+                if current_universal_loop_report
                 else 0
             ),
             "review_throughput_per_minute": (
-                universal_loop_report["summary"].get("review_throughput_per_minute", 0)
-                if universal_loop_report
+                current_universal_loop_report["summary"].get("review_throughput_per_minute", 0)
+                if current_universal_loop_report
                 else 0
             ),
             "blocked_bad_actions_rate": (
-                universal_loop_report["summary"].get("blocked_bad_actions_rate", 0)
-                if universal_loop_report
+                current_universal_loop_report["summary"].get("blocked_bad_actions_rate", 0)
+                if current_universal_loop_report
                 else 0
             ),
+            "update_plane_rollback_recovery_rate": (
+                min(
+                    1.0,
+                    current_update_plane_report.get("rollback_count", 0)
+                    / max(current_update_plane_report.get("seed_count", 1), 1),
+                )
+                if current_update_plane_report
+                else 0
+            ),
+            "compatibility_lts_tests": len(compatibility_tests),
             "universal_loop_task_state_quality": (
-                universal_loop_report["summary"]["task_state_quality"]
-                if universal_loop_report
+                current_universal_loop_report["summary"]["task_state_quality"]
+                if current_universal_loop_report
                 else 0
             ),
         },
@@ -986,11 +1061,16 @@ def build_report(
             for step in steps
         ],
         "sections": sections,
-        "utility_loop": universal_loop_report,
-        "benchmark": benchmark_report,
-        "calibration": calibration_report,
-        "wizard": wizard_matrix,
-        "universal_memory_loop": universal_loop_report,
+        "utility_loop": current_universal_loop_report,
+        "benchmark": current_benchmark_report,
+        "calibration": current_calibration_report,
+        "wizard": current_wizard_matrix,
+        "universal_memory_loop": current_universal_loop_report,
+        "update_plane": current_update_plane_report,
+        "compatibility_lts": {
+            "status": compatibility_step["status"] if compatibility_step else "skip",
+            "tests": compatibility_tests,
+        },
         "coverage_gaps": COVERAGE_GAPS,
     }
 
@@ -1032,6 +1112,7 @@ def main():
     parser.add_argument("--coverage-gaps-json")
     parser.add_argument("--long-memory-json")
     parser.add_argument("--token-savings-json")
+    parser.add_argument("--update-plane-json")
     parser.add_argument("--universal-loop-json")
     parser.add_argument("--duration", required=True, type=int)
     args = parser.parse_args()
@@ -1044,6 +1125,7 @@ def main():
     coverage_gaps_report = load_optional_json(args.coverage_gaps_json)
     long_memory_report = load_optional_json(args.long_memory_json)
     token_savings_report = load_optional_json(args.token_savings_json)
+    update_plane_report = load_optional_json(args.update_plane_json)
     universal_loop_report = load_optional_json(args.universal_loop_json)
     report = build_report(
         steps,
@@ -1055,6 +1137,7 @@ def main():
         coverage_gaps_report=coverage_gaps_report,
         long_memory_report=long_memory_report,
         token_savings_report=token_savings_report,
+        update_plane_report=update_plane_report,
         universal_loop_report=universal_loop_report,
     )
 

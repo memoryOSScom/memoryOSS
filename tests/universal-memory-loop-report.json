@@ -1,7 +1,9 @@
 {
   "runner": "tests/run_universal_memory_loop.py",
-  "generated_at": "2026-03-14T19:30:17Z",
-  "duration_seconds": 9,
+  "generated_at": "2026-03-14T23:50:39Z",
+  "duration_seconds": 7,
+  "status": "pass",
+  "workspace": "/tmp/memoryoss-universal-loop-_krwitai",
   "summary": {
     "demo_clients": [
       "http_api_store",
@@ -22,7 +24,7 @@
     "merge_count": 1,
     "conflict_count": 1,
     "merge_conflict_rate": 0.2,
-    "review_throughput_per_minute": 640.53,
+    "review_throughput_per_minute": 353.64,
     "blocked_bad_actions_rate": 1.0,
     "confirmation_gate_rate": 1.0,
     "replay_fidelity": 1.0,
@@ -114,7 +116,7 @@
     {
       "name": "Review throughput",
       "status": "pass",
-      "note": "3 governed reviews confirmed at 640.5/min"
+      "note": "3 governed reviews confirmed at 353.6/min"
     },
     {
       "name": "Blocked bad actions",
@@ -133,8 +135,8 @@
     }
   ],
   "details": {
-    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-mxoplu80/portable-loop-passport.json (scope=all memories=5)",
-    "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-mxoplu80/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-14T19:30:12.015373341Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"fef8d147534c75e1e9d3cb11e4e507930a9bd363ba256c1445b81f7e14757160\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
+    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-_krwitai/portable-loop-passport.json (scope=all memories=5)",
+    "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-_krwitai/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-14T23:50:35.178549777Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"744b4acefe4043a5ebcb7dc45eebf46a21d310d1e56ef3ecd1eb88db39b0bd3b\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
     "portability_cases": [
       {
         "label": "review style",
@@ -193,8 +195,8 @@
     ],
     "review_loop": {
       "confirmed_count": 3,
-      "duration_seconds": 0.281,
-      "throughput_per_minute": 640.53
+      "duration_seconds": 0.509,
+      "throughput_per_minute": 353.64
     },
     "guardrail_loop": {
       "delete_explain_decision": "block",
@@ -215,12 +217,12 @@
       "conflict_node_present": true
     },
     "source_history": {
-      "root_id": "019cedd3-f54c-7732-8bcb-385785595eca",
+      "root_id": "019ceec2-54a2-7f81-af41-86949961ebb7",
       "node_count": 3,
       "timeline_count": 7
     },
     "target_history": {
-      "root_id": "019cedd3-f54c-7732-8bcb-385785595eca",
+      "root_id": "019ceec2-54a2-7f81-af41-86949961ebb7",
       "node_count": 3,
       "timeline_count": 7
     }

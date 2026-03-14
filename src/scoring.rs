@@ -1720,6 +1720,7 @@ fn build_gate_summary(
             }
         } else {
             let top_has_identifier = has_strong_identifier_provenance(&top_entry.provenance);
+            let top_has_exact_identifier = has_exact_identifier_provenance(&top_entry.provenance);
             let second_has_identifier =
                 second.is_some_and(|other| has_strong_identifier_provenance(&other.provenance));
             if (qualified.len() >= 2 || (entries.len() > 1 && looks_like_next_step_query(query)))
@@ -1742,7 +1743,9 @@ fn build_gate_summary(
             {
                 reasons.push("top_candidates_too_close".to_string());
             }
-            if top_entry.max_channel_score < GATE_LOW_SUPPORT_MAX_CHANNEL {
+            if top_entry.max_channel_score < GATE_LOW_SUPPORT_MAX_CHANNEL
+                && !top_has_exact_identifier
+            {
                 reasons.push("top_candidate_low_channel_support".to_string());
             }
             if top_entry.final_score < min_recall_score + GATE_WEAK_MARGIN
@@ -1792,7 +1795,7 @@ fn build_gate_summary(
     }
 }
 
-fn has_strong_identifier_provenance(provenance: &[String]) -> bool {
+fn has_exact_identifier_provenance(provenance: &[String]) -> bool {
     provenance.iter().any(|entry| {
         entry.starts_with("identifier_match:")
             || entry == "identifier_kind_match:endpoint"
@@ -1800,8 +1803,15 @@ fn has_strong_identifier_provenance(provenance: &[String]) -> bool {
             || entry == "identifier_kind_match:path"
             || entry == "identifier_kind_match:branch_pattern"
             || entry == "identifier_kind_match:commit"
-            || entry == "identifier_kind_match:policy"
+            || entry == "identifier_kind_match:contract"
     })
+}
+
+fn has_strong_identifier_provenance(provenance: &[String]) -> bool {
+    has_exact_identifier_provenance(provenance)
+        || provenance
+            .iter()
+            .any(|entry| entry == "identifier_kind_match:policy")
 }
 
 pub fn apply_retrieval_confidence_gate(
@@ -2883,6 +2893,32 @@ mod tests {
         );
         assert_eq!(gate.decision, RetrievalConfidenceDecision::Abstain);
         assert!(qualified.is_empty());
+    }
+
+    #[test]
+    fn test_retrieval_confidence_gate_injects_exact_identifier_route_despite_low_channel_support() {
+        let mut entry = explained_entry(
+            "Anthropic proxy endpoint is /proxy/anthropic/v1/messages.",
+            0.47,
+            0.18,
+            None,
+        );
+        entry.provenance = vec![
+            "fts".into(),
+            "identifier_kind_match:endpoint".into(),
+            "identifier_focus_match:anthropic".into(),
+        ];
+
+        let (gate, qualified) =
+            apply_retrieval_confidence_gate(&[entry], "anthropic proxy endpoint", 0.4, true);
+        assert_eq!(gate.decision, RetrievalConfidenceDecision::Inject);
+        assert_eq!(qualified.len(), 1);
+        assert!(
+            !gate
+                .reasons
+                .iter()
+                .any(|reason| reason == "top_candidate_low_channel_support")
+        );
     }
 
     #[test]

@@ -2371,6 +2371,40 @@ namespace = "test"
             .contains("/proxy/anthropic/v1/messages"),
         "endpoint route should rank anthropic endpoint first"
     );
+    assert_eq!(
+        explain_body["retrieval_gate"]["decision"].as_str(),
+        Some("inject"),
+        "query explain should inject for the strong endpoint match"
+    );
+
+    let terse_query = "anthropic proxy endpoint";
+    let terse_explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": terse_query,
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(terse_explain_resp.status(), 200);
+    let terse_explain_body: serde_json::Value = terse_explain_resp.json().await.unwrap();
+    assert_eq!(
+        terse_explain_body["retrieval_gate"]["decision"].as_str(),
+        Some("inject"),
+        "terse endpoint queries should stay aligned with proxy injection"
+    );
+    let terse_results = terse_explain_body["final_results"]
+        .as_array()
+        .expect("missing terse final_results");
+    assert!(
+        terse_results[0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("/proxy/anthropic/v1/messages"),
+        "terse endpoint queries should still rank the anthropic endpoint first"
+    );
 
     let literal_explain_resp = client
         .post(format!("{base}/v1/admin/query-explain"))
@@ -2426,6 +2460,33 @@ namespace = "test"
         "identifier-first routing should collapse duplicate endpoint fragments before injection"
     );
 
+    let terse_proxy_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": terse_query}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(terse_proxy_resp.status(), 200);
+    assert_eq!(
+        terse_proxy_resp
+            .headers()
+            .get("x-memory-gate-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("inject")
+    );
+    assert_eq!(
+        terse_proxy_resp
+            .headers()
+            .get("x-memory-injected-count")
+            .and_then(|v| v.to_str().ok()),
+        Some("1"),
+        "terse endpoint proxy query should inject the same endpoint memory"
+    );
+
     let requests = upstream_state.requests.lock().unwrap().clone();
     let upstream_req = requests
         .iter()
@@ -2457,6 +2518,22 @@ namespace = "test"
             "matching endpoint should appear before the openai distractor"
         );
     }
+
+    let terse_upstream_req = requests
+        .iter()
+        .find(|req| {
+            req["path"].as_str() == Some("/v1/chat/completions")
+                && req["body"]["messages"][0]["role"].as_str() == Some("system")
+                && req["body"]["messages"][1]["content"].as_str() == Some(terse_query)
+        })
+        .expect("missing terse upstream chat request with injected system prompt");
+    let terse_system_content = terse_upstream_req["body"]["messages"][0]["content"]
+        .as_str()
+        .expect("terse system content missing");
+    assert!(
+        terse_system_content.contains("/proxy/anthropic/v1/messages"),
+        "terse proxy query should inject the anthropic endpoint"
+    );
 
     child.kill().await.ok();
     upstream_handle.abort();
