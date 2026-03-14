@@ -272,6 +272,7 @@ run_step "coverage gaps" coverage_gaps env COVERAGE_GAPS_OUTPUT_JSON="$COVERAGE_
 run_step "zero-friction update plane" update_plane env UPDATE_PLANE_OUTPUT_JSON="$UPDATE_PLANE_JSON" python3 "$ROOT_DIR/tests/run_update_plane_smoke.py"
 run_step "TypeScript SDK build/test" typescript_sdk typescript_sdk_checks
 run_step "runtime conformance kit" conformance_kit env CONFORMANCE_OUTPUT_JSON="$ROOT_DIR/tests/conformance-report.json" python3 "$ROOT_DIR/tests/run_conformance_kit.py"
+run_step "compatibility and LTS" compatibility_lts cargo test --test integration lts_compatibility -- --nocapture
 run_step "everyday utility loop" universal_memory_loop env UNIVERSAL_LOOP_OUTPUT_JSON="$UNIVERSAL_LOOP_JSON" python3 "$ROOT_DIR/tests/run_universal_memory_loop.py"
 run_step "cargo audit (offline if available)" cargo_audit dependency_audit
 

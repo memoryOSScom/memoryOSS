@@ -452,6 +452,21 @@ Compatibility policy:
 - once a successor line ships, memoryOSS keeps reader compatibility for the previous published line for at least two minor releases
 - the conformance harness is the authoritative pass/fail gate for published lines
 
+LTS policy for the current published line set:
+
+| Surface | Current write line | Read / verify window | Migration / rollback guarantee |
+| --- | --- | --- | --- |
+| Runtime contract | `memoryoss.runtime.v1alpha1` | `N`, `N-1`, `N-2` published fixture snapshots | `memoryoss conformance normalize` must still accept published snapshots before a line leaves support |
+| Passport bundle | `memoryoss.passport.v1alpha1` | `N`, `N-1`, `N-2` in the reader and passport import preview | Dry-run import must stay available for published fixtures during the support window |
+| History bundle | `memoryoss.history.v1alpha1` | `N`, `N-1`, `N-2` in the reader and history replay preview | Dry-run replay must stay available for published fixtures during the support window |
+| Memory bundle envelope | `memoryoss.bundle.v1alpha1` | `N`, `N-1`, `N-2` in reader, diff, and validate | Envelope validation must succeed for published snapshots unless integrity is actually broken |
+| Sync peer sidecar signatures | current trust-fabric line | `N`, `N-1`, `N-2` verification window | Revocation, replacement identity, and signature verification remain readable even after writer upgrades |
+
+Operational rules:
+- memoryOSS only writes the current published line, never silently rewrites an older published artifact in place
+- any future successor line must be announced in the conformance kit and public docs before the older line leaves the `N-2` reader window
+- `bash tests/run_all.sh` now includes an explicit `compatibility and LTS` gate, and that gate exercises published `N`, `N-1`, and `N-2` fixture snapshots through normalize, reader, passport import dry-run, and history replay dry-run paths
+
 ### Universal Memory Loop Proof
 
 The public portability claim is now backed by a reproducible proof runner:

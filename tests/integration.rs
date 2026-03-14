@@ -178,6 +178,42 @@ fn passport_payload_sha256(bundle: &serde_json::Value) -> String {
     sha256_hex(&compact_json_bytes(&payload))
 }
 
+fn compatibility_fixture_snapshot(
+    mut value: serde_json::Value,
+    window: &str,
+    published_in: &str,
+) -> serde_json::Value {
+    let snapshot = serde_json::json!({
+        "window": window,
+        "published_in": published_in,
+        "reader_support": "n_to_n_minus_2",
+    });
+    if let Some(object) = value.as_object_mut() {
+        object.insert("_compat_snapshot".to_string(), snapshot.clone());
+    }
+    if let Some(runtime_contract) = value
+        .get_mut("runtime_contract")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        runtime_contract.insert("_compat_snapshot".to_string(), snapshot.clone());
+    }
+    if let Some(memories) = value
+        .get_mut("memories")
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        if let Some(first_memory) = memories
+            .first_mut()
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            first_memory.insert(
+                "_compat_snapshot".to_string(),
+                serde_json::json!(format!("{window}:{published_in}")),
+            );
+        }
+    }
+    value
+}
+
 fn writer_only_test_config(port: u16, data_dir: &str) -> String {
     test_config_with_sections(
         port,
@@ -9717,5 +9753,309 @@ async fn test_conformance_cli_normalizes_canonical_fixtures() {
         let normalized: serde_json::Value =
             serde_json::from_slice(&std::fs::read(&output).unwrap()).unwrap();
         assert_eq!(normalized, fixture, "normalized {kind} fixture diverged");
+    }
+}
+
+#[tokio::test]
+async fn test_lts_compatibility_matrix_supports_n_n1_n2_for_runtime_bundle_and_reader() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let runtime_fixture_path = root.join("conformance/fixtures/runtime-contract.json");
+    let runtime_fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&runtime_fixture_path).unwrap()).unwrap();
+
+    let port = free_port();
+    let tmp = tempfile::tempdir().expect("failed to create LTS compatibility temp dir");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp.path().join("lts-bundle.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(port, data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Compatibility lane: published bundle fixtures must stay readable for N, N-1, and N-2.",
+            "tags": ["compatibility", "lts"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+    child.kill().await.ok();
+    child.wait().await.ok();
+
+    let current_bundle_path = tmp.path().join("current-lts-bundle.membundle.json");
+    let export = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "bundle",
+            "export",
+            "--kind",
+            "passport",
+            "--namespace",
+            "test",
+            "--scope",
+            "project",
+            "--output",
+            current_bundle_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to export LTS bundle fixture");
+    assert!(
+        export.status.success(),
+        "lts bundle export failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&export.stdout),
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let current_bundle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&current_bundle_path).unwrap()).unwrap();
+    let missing_config = tmp.path().join("missing-lts.toml");
+
+    for (window, published_in) in [("n", "v0.1.2"), ("n-1", "v0.1.1"), ("n-2", "v0.1.0")] {
+        let runtime_variant =
+            compatibility_fixture_snapshot(runtime_fixture.clone(), window, published_in);
+        let runtime_variant_path = tmp.path().join(format!("runtime-{window}.json"));
+        std::fs::write(
+            &runtime_variant_path,
+            serde_json::to_vec_pretty(&runtime_variant).unwrap(),
+        )
+        .unwrap();
+        let runtime_output = tmp.path().join(format!("runtime-{window}.normalized.json"));
+        let normalize = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "conformance",
+                "normalize",
+                "--kind",
+                "runtime_contract",
+                "--input",
+                runtime_variant_path.to_str().unwrap(),
+                "--output",
+                runtime_output.to_str().unwrap(),
+            ])
+            .output()
+            .await
+            .expect("failed to normalize LTS runtime fixture");
+        assert!(
+            normalize.status.success(),
+            "lts runtime normalize failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&normalize.stdout),
+            String::from_utf8_lossy(&normalize.stderr)
+        );
+        let normalized_runtime: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&runtime_output).unwrap()).unwrap();
+        assert_eq!(
+            normalized_runtime["contract_id"], runtime_fixture["contract_id"],
+            "runtime contract id drifted in {window}"
+        );
+
+        let bundle_variant =
+            compatibility_fixture_snapshot(current_bundle.clone(), window, published_in);
+        let bundle_variant_path = tmp.path().join(format!("bundle-{window}.json"));
+        std::fs::write(
+            &bundle_variant_path,
+            serde_json::to_vec_pretty(&bundle_variant).unwrap(),
+        )
+        .unwrap();
+
+        let validate = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                missing_config.to_str().unwrap(),
+                "bundle",
+                "validate",
+                bundle_variant_path.to_str().unwrap(),
+            ])
+            .output()
+            .await
+            .expect("failed to validate LTS bundle fixture");
+        assert!(
+            validate.status.success(),
+            "lts bundle validate failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&validate.stdout),
+            String::from_utf8_lossy(&validate.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&validate.stdout).contains("Validation: true"),
+            "lts bundle validate did not report success for {window}"
+        );
+
+        let open = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                missing_config.to_str().unwrap(),
+                "reader",
+                "open",
+                bundle_variant_path.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .output()
+            .await
+            .expect("failed to open LTS bundle fixture");
+        assert!(
+            open.status.success(),
+            "lts bundle reader open failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&open.stdout),
+            String::from_utf8_lossy(&open.stderr)
+        );
+        let open_body: serde_json::Value = serde_json::from_slice(&open.stdout).unwrap();
+        assert_eq!(
+            open_body["artifact_type"].as_str(),
+            Some("memory_bundle_envelope")
+        );
+        assert_eq!(open_body["kind"].as_str(), Some("passport"));
+    }
+}
+
+#[tokio::test]
+async fn test_lts_compatibility_fixtures_support_n_n1_n2_import_and_replay_paths() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let passport_fixture_path = root.join("conformance/fixtures/passport-bundle.json");
+    let history_fixture_path = root.join("conformance/fixtures/history-bundle.json");
+    let passport_fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&passport_fixture_path).unwrap()).unwrap();
+    let history_fixture: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&history_fixture_path).unwrap()).unwrap();
+
+    let tmp = tempfile::tempdir().expect("failed to create LTS fixture temp dir");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp.path().join("lts-fixtures.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(free_port(), data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+    let missing_config = tmp.path().join("missing-reader.toml");
+
+    for (window, published_in) in [("n", "v0.1.2"), ("n-1", "v0.1.1"), ("n-2", "v0.1.0")] {
+        let passport_variant =
+            compatibility_fixture_snapshot(passport_fixture.clone(), window, published_in);
+        let passport_path = tmp.path().join(format!("passport-{window}.json"));
+        std::fs::write(
+            &passport_path,
+            serde_json::to_vec_pretty(&passport_variant).unwrap(),
+        )
+        .unwrap();
+
+        let passport_open = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                missing_config.to_str().unwrap(),
+                "reader",
+                "open",
+                passport_path.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .output()
+            .await
+            .expect("failed to open LTS passport fixture");
+        assert!(
+            passport_open.status.success(),
+            "lts passport reader open failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&passport_open.stdout),
+            String::from_utf8_lossy(&passport_open.stderr)
+        );
+        let passport_body: serde_json::Value =
+            serde_json::from_slice(&passport_open.stdout).unwrap();
+        assert_eq!(passport_body["kind"].as_str(), Some("passport"));
+        assert_eq!(
+            passport_body["artifact_line"].as_str(),
+            Some("memoryoss.passport.v1alpha1")
+        );
+
+        let passport_import = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                config_path.to_str().unwrap(),
+                "passport",
+                "import",
+                passport_path.to_str().unwrap(),
+                "--namespace",
+                "test",
+                "--dry-run",
+            ])
+            .output()
+            .await
+            .expect("failed to dry-run LTS passport import");
+        assert!(
+            passport_import.status.success(),
+            "lts passport import failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&passport_import.stdout),
+            String::from_utf8_lossy(&passport_import.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&passport_import.stdout).contains("create="),
+            "lts passport import preview missing create count for {window}"
+        );
+
+        let history_variant =
+            compatibility_fixture_snapshot(history_fixture.clone(), window, published_in);
+        let history_path = tmp.path().join(format!("history-{window}.json"));
+        std::fs::write(
+            &history_path,
+            serde_json::to_vec_pretty(&history_variant).unwrap(),
+        )
+        .unwrap();
+
+        let history_open = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                missing_config.to_str().unwrap(),
+                "reader",
+                "open",
+                history_path.to_str().unwrap(),
+                "--format",
+                "json",
+            ])
+            .output()
+            .await
+            .expect("failed to open LTS history fixture");
+        assert!(
+            history_open.status.success(),
+            "lts history reader open failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&history_open.stdout),
+            String::from_utf8_lossy(&history_open.stderr)
+        );
+        let history_body: serde_json::Value = serde_json::from_slice(&history_open.stdout).unwrap();
+        assert_eq!(history_body["kind"].as_str(), Some("history"));
+        assert_eq!(
+            history_body["artifact_line"].as_str(),
+            Some("memoryoss.history.v1alpha1")
+        );
+
+        let history_replay = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                config_path.to_str().unwrap(),
+                "history",
+                "replay",
+                history_path.to_str().unwrap(),
+                "--namespace",
+                "test",
+                "--dry-run",
+            ])
+            .output()
+            .await
+            .expect("failed to dry-run LTS history replay");
+        assert!(
+            history_replay.status.success(),
+            "lts history replay failed for {window}: stdout={} stderr={}",
+            String::from_utf8_lossy(&history_replay.stdout),
+            String::from_utf8_lossy(&history_replay.stderr)
+        );
+        let replay_stdout = String::from_utf8_lossy(&history_replay.stdout);
+        assert!(replay_stdout.contains("can_replay=true"));
+        assert!(replay_stdout.contains("create="));
     }
 }
