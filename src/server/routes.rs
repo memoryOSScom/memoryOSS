@@ -13,6 +13,10 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
+use crate::adapters::{
+    AdapterExportArtifact, AdapterImportPreview, MemoryAdapterKind, plan_adapter_import,
+    render_adapter_export,
+};
 use crate::config::{Config, Role};
 use crate::embedding::EmbeddingEngine;
 use crate::engines::document::DocumentEngine;
@@ -566,6 +570,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/history/replay", post(history_replay))
         .route("/v1/history/{id}/bundle", get(history_bundle))
         .route("/v1/history/{id}", get(history_view))
+        .route("/v1/adapters/export", get(adapter_export))
+        .route("/v1/adapters/import", post(adapter_import))
         .route("/v1/passport/export", get(passport_export))
         .route("/v1/passport/import", post(passport_import))
         .route("/v1/runtime/contract", get(runtime_contract))
@@ -2878,6 +2884,29 @@ async fn runtime_contract(
     Ok(Json(runtime_contract_document()).into_response())
 }
 
+/// GET /v1/adapters/export?kind=claude_project — export runtime memories into a foreign artifact.
+async fn adapter_export(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<AdapterExportParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let kind = params
+        .kind
+        .parse::<MemoryAdapterKind>()
+        .map_err(AppError::BadRequest)?;
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let artifact =
+        render_adapter_export(kind, namespace, &memories).map_err(AppError::BadRequest)?;
+    Ok(Json(AdapterExportResponse { artifact }).into_response())
+}
+
 #[derive(Deserialize)]
 struct GdprExportParams {
     namespace: Option<String>,
@@ -2904,6 +2933,36 @@ struct PassportImportResponse {
     imported: usize,
     preview: crate::memory::PassportImportPreview,
     imported_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Deserialize)]
+struct AdapterExportParams {
+    namespace: Option<String>,
+    kind: String,
+}
+
+#[derive(Deserialize)]
+struct AdapterImportRequest {
+    kind: String,
+    source_label: String,
+    content: String,
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Serialize)]
+struct AdapterImportResponse {
+    dry_run: bool,
+    imported: usize,
+    preview: AdapterImportPreview,
+    imported_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Serialize)]
+struct AdapterExportResponse {
+    artifact: AdapterExportArtifact,
 }
 
 #[derive(Deserialize)]
@@ -2952,6 +3011,58 @@ async fn passport_export(
     Ok(Json(build_memory_passport_bundle(namespace, scope, &memories)).into_response())
 }
 
+/// POST /v1/adapters/import — normalize a foreign artifact into runtime records with dry-run preview.
+async fn adapter_import(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<AdapterImportRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_store(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions for store"));
+    }
+    if let Err(retry_ms) = state.rate_limiter.check(&claims.sub) {
+        return Err(AppError::RateLimited(retry_ms));
+    }
+    if state.indexer_state.lag() > BACKPRESSURE_THRESHOLD {
+        return Err(AppError::RateLimited(1000));
+    }
+
+    let target_namespace = enforce_namespace(&claims, req.namespace.as_deref())?.to_string();
+    let kind = req
+        .kind
+        .parse::<MemoryAdapterKind>()
+        .map_err(AppError::BadRequest)?;
+    let existing = state
+        .doc_engine
+        .list_all_including_archived(&target_namespace)?;
+    let plan = plan_adapter_import(
+        &target_namespace,
+        kind,
+        &req.source_label,
+        &req.content,
+        &existing,
+    );
+    let imported_ids = if req.dry_run {
+        Vec::new()
+    } else {
+        apply_staged_import_memories(
+            &state,
+            &target_namespace,
+            &plan.staged_memories,
+            &format!("adapter-import-api:{kind}"),
+        )?
+    };
+
+    Ok(Json(AdapterImportResponse {
+        dry_run: req.dry_run,
+        imported: imported_ids.len(),
+        preview: plan.preview,
+        imported_ids,
+    })
+    .into_response())
+}
+
 fn resolve_passport_import_namespace(
     claims: &Claims,
     requested_namespace: Option<&str>,
@@ -2963,14 +3074,14 @@ fn resolve_passport_import_namespace(
     Ok(enforce_namespace(claims, Some(bundle_namespace))?.to_string())
 }
 
-fn apply_passport_import_plan(
+fn apply_staged_import_memories(
     state: &AppState,
     namespace: &str,
-    plan: &PassportImportPlan,
+    staged_memories: &[Memory],
     subject: &str,
 ) -> Result<Vec<uuid::Uuid>, AppError> {
     let mut imported_ids = Vec::new();
-    for memory in &plan.staged_memories {
+    for memory in staged_memories {
         state
             .doc_engine
             .store(memory, subject)
@@ -2983,6 +3094,15 @@ fn apply_passport_import_plan(
     }
 
     Ok(imported_ids)
+}
+
+fn apply_passport_import_plan(
+    state: &AppState,
+    namespace: &str,
+    plan: &PassportImportPlan,
+    subject: &str,
+) -> Result<Vec<uuid::Uuid>, AppError> {
+    apply_staged_import_memories(state, namespace, &plan.staged_memories, subject)
 }
 
 /// POST /v1/passport/import — import a portable memory passport bundle with dry-run preview.

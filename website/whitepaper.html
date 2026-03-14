@@ -130,7 +130,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
 <div class="wp-header"><div class="w">
   <div class="over">Whitepaper</div>
   <h1>Persistent Memory for AI Agents:<br>Architecture and Design</h1>
-  <p class="subtitle">How memoryOSS solves the statelessness problem with transparent integration, a versioned portable runtime contract, multi-channel retrieval, and trust-gated memory injection.</p>
+  <p class="subtitle">How memoryOSS solves the statelessness problem with transparent integration, a versioned portable runtime contract, cross-app adapter bridges, multi-channel retrieval, and trust-gated memory injection.</p>
   <div class="wp-meta">
     <span>v1.0</span>
     <span>|</span>
@@ -444,6 +444,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
   <p>A proxy alone is not yet a portable runtime. To become a real shared memory substrate, memoryOSS needs stable semantics that other clients can target without reverse-engineering implementation details. The runtime contract makes those semantics explicit: namespace scope, provenance, merge, supersede, and portability export are treated as stable runtime guarantees, while retrieval strategies remain intentionally outside the contract.</p>
   <p>This separation matters. It lets memoryOSS evolve retrieval and ranking aggressively without silently changing the meaning of stored state. A client that understands the contract can reason about exported memory, lineage, and known gaps even if the retrieval stack changes later.</p>
   <p>The runtime contract is now paired with a conformance kit: JSON Schemas, canonical fixtures, and a Rust/Python/TypeScript compatibility harness. That turns the contract from documentation into an implementable target for other readers, writers, and future runtimes.</p>
+  <p>The next step beyond a contract is ingress and egress. memoryOSS now ships adapter bridges for Claude Project knowledge, Cursor rule files, and Git history. These adapters do not store raw foreign blobs; they normalize those artifacts into runtime records with provenance, dry-run merge previews, and export back out into client-facing artifacts. That is the first concrete write-once-read-everywhere bridge between different AI client surfaces.</p>
 </div>
 
 <!-- 9. Comparison -->

@@ -392,6 +392,33 @@ Compatibility policy:
 - once a successor line ships, memoryOSS keeps reader compatibility for the previous published line for at least two minor releases
 - the conformance harness is the authoritative pass/fail gate for published lines
 
+### Cross-App Adapter Bridges
+
+memoryOSS can now normalize dominant local client artifacts into the same runtime contract instead of treating them as opaque files.
+
+Implemented adapter paths:
+- `claude_project` — import/export Markdown-style Claude Project knowledge files
+- `cursor_rules` — import/export `.mdc` / rule-style Cursor memory files
+- `git_history` — import recent Git commit history as candidate runtime memories
+
+Adapter guarantees:
+- foreign artifacts are normalized into runtime records instead of being stored as one raw blob
+- imported records carry opaque runtime provenance plus source tags like `adapter:*`, `client:*`, and `source_ref:*`
+- dry-run import previews show `create / merge / conflict` before any write happens
+- one write-once-read-everywhere loop is now covered in tests: Cursor rules → memoryOSS runtime → Claude project artifact
+
+Reference endpoints:
+- `POST /v1/adapters/import`
+- `GET /v1/adapters/export?kind=claude_project`
+
+Reference commands:
+
+```bash
+memoryoss adapter import --kind cursor_rules .cursor/rules/review.mdc --namespace test --dry-run
+memoryoss adapter export --kind claude_project --namespace test -o claude-project.md
+memoryoss adapter import --kind git_history . --namespace test --dry-run
+```
+
 ### Sharing (cross-namespace collaboration)
 
 | Endpoint | Method | Description |
@@ -412,6 +439,8 @@ Compatibility policy:
 | `/v1/history/{id}` | GET | Inspect lineage, review chain, contradictions, and state transitions |
 | `/v1/history/{id}/bundle` | GET | Export a deterministic time-machine replay bundle |
 | `/v1/history/replay` | POST | Replay a history bundle into an empty target namespace |
+| `/v1/adapters/export` | GET | Export runtime memories into a foreign client artifact |
+| `/v1/adapters/import` | POST | Dry-run or apply a normalized foreign client artifact |
 | `/v1/passport/export` | GET | Selective portable memory passport bundle export |
 | `/v1/passport/import` | POST | Dry-run or apply a portable memory passport bundle |
 | `/v1/runtime/contract` | GET | Versioned portable memory runtime contract |
@@ -550,6 +579,9 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss review supersede --namespace test --item 1 --with-item 2` | Supersede one queue item with another by inbox position |
 | `memoryoss passport export --namespace test --scope project -o passport.json` | Export a selective portable memory passport bundle |
 | `memoryoss passport import passport.json --namespace test --dry-run` | Preview merge/conflict results before applying a bundle |
+| `memoryoss adapter import --kind cursor_rules .cursor/rules/review.mdc --namespace test --dry-run` | Normalize a Cursor rule file into runtime records with preview |
+| `memoryoss adapter export --kind claude_project --namespace test -o claude-project.md` | Export the current runtime state as a Claude Project artifact |
+| `memoryoss adapter import --kind git_history . --namespace test --dry-run` | Preview recent Git history as candidate runtime memories |
 | `memoryoss history show <id> --namespace test` | Show lineage, transitions, and review chain for one memory |
 | `memoryoss history export <id> --namespace test -o history.json` | Export a deterministic history replay bundle |
 | `memoryoss history replay history.json --namespace test --dry-run` | Preview a safe replay into an empty target namespace |

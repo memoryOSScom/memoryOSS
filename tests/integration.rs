@@ -296,7 +296,7 @@ async fn wait_for_specific_superseded_by(
 
 /// Start a server command in background, wait for it to be ready, return the child.
 async fn start_server_command(config_path: &str, command: &str) -> tokio::process::Child {
-    let child = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+    let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args(["--config", config_path, command])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
@@ -336,8 +336,11 @@ async fn start_server_command(config_path: &str, command: &str) -> tokio::proces
     };
 
     let health_url = format!("{scheme}://127.0.0.1:{port}/health");
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(30);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
     loop {
+        if let Some(status) = child.try_wait().expect("failed to poll child process") {
+            panic!("server exited before readiness check passed: {status}");
+        }
         if let Some(status) = child.id()
             && TcpStream::connect(("127.0.0.1", port)).is_ok()
             && client
@@ -6395,6 +6398,363 @@ async fn test_cli_passport_export_and_import_roundtrip() {
 
     target_child.kill().await.ok();
     target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_adapter_api_import_dry_run_and_export() {
+    let port = free_port();
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config = test_config_http(port, data_dir.to_str().unwrap());
+    let config_path = tmp.path().join("adapter-api.toml");
+    std::fs::write(&config_path, config).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+    let cursor_rules = r#"---
+description: Review rules
+alwaysApply: false
+---
+
+- Never merge without security review
+- Prefer rg over grep
+"#;
+
+    let dry_run = client
+        .post(format!("{base}/v1/adapters/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "cursor_rules",
+            "source_label": "review-rules.mdc",
+            "content": cursor_rules,
+            "dry_run": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dry_run.status(), 200);
+    let dry_run_body: serde_json::Value = dry_run.json().await.unwrap();
+    assert_eq!(
+        dry_run_body["preview"]["adapter_kind"].as_str(),
+        Some("cursor_rules")
+    );
+    assert_eq!(
+        dry_run_body["preview"]["normalized_count"].as_u64(),
+        Some(2)
+    );
+    assert_eq!(
+        dry_run_body["preview"]["preview"]["create_count"].as_u64(),
+        Some(2)
+    );
+
+    let import = client
+        .post(format!("{base}/v1/adapters/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "cursor_rules",
+            "source_label": "review-rules.mdc",
+            "content": cursor_rules
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(import.status(), 200);
+    let import_body: serde_json::Value = import.json().await.unwrap();
+    assert_eq!(import_body["imported"].as_u64(), Some(2));
+
+    let export = client
+        .get(format!("{base}/v1/adapters/export?kind=claude_project"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export.status(), 200);
+    let export_body: serde_json::Value = export.json().await.unwrap();
+    let artifact = &export_body["artifact"];
+    assert_eq!(artifact["adapter_kind"].as_str(), Some("claude_project"));
+    assert_eq!(artifact["exported_count"].as_u64(), Some(2));
+    let content = artifact["content"].as_str().unwrap();
+    assert!(content.contains("Never merge without security review."));
+    assert!(content.contains("Prefer rg over grep."));
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_adapter_cursor_to_claude_roundtrip() {
+    let source_port = free_port();
+    let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
+    let source_data_dir = source_tmp.path().join("data");
+    std::fs::create_dir_all(&source_data_dir).unwrap();
+    let source_config = test_config_http(source_port, source_data_dir.to_str().unwrap());
+    let source_config_path = source_tmp.path().join("adapter-source.toml");
+    std::fs::write(&source_config_path, source_config).unwrap();
+
+    let cursor_rules_path = source_tmp.path().join("review-rules.mdc");
+    std::fs::write(
+        &cursor_rules_path,
+        r#"---
+description: Review rules
+alwaysApply: false
+---
+
+- Never merge without security review
+- Prefer rg over grep
+"#,
+    )
+    .unwrap();
+
+    let import = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            source_config_path.to_str().unwrap(),
+            "adapter",
+            "import",
+            "--kind",
+            "cursor_rules",
+            cursor_rules_path.to_str().unwrap(),
+            "--namespace",
+            "test",
+        ])
+        .output()
+        .await
+        .expect("failed to run adapter import");
+    assert!(
+        import.status.success(),
+        "adapter import failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&import.stdout),
+        String::from_utf8_lossy(&import.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&import.stdout)
+            .contains("Imported adapter cursor_rules into test: normalized=2 imported=2")
+    );
+
+    let claude_export_path = source_tmp.path().join("claude-project.md");
+    let export = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            source_config_path.to_str().unwrap(),
+            "adapter",
+            "export",
+            "--kind",
+            "claude_project",
+            "--namespace",
+            "test",
+            "--output",
+            claude_export_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run adapter export");
+    assert!(
+        export.status.success(),
+        "adapter export failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&export.stdout),
+        String::from_utf8_lossy(&export.stderr)
+    );
+    let exported_text = std::fs::read_to_string(&claude_export_path).unwrap();
+    assert!(exported_text.contains("Never merge without security review."));
+    assert!(exported_text.contains("Prefer rg over grep."));
+
+    let target_port = free_port();
+    let target_tmp = tempfile::tempdir().expect("failed to create target temp dir");
+    let target_data_dir = target_tmp.path().join("data");
+    std::fs::create_dir_all(&target_data_dir).unwrap();
+    let target_config = test_config_http(target_port, target_data_dir.to_str().unwrap());
+    let target_config_path = target_tmp.path().join("adapter-target.toml");
+    std::fs::write(&target_config_path, target_config).unwrap();
+
+    let dry_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            target_config_path.to_str().unwrap(),
+            "adapter",
+            "import",
+            "--kind",
+            "claude_project",
+            claude_export_path.to_str().unwrap(),
+            "--namespace",
+            "test",
+            "--dry-run",
+        ])
+        .output()
+        .await
+        .expect("failed to run adapter import dry-run");
+    assert!(
+        dry_run.status.success(),
+        "adapter import dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&dry_run.stdout)
+            .contains("normalized=2 create=2 merge=0 conflict=0")
+    );
+
+    let apply = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            target_config_path.to_str().unwrap(),
+            "adapter",
+            "import",
+            "--kind",
+            "claude_project",
+            claude_export_path.to_str().unwrap(),
+            "--namespace",
+            "test",
+        ])
+        .output()
+        .await
+        .expect("failed to run adapter import apply");
+    assert!(
+        apply.status.success(),
+        "adapter import apply failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&apply.stdout),
+        String::from_utf8_lossy(&apply.stderr)
+    );
+
+    let mut target_child = start_server(target_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let target_base = format!("http://127.0.0.1:{target_port}");
+    let export_resp = client
+        .get(format!("{target_base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    let contents: Vec<&str> = export_body["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|memory| memory["content"].as_str())
+        .collect();
+    assert!(contents.contains(&"Never merge without security review."));
+    assert!(contents.contains(&"Prefer rg over grep."));
+
+    target_child.kill().await.ok();
+    target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_git_history_adapter_dry_run() {
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    let repo_path = tmp.path().join("repo");
+    std::fs::create_dir_all(&repo_path).unwrap();
+    let status = std::process::Command::new("git")
+        .args(["init", repo_path.to_str().unwrap()])
+        .status()
+        .unwrap();
+    assert!(status.success());
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().unwrap(),
+                "config",
+                "user.email",
+                "test@example.com"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().unwrap(),
+                "config",
+                "user.name",
+                "Test User"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    let file_path = repo_path.join("notes.txt");
+    std::fs::write(&file_path, "first").unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", repo_path.to_str().unwrap(), "add", "."])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().unwrap(),
+                "commit",
+                "-m",
+                "feat(api): add adapter bridge"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+    std::fs::write(&file_path, "second").unwrap();
+    assert!(
+        std::process::Command::new("git")
+            .args(["-C", repo_path.to_str().unwrap(), "add", "."])
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        std::process::Command::new("git")
+            .args([
+                "-C",
+                repo_path.to_str().unwrap(),
+                "commit",
+                "-m",
+                "fix(proxy): harden ambiguous gate"
+            ])
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let config_path = tmp.path().join("git-history.toml");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::write(
+        &config_path,
+        test_config_http(free_port(), data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let dry_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "adapter",
+            "import",
+            "--kind",
+            "git_history",
+            repo_path.to_str().unwrap(),
+            "--namespace",
+            "test",
+            "--dry-run",
+        ])
+        .output()
+        .await
+        .expect("failed to run git history adapter import dry-run");
+    assert!(
+        dry_run.status.success(),
+        "git history adapter dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&dry_run.stdout);
+    assert!(stdout.contains("Adapter import dry-run for test [git_history repo]"));
+    assert!(stdout.contains("normalized=2 create=2 merge=0 conflict=0"));
 }
 
 #[tokio::test]

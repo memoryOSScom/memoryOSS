@@ -8,6 +8,7 @@
     clippy::manual_async_fn
 )]
 
+mod adapters;
 mod config;
 mod decompose;
 #[allow(dead_code)]
@@ -106,6 +107,11 @@ enum Commands {
     Passport {
         #[command(subcommand)]
         command: PassportCommands,
+    },
+    /// Normalize or export cross-app memory adapter artifacts
+    Adapter {
+        #[command(subcommand)]
+        command: AdapterCommands,
     },
     /// Inspect, export, replay, or branch memory history
     History {
@@ -233,6 +239,36 @@ enum PassportCommands {
         /// Preview changes without applying them
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum AdapterCommands {
+    /// Import a foreign client artifact through the runtime contract
+    Import {
+        /// Adapter kind: claude_project, cursor_rules, or git_history
+        #[arg(long)]
+        kind: String,
+        /// Path to the foreign artifact or repository
+        path: PathBuf,
+        /// Override target namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Preview merge/conflict decisions without applying them
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Export current runtime memories into a foreign client artifact
+    Export {
+        /// Adapter kind: claude_project or cursor_rules
+        #[arg(long)]
+        kind: String,
+        /// Namespace to export
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Output path for the generated artifact
+        #[arg(short, long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -1007,6 +1043,136 @@ fn run_passport_import(
     println!(
         "Imported passport bundle into {}: imported={} merge={} conflict={}",
         target_namespace, imported, plan.preview.merge_count, plan.preview.conflict_count
+    );
+    Ok(())
+}
+
+fn resolve_operator_namespace(
+    config: &config::Config,
+    doc_engine: &engines::document::DocumentEngine,
+    namespace_override: Option<&str>,
+    purpose: &str,
+) -> anyhow::Result<String> {
+    if let Some(namespace) = namespace_override {
+        return Ok(namespace.to_string());
+    }
+    decay_namespaces(config, doc_engine.list_namespaces()?)
+        .into_iter()
+        .next()
+        .ok_or_else(|| anyhow::anyhow!("no namespace available for {purpose}"))
+}
+
+fn adapter_source_label(path: &Path) -> String {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .map(ToOwned::to_owned)
+        .unwrap_or_else(|| path.display().to_string())
+}
+
+fn load_adapter_source(kind: adapters::MemoryAdapterKind, path: &Path) -> anyhow::Result<String> {
+    match kind {
+        adapters::MemoryAdapterKind::ClaudeProject | adapters::MemoryAdapterKind::CursorRules => {
+            Ok(std::fs::read_to_string(path)?)
+        }
+        adapters::MemoryAdapterKind::GitHistory => {
+            let output = std::process::Command::new("git")
+                .args([
+                    "-C",
+                    path.to_str()
+                        .ok_or_else(|| anyhow::anyhow!("invalid git path"))?,
+                    "log",
+                    "--max-count=24",
+                    "--format=%H%x1f%s%x1f%b%x1e",
+                ])
+                .output()?;
+            if !output.status.success() {
+                anyhow::bail!(
+                    "git log failed: {}",
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Ok(String::from_utf8(output.stdout)?)
+        }
+    }
+}
+
+fn run_adapter_import(
+    config: &config::Config,
+    kind: adapters::MemoryAdapterKind,
+    path: &Path,
+    namespace_override: Option<&str>,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let target_namespace =
+        resolve_operator_namespace(config, &doc_engine, namespace_override, "adapter import")?;
+    let source_label = adapter_source_label(path);
+    let source = load_adapter_source(kind, path)?;
+    let existing = doc_engine.list_all_including_archived(&target_namespace)?;
+    let plan =
+        adapters::plan_adapter_import(&target_namespace, kind, &source_label, &source, &existing);
+
+    if dry_run {
+        println!(
+            "Adapter import dry-run for {} [{} {}]: normalized={} create={} merge={} conflict={}",
+            target_namespace,
+            kind,
+            source_label,
+            plan.preview.normalized_count,
+            plan.preview.preview.create_count,
+            plan.preview.preview.merge_count,
+            plan.preview.preview.conflict_count
+        );
+        for item in plan.preview.preview.items.iter().take(10) {
+            println!("- [{}] {} ({})", item.decision, item.preview, item.reason);
+        }
+        return Ok(());
+    }
+
+    let mut imported = 0usize;
+    for memory in &plan.staged_memories {
+        doc_engine.store(memory, &format!("adapter-import-cli:{kind}"))?;
+        imported += 1;
+    }
+    println!(
+        "Imported adapter {} into {}: normalized={} imported={} merge={} conflict={}",
+        kind,
+        target_namespace,
+        plan.preview.normalized_count,
+        imported,
+        plan.preview.preview.merge_count,
+        plan.preview.preview.conflict_count
+    );
+    Ok(())
+}
+
+fn run_adapter_export(
+    config: &config::Config,
+    kind: adapters::MemoryAdapterKind,
+    namespace_override: Option<&str>,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let namespace =
+        resolve_operator_namespace(config, &doc_engine, namespace_override, "adapter export")?;
+    let memories = doc_engine.list_all_including_archived(&namespace)?;
+    let artifact =
+        adapters::render_adapter_export(kind, &namespace, &memories).map_err(anyhow::Error::msg)?;
+    let timestamp = chrono::Utc::now().format("%Y%m%d-%H%M%S");
+    let output_path = output.unwrap_or_else(|| {
+        PathBuf::from(format!(
+            "memoryoss-{}-{}-{timestamp}.{}",
+            kind,
+            namespace,
+            kind.default_extension()
+        ))
+    });
+    std::fs::write(&output_path, artifact.content)?;
+    println!(
+        "Exported adapter artifact {} [{} memories={}]",
+        output_path.display(),
+        kind,
+        artifact.exported_count
     );
     Ok(())
 }
@@ -2248,6 +2414,7 @@ async fn main() -> anyhow::Result<()> {
             | Commands::Doctor
             | Commands::Recent { .. }
             | Commands::Passport { .. }
+            | Commands::Adapter { .. }
             | Commands::History { .. }
     );
 
@@ -2405,6 +2572,29 @@ async fn main() -> anyhow::Result<()> {
                 dry_run,
             } => {
                 run_passport_import(&config, &path, namespace.as_deref(), dry_run)?;
+            }
+        },
+        Commands::Adapter { command } => match command {
+            AdapterCommands::Import {
+                kind,
+                path,
+                namespace,
+                dry_run,
+            } => {
+                let kind = kind
+                    .parse::<adapters::MemoryAdapterKind>()
+                    .map_err(anyhow::Error::msg)?;
+                run_adapter_import(&config, kind, &path, namespace.as_deref(), dry_run)?;
+            }
+            AdapterCommands::Export {
+                kind,
+                namespace,
+                output,
+            } => {
+                let kind = kind
+                    .parse::<adapters::MemoryAdapterKind>()
+                    .map_err(anyhow::Error::msg)?;
+                run_adapter_export(&config, kind, namespace.as_deref(), output)?;
             }
         },
         Commands::History { command } => match command {
