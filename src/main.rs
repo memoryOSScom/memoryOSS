@@ -122,6 +122,11 @@ enum Commands {
         #[command(subcommand)]
         command: AdapterCommands,
     },
+    /// Inspect or ingest ambient connector signals
+    Connector {
+        #[command(subcommand)]
+        command: ConnectorCommands,
+    },
     /// Inspect, export, replay, or branch memory history
     History {
         #[command(subcommand)]
@@ -283,6 +288,39 @@ enum AdapterCommands {
         /// Output path for the generated artifact
         #[arg(short, long)]
         output: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum ConnectorCommands {
+    /// List supported ambient connector kinds and privacy defaults
+    List,
+    /// Preview or store one ambient connector candidate locally
+    Ingest {
+        /// Connector kind: editor, terminal, browser, docs, ticket, calendar, pull_request, incident
+        #[arg(long)]
+        kind: String,
+        /// Namespace to ingest into
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Summary of the captured signal
+        #[arg(long)]
+        summary: String,
+        /// Evidence fragments captured from the connector
+        #[arg(long = "evidence")]
+        evidence: Vec<String>,
+        /// Extra classification tags to preserve with the candidate
+        #[arg(long = "tag")]
+        tags: Vec<String>,
+        /// Optional connector-local reference such as a file path or URL slug
+        #[arg(long)]
+        source_ref: Option<String>,
+        /// Keep raw evidence instead of applying redaction defaults
+        #[arg(long)]
+        allow_raw: bool,
+        /// Preview the candidate without writing it to disk
+        #[arg(long)]
+        dry_run: bool,
     },
 }
 
@@ -1363,6 +1401,88 @@ fn run_adapter_export(
         output_path.display(),
         kind,
         artifact.exported_count
+    );
+    Ok(())
+}
+
+fn run_connector_list() {
+    println!("Ambient connector mesh");
+    for connector in crate::server::routes::ambient_connector_definitions() {
+        println!(
+            "- {:<12} opt_in={} redact_sensitive={} capture_raw={}",
+            connector.kind,
+            connector.enabled_by_default,
+            connector.redact_sensitive_by_default,
+            connector.capture_raw_by_default
+        );
+        println!("  {}", connector.description);
+    }
+}
+
+fn render_connector_preview(
+    namespace: &str,
+    preview: &crate::server::routes::AmbientConnectorPreview,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Ambient connector candidate");
+    let _ = writeln!(output, "Namespace: {}", namespace);
+    let _ = writeln!(output, "Connector: {}", preview.connector);
+    let _ = writeln!(output, "Source:    {}", preview.source);
+    let _ = writeln!(output, "Redacted:  {}", preview.redacted);
+    let _ = writeln!(output, "Evidence:  {}", preview.evidence_count);
+    let _ = writeln!(output, "Tags:      {}", preview.tags.join(", "));
+    let _ = writeln!(output, "Preview:   {}", preview.preview);
+    output
+}
+
+fn run_connector_ingest(
+    config: &config::Config,
+    kind: crate::server::routes::AmbientConnectorKind,
+    namespace_override: Option<&str>,
+    summary: String,
+    evidence: Vec<String>,
+    tags: Vec<String>,
+    source_ref: Option<String>,
+    allow_raw: bool,
+    dry_run: bool,
+) -> anyhow::Result<()> {
+    std::fs::create_dir_all(&config.storage.data_dir)?;
+    let doc_engine = open_operator_doc_engine(config)?;
+    let namespace =
+        resolve_operator_namespace(config, &doc_engine, namespace_override, "connector ingest")?;
+    let signal = crate::server::routes::AmbientConnectorSignal {
+        connector: kind,
+        summary,
+        evidence,
+        tags,
+        source_ref,
+        redact_sensitive: !allow_raw,
+    };
+    let prepared = crate::server::routes::prepare_ambient_connector_candidate(&namespace, &signal)
+        .map_err(anyhow::Error::msg)?;
+    print!(
+        "{}",
+        render_connector_preview(&namespace, &prepared.preview)
+    );
+
+    if dry_run {
+        println!("Dry-run: no candidate written. Review path remains the same inbox.");
+        return Ok(());
+    }
+
+    doc_engine.store(
+        &prepared.memory,
+        prepared
+            .memory
+            .source_key
+            .as_deref()
+            .unwrap_or("ambient-connector"),
+    )?;
+    println!(
+        "Stored ambient connector candidate into {}. Review it with `memoryoss review queue --namespace {}`.",
+        namespace, namespace
     );
     Ok(())
 }
@@ -2809,6 +2929,7 @@ async fn main() -> anyhow::Result<()> {
             | Commands::Hud { .. }
             | Commands::Passport { .. }
             | Commands::Adapter { .. }
+            | Commands::Connector { .. }
             | Commands::History { .. }
             | Commands::Bundle {
                 command: BundleCommands::Export { .. }
@@ -2995,6 +3116,36 @@ async fn main() -> anyhow::Result<()> {
                     .parse::<adapters::MemoryAdapterKind>()
                     .map_err(anyhow::Error::msg)?;
                 run_adapter_export(&config, kind, namespace.as_deref(), output)?;
+            }
+        },
+        Commands::Connector { command } => match command {
+            ConnectorCommands::List => {
+                run_connector_list();
+            }
+            ConnectorCommands::Ingest {
+                kind,
+                namespace,
+                summary,
+                evidence,
+                tags,
+                source_ref,
+                allow_raw,
+                dry_run,
+            } => {
+                let kind = kind
+                    .parse::<crate::server::routes::AmbientConnectorKind>()
+                    .map_err(anyhow::Error::msg)?;
+                run_connector_ingest(
+                    &config,
+                    kind,
+                    namespace.as_deref(),
+                    summary,
+                    evidence,
+                    tags,
+                    source_ref,
+                    allow_raw,
+                    dry_run,
+                )?;
             }
         },
         Commands::History { command } => match command {

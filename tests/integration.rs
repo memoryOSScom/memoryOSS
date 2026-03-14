@@ -7354,6 +7354,285 @@ async fn test_cli_memory_bundle_export_preview_validate_and_diff_without_runtime
 }
 
 #[tokio::test]
+async fn test_connector_manifest_and_ingest_feed_review_queue_and_recall() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp_dir.path().join("connector-mesh.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(port, data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    let manifest_resp = client
+        .get(format!("{base}/v1/connectors"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(manifest_resp.status(), 200);
+    let manifest_body: serde_json::Value = manifest_resp.json().await.unwrap();
+    let connectors = manifest_body["connectors"].as_array().unwrap();
+    assert!(connectors.len() >= 5);
+    assert!(connectors.iter().all(|entry| {
+        entry["enabled_by_default"].as_bool() == Some(false)
+            && entry["redact_sensitive_by_default"].as_bool() == Some(true)
+            && entry["capture_raw_by_default"].as_bool() == Some(false)
+    }));
+
+    let dry_run_resp = client
+        .post(format!("{base}/v1/connectors/ingest"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "connector": "terminal",
+            "summary": "Terminal note: use cargo fmt before release commits.",
+            "evidence": ["export API_KEY=sk-live-secret"],
+            "tags": ["release"],
+            "source_ref": "terminal://release/42",
+            "dry_run": true
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dry_run_resp.status(), 200);
+    let dry_run_body: serde_json::Value = dry_run_resp.json().await.unwrap();
+    assert_eq!(
+        dry_run_body["source"].as_str(),
+        Some("ambient-connector:terminal")
+    );
+    assert_eq!(dry_run_body["preview"]["redacted"].as_bool(), Some(true));
+    assert!(
+        dry_run_body["preview"]["preview"]
+            .as_str()
+            .unwrap_or("")
+            .contains("[REDACTED:")
+    );
+    assert!(
+        dry_run_body["preview"]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tag| tag.as_str() == Some("connector:terminal"))
+    );
+    assert!(
+        dry_run_body["preview"]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tag| tag.as_str() == Some("client:ambient_mesh"))
+    );
+    assert!(
+        dry_run_body["preview"]["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tag| tag.as_str().unwrap_or("").starts_with("source_ref:"))
+    );
+
+    for payload in [
+        serde_json::json!({
+            "connector": "editor",
+            "summary": "Editor note: release checklist is referenced beside the rollout notes.",
+            "evidence": ["docs/releases/README.md"],
+            "source_ref": "editor://workspace/docs/releases/README.md#12",
+            "tags": ["release", "docs"]
+        }),
+        serde_json::json!({
+            "connector": "terminal",
+            "summary": "Terminal note: use cargo fmt before release commits.",
+            "evidence": ["cargo fmt --check"],
+            "source_ref": "terminal://release/42",
+            "tags": ["release", "checks"]
+        }),
+        serde_json::json!({
+            "connector": "browser",
+            "summary": "Browser note: deployment dashboard lives at status.internal/releases.",
+            "evidence": ["status.internal/releases"],
+            "source_ref": "browser://status.internal/releases",
+            "tags": ["release", "dashboard"]
+        }),
+        serde_json::json!({
+            "connector": "docs",
+            "summary": "Docs note: release checklist lives in docs/releases/README.md and is owned by the release captain.",
+            "evidence": ["docs/releases/README.md"],
+            "source_ref": "docs://docs/releases/README.md",
+            "tags": ["release", "docs"]
+        }),
+        serde_json::json!({
+            "connector": "ticket",
+            "summary": "Ticket note: INC-4242 tracks rollback verification before release.",
+            "evidence": ["INC-4242"],
+            "source_ref": "ticket://INC-4242",
+            "tags": ["release", "incident"]
+        }),
+    ] {
+        let ingest_resp = client
+            .post(format!("{base}/v1/connectors/ingest"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(ingest_resp.status(), 200);
+        let ingest_body: serde_json::Value = ingest_resp.json().await.unwrap();
+        assert_eq!(ingest_body["dry_run"].as_bool(), Some(false));
+        assert!(
+            ingest_body["review_key"]
+                .as_str()
+                .unwrap_or("")
+                .starts_with("review:")
+        );
+    }
+
+    let queue_body = review_queue(&client, &base, "test-key-integration", "test", 10).await;
+    assert_eq!(queue_body["summary"]["candidate"].as_u64(), Some(5));
+    let docs_item = queue_body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| {
+            entry["preview"]
+                .as_str()
+                .unwrap_or("")
+                .contains("docs/releases/README.md")
+        })
+        .cloned()
+        .expect("expected docs connector candidate");
+    assert_eq!(docs_item["source"].as_str(), Some("ambient-connector:docs"));
+    assert!(
+        docs_item["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tag| tag.as_str() == Some("connector:docs"))
+    );
+    assert!(
+        docs_item["tags"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tag| tag.as_str() == Some("client:ambient_mesh"))
+    );
+
+    let action_resp = client
+        .post(format!("{base}/v1/admin/review/action"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "namespace": "test",
+            "review_key": docs_item["review_key"].as_str().unwrap(),
+            "action": "confirm"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(action_resp.status(), 200);
+    let action_body: serde_json::Value = action_resp.json().await.unwrap();
+    assert_eq!(action_body["memory"]["status"].as_str(), Some("active"));
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Where does the release checklist live?",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert!(
+        explain_body["final_results"][0]["memory"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("docs/releases/README.md")
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_connector_list_and_ingest_dry_run_surface_privacy_defaults() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp_dir.path().join("connector-cli.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(port, data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let list = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "connector",
+            "list",
+        ])
+        .output()
+        .await
+        .expect("failed to run connector list");
+    assert!(
+        list.status.success(),
+        "connector list failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&list.stdout),
+        String::from_utf8_lossy(&list.stderr)
+    );
+    let list_stdout = String::from_utf8_lossy(&list.stdout);
+    assert!(list_stdout.contains("Ambient connector mesh"));
+    assert!(list_stdout.contains("editor"));
+    assert!(list_stdout.contains("terminal"));
+    assert!(list_stdout.contains("redact_sensitive=true"));
+
+    let dry_run = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "connector",
+            "ingest",
+            "--kind",
+            "terminal",
+            "--namespace",
+            "test",
+            "--summary",
+            "Terminal note: use cargo fmt before release commits.",
+            "--evidence",
+            "export API_KEY=sk-live-secret",
+            "--source-ref",
+            "terminal://release/42",
+            "--tag",
+            "release",
+            "--dry-run",
+        ])
+        .output()
+        .await
+        .expect("failed to run connector ingest dry-run");
+    assert!(
+        dry_run.status.success(),
+        "connector ingest dry-run failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dry_run.stdout),
+        String::from_utf8_lossy(&dry_run.stderr)
+    );
+    let dry_run_stdout = String::from_utf8_lossy(&dry_run.stdout);
+    assert!(dry_run_stdout.contains("Ambient connector candidate"));
+    assert!(dry_run_stdout.contains("ambient-connector:terminal"));
+    assert!(dry_run_stdout.contains("[REDACTED:"));
+    assert!(dry_run_stdout.contains("connector:terminal"));
+    assert!(dry_run_stdout.contains("client:ambient_mesh"));
+    assert!(dry_run_stdout.contains("source_ref:"));
+}
+
+#[tokio::test]
 async fn test_adapter_api_import_dry_run_and_export() {
     let port = free_port();
     let tmp = tempfile::tempdir().expect("failed to create temp dir");

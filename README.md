@@ -477,6 +477,37 @@ memoryoss adapter export --kind claude_project --namespace test -o claude-projec
 memoryoss adapter import --kind git_history . --namespace test --dry-run
 ```
 
+### Ambient Connector Mesh
+
+memoryOSS now exposes an opt-in connector mesh so ambient signals can enter the same candidate and review path as extracted memories.
+
+Supported connector kinds today:
+- `editor`
+- `terminal`
+- `browser`
+- `docs`
+- `ticket`
+- `calendar`
+- `pull_request`
+- `incident`
+
+Connector defaults are intentionally conservative:
+- disabled by default
+- sensitive fragments are redacted by default
+- raw excerpts are not captured unless explicitly allowed
+- every candidate carries uniform provenance tags like `connector:*`, `client:ambient_mesh`, and `source_ref:*`
+
+Reference endpoints:
+- `GET /v1/connectors`
+- `POST /v1/connectors/ingest`
+
+Reference commands:
+
+```bash
+memoryoss connector list
+memoryoss connector ingest --kind terminal --namespace test --summary "Terminal note: use cargo fmt before release commits." --evidence "export API_KEY=sk-live-secret" --source-ref "terminal://release/42" --dry-run
+```
+
 ### Sharing (cross-namespace collaboration)
 
 | Endpoint | Method | Description |
@@ -499,6 +530,8 @@ memoryoss adapter import --kind git_history . --namespace test --dry-run
 | `/v1/history/replay` | POST | Replay a history bundle into an empty target namespace |
 | `/v1/adapters/export` | GET | Export runtime memories into a foreign client artifact |
 | `/v1/adapters/import` | POST | Dry-run or apply a normalized foreign client artifact |
+| `/v1/connectors` | GET | List supported ambient connector kinds plus privacy defaults |
+| `/v1/connectors/ingest` | POST | Preview or store an opt-in ambient connector signal as a candidate memory |
 | `/v1/bundles/export` | GET | Export a versioned memory bundle envelope around passport or history artifacts |
 | `/v1/bundles/preview` | POST | Preview bundle metadata, URI, and sampled contents without importing |
 | `/v1/bundles/validate` | POST | Validate bundle envelope integrity plus nested artifact integrity |
@@ -649,6 +682,8 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss adapter import --kind cursor_rules .cursor/rules/review.mdc --namespace test --dry-run` | Normalize a Cursor rule file into runtime records with preview |
 | `memoryoss adapter export --kind claude_project --namespace test -o claude-project.md` | Export the current runtime state as a Claude Project artifact |
 | `memoryoss adapter import --kind git_history . --namespace test --dry-run` | Preview recent Git history as candidate runtime memories |
+| `memoryoss connector list` | Show supported ambient connector kinds and privacy defaults |
+| `memoryoss connector ingest --kind docs --namespace test --summary "Release checklist lives in docs/releases/README.md." --dry-run` | Preview one ambient connector candidate before storing it |
 | `memoryoss history show <id> --namespace test` | Show lineage, transitions, and review chain for one memory |
 | `memoryoss history export <id> --namespace test -o history.json` | Export a deterministic history replay bundle |
 | `memoryoss history replay history.json --namespace test --dry-run` | Preview a safe replay into an empty target namespace |

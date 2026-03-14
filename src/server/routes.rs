@@ -166,6 +166,291 @@ pub(crate) struct MemoryBundleDiff {
     pub(crate) shared_preview_count: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum AmbientConnectorKind {
+    Editor,
+    Terminal,
+    Browser,
+    Docs,
+    Ticket,
+    Calendar,
+    PullRequest,
+    Incident,
+}
+
+impl AmbientConnectorKind {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Editor => "Editor",
+            Self::Terminal => "Terminal",
+            Self::Browser => "Browser",
+            Self::Docs => "Docs",
+            Self::Ticket => "Tickets",
+            Self::Calendar => "Calendar",
+            Self::PullRequest => "Pull Requests",
+            Self::Incident => "Incidents",
+        }
+    }
+
+    pub(crate) fn description(self) -> &'static str {
+        match self {
+            Self::Editor => "Focused editor notes, code comments, and inline work context.",
+            Self::Terminal => "Commands, shell outcomes, and local operational hints.",
+            Self::Browser => "Tabs, dashboards, and web consoles relevant to current work.",
+            Self::Docs => "Project docs, runbooks, and owned knowledge pages.",
+            Self::Ticket => "Issue tracker titles, status notes, and action items.",
+            Self::Calendar => "Meeting commitments, deadlines, and schedule-driven constraints.",
+            Self::PullRequest => "PR titles, review context, and merge guardrails.",
+            Self::Incident => "Incident timelines, mitigations, and follow-up breadcrumbs.",
+        }
+    }
+}
+
+impl std::fmt::Display for AmbientConnectorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Editor => write!(f, "editor"),
+            Self::Terminal => write!(f, "terminal"),
+            Self::Browser => write!(f, "browser"),
+            Self::Docs => write!(f, "docs"),
+            Self::Ticket => write!(f, "ticket"),
+            Self::Calendar => write!(f, "calendar"),
+            Self::PullRequest => write!(f, "pull_request"),
+            Self::Incident => write!(f, "incident"),
+        }
+    }
+}
+
+impl std::str::FromStr for AmbientConnectorKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "editor" => Ok(Self::Editor),
+            "terminal" => Ok(Self::Terminal),
+            "browser" => Ok(Self::Browser),
+            "docs" => Ok(Self::Docs),
+            "ticket" | "tickets" => Ok(Self::Ticket),
+            "calendar" => Ok(Self::Calendar),
+            "pull_request" | "pull-request" | "pr" => Ok(Self::PullRequest),
+            "incident" | "incidents" => Ok(Self::Incident),
+            other => Err(format!("unsupported ambient connector kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AmbientConnectorDefinition {
+    pub(crate) kind: AmbientConnectorKind,
+    pub(crate) label: &'static str,
+    pub(crate) description: &'static str,
+    pub(crate) enabled_by_default: bool,
+    pub(crate) redact_sensitive_by_default: bool,
+    pub(crate) capture_raw_by_default: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AmbientConnectorSignal {
+    pub(crate) connector: AmbientConnectorKind,
+    pub(crate) summary: String,
+    pub(crate) evidence: Vec<String>,
+    pub(crate) tags: Vec<String>,
+    pub(crate) source_ref: Option<String>,
+    pub(crate) redact_sensitive: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct AmbientConnectorPreview {
+    pub(crate) connector: AmbientConnectorKind,
+    pub(crate) source: String,
+    pub(crate) preview: String,
+    pub(crate) tags: Vec<String>,
+    pub(crate) provenance: Vec<String>,
+    pub(crate) evidence_count: usize,
+    pub(crate) redacted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PreparedAmbientConnectorCandidate {
+    pub(crate) memory: Memory,
+    pub(crate) preview: AmbientConnectorPreview,
+}
+
+pub(crate) fn ambient_connector_definitions() -> Vec<AmbientConnectorDefinition> {
+    [
+        AmbientConnectorKind::Editor,
+        AmbientConnectorKind::Terminal,
+        AmbientConnectorKind::Browser,
+        AmbientConnectorKind::Docs,
+        AmbientConnectorKind::Ticket,
+        AmbientConnectorKind::Calendar,
+        AmbientConnectorKind::PullRequest,
+        AmbientConnectorKind::Incident,
+    ]
+    .into_iter()
+    .map(|kind| AmbientConnectorDefinition {
+        kind,
+        label: kind.label(),
+        description: kind.description(),
+        enabled_by_default: false,
+        redact_sensitive_by_default: true,
+        capture_raw_by_default: false,
+    })
+    .collect()
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn ambient_connector_source(kind: AmbientConnectorKind) -> String {
+    format!("ambient-connector:{kind}")
+}
+
+fn sanitize_source_ref(value: &str) -> String {
+    let mut sanitized = String::new();
+    let mut last_was_sep = false;
+    for ch in value.chars() {
+        let next = if ch.is_ascii_alphanumeric() {
+            Some(ch.to_ascii_lowercase())
+        } else if matches!(ch, ':' | '/' | '#' | '.' | '_' | '-') {
+            Some('_')
+        } else {
+            None
+        };
+        if let Some(next) = next {
+            if next == '_' {
+                if last_was_sep {
+                    continue;
+                }
+                last_was_sep = true;
+            } else {
+                last_was_sep = false;
+            }
+            sanitized.push(next);
+        }
+        if sanitized.len() >= 48 {
+            break;
+        }
+    }
+    sanitized.trim_matches('_').to_string()
+}
+
+fn redact_ambient_text(text: &str) -> String {
+    let mut result = text.to_string();
+    let patterns = [
+        "sk-",
+        "ek_",
+        "api_key",
+        "apikey",
+        "secret_key",
+        "access_token",
+        "password",
+        "passwd",
+        "credential",
+        "bearer ",
+    ];
+    for line in text.lines() {
+        let lower = line.to_lowercase();
+        for pattern in &patterns {
+            if lower.contains(pattern) {
+                result = result.replace(line, &format!("[REDACTED: contains {pattern}]"));
+                break;
+            }
+        }
+    }
+    result
+}
+
+fn build_ambient_connector_tags(signal: &AmbientConnectorSignal) -> Vec<String> {
+    let mut tags = vec![
+        "ambient-capture".to_string(),
+        format!("connector:{}", signal.connector),
+        "client:ambient_mesh".to_string(),
+    ];
+    if let Some(source_ref) = signal.source_ref.as_deref() {
+        let sanitized = sanitize_source_ref(source_ref);
+        if !sanitized.is_empty() {
+            tags.push(format!("source_ref:{sanitized}"));
+        }
+    }
+    for tag in &signal.tags {
+        if !tags
+            .iter()
+            .any(|existing| existing.eq_ignore_ascii_case(tag))
+        {
+            tags.push(tag.clone());
+        }
+    }
+    tags
+}
+
+pub(crate) fn prepare_ambient_connector_candidate(
+    namespace: &str,
+    signal: &AmbientConnectorSignal,
+) -> Result<PreparedAmbientConnectorCandidate, String> {
+    let summary = signal.summary.trim();
+    if summary.is_empty() {
+        return Err("connector summary must not be empty".to_string());
+    }
+    let summary = if signal.redact_sensitive {
+        redact_ambient_text(summary)
+    } else {
+        summary.to_string()
+    };
+    let evidence: Vec<String> = signal
+        .evidence
+        .iter()
+        .map(|entry| entry.trim())
+        .filter(|entry| !entry.is_empty())
+        .map(|entry| {
+            if signal.redact_sensitive {
+                redact_ambient_text(entry)
+            } else {
+                entry.to_string()
+            }
+        })
+        .collect();
+
+    let mut content = format!("{} signal: {}", signal.connector.label(), summary);
+    if !evidence.is_empty() {
+        content.push_str(" Evidence: ");
+        content.push_str(&evidence.join(" | "));
+    }
+
+    let mut memory = Memory::new(content.clone());
+    memory.namespace = Some(namespace.to_string());
+    memory.source_key = Some(ambient_connector_source(signal.connector));
+    memory.status = MemoryStatus::Candidate;
+    memory.confidence = Some(0.15);
+    memory.evidence_count = evidence.len() as u32;
+    memory.tags = build_ambient_connector_tags(signal);
+
+    let provenance = vec![
+        format!("connector:{}", signal.connector),
+        "client:ambient_mesh".to_string(),
+        memory
+            .source_key
+            .clone()
+            .unwrap_or_else(|| "ambient-connector".to_string()),
+    ];
+    let preview = AmbientConnectorPreview {
+        connector: signal.connector,
+        source: memory
+            .source_key
+            .clone()
+            .unwrap_or_else(|| "ambient-connector".to_string()),
+        preview: preview_text(&content, 120),
+        tags: memory.tags.clone(),
+        provenance,
+        evidence_count: evidence.len(),
+        redacted: signal.redact_sensitive,
+    };
+
+    Ok(PreparedAmbientConnectorCandidate { memory, preview })
+}
+
 pub struct SharedState {
     pub config: Config,
     pub config_path: std::path::PathBuf,
@@ -689,6 +974,8 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/history/{id}", get(history_view))
         .route("/v1/adapters/export", get(adapter_export))
         .route("/v1/adapters/import", post(adapter_import))
+        .route("/v1/connectors", get(connectors_manifest))
+        .route("/v1/connectors/ingest", post(connector_ingest))
         .route("/v1/bundles/export", get(bundle_export))
         .route("/v1/bundles/preview", post(bundle_preview))
         .route("/v1/bundles/validate", post(bundle_validate))
@@ -3912,6 +4199,164 @@ struct HistoryReplayResponse {
     imported: usize,
     preview: crate::memory::MemoryHistoryReplayPreview,
     imported_ids: Vec<uuid::Uuid>,
+}
+
+#[derive(Serialize)]
+struct ConnectorsManifestResponse {
+    connectors: Vec<AmbientConnectorDefinition>,
+    ingest_path: String,
+    review_queue_path: String,
+}
+
+#[derive(Deserialize)]
+struct ConnectorIngestRequest {
+    connector: AmbientConnectorKind,
+    summary: String,
+    #[serde(default)]
+    evidence: Vec<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    source_ref: Option<String>,
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default = "default_true")]
+    redact_sensitive: bool,
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Serialize)]
+struct ConnectorIngestResponse {
+    dry_run: bool,
+    source: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review_key: Option<String>,
+    preview: AmbientConnectorPreview,
+}
+
+async fn connectors_manifest(
+    State(state): State<AppState>,
+    parts: Parts,
+) -> Result<Response, AppError> {
+    let _claims = require_auth(&state.config, &parts)?;
+    Ok(Json(ConnectorsManifestResponse {
+        connectors: ambient_connector_definitions(),
+        ingest_path: "/v1/connectors/ingest".to_string(),
+        review_queue_path: "/v1/admin/review-queue".to_string(),
+    })
+    .into_response())
+}
+
+async fn connector_ingest(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<ConnectorIngestRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_store(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions for store"));
+    }
+    if let Err(retry_ms) = state.rate_limiter.check(&claims.sub) {
+        return Err(AppError::RateLimited(retry_ms));
+    }
+    if state.indexer_state.lag() > BACKPRESSURE_THRESHOLD {
+        return Err(AppError::RateLimited(1000));
+    }
+
+    let namespace = enforce_namespace(&claims, req.namespace.as_deref())?.to_string();
+    validation::validate_namespace(&namespace, &state.config.limits)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    validation::validate_tags(&req.tags, &state.config.limits)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    let signal = AmbientConnectorSignal {
+        connector: req.connector,
+        summary: req.summary,
+        evidence: req.evidence,
+        tags: req.tags,
+        source_ref: req.source_ref,
+        redact_sensitive: req.redact_sensitive,
+    };
+    let mut prepared =
+        prepare_ambient_connector_candidate(&namespace, &signal).map_err(AppError::BadRequest)?;
+    validation::validate_content(&prepared.memory.content, &state.config.limits)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+    validation::validate_tags(&prepared.memory.tags, &state.config.limits)
+        .map_err(|e| AppError::BadRequest(e.to_string()))?;
+
+    check_ip_allowlist(&state, &parts, &namespace)?;
+
+    if req.dry_run {
+        return Ok(Json(ConnectorIngestResponse {
+            dry_run: true,
+            source: prepared
+                .memory
+                .source_key
+                .clone()
+                .unwrap_or_else(|| "ambient-connector".to_string()),
+            review_key: None,
+            preview: prepared.preview,
+        })
+        .into_response());
+    }
+
+    ensure_no_hash_duplicate(
+        &state,
+        &namespace,
+        prepared.memory.content_hash.as_deref(),
+        &[],
+    )?;
+    let embedding = state.embedding.embed_one(&prepared.memory.content).await?;
+    ensure_no_semantic_duplicate(&state, &namespace, &embedding, &[])?;
+    prepared.memory.embedding = Some(embedding.clone());
+    state.trust_scorer.update_centroid(&embedding, &namespace);
+    state
+        .trust_scorer
+        .record_access(prepared.memory.id, prepared.memory.source_key.as_deref());
+
+    let subject = prepared
+        .memory
+        .source_key
+        .clone()
+        .unwrap_or_else(|| claims.sub.clone());
+    let contradiction_updates =
+        apply_contradiction_detection(&state, &namespace, &mut prepared.memory, &subject, &[])?;
+    if contradiction_updates > 0 {
+        state.indexer_state.write_seq.fetch_add(
+            contradiction_updates as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        state.indexer_state.wake();
+    }
+
+    state
+        .group_committer
+        .store(prepared.memory.clone(), subject)
+        .await?;
+    let target_seq = state
+        .indexer_state
+        .write_seq
+        .load(std::sync::atomic::Ordering::Relaxed);
+    wait_for_indexer_catchup(&state, target_seq).await?;
+    refresh_review_queue_summary(&state, &namespace)?;
+    state.intent_cache.invalidate_namespace(&namespace).await;
+    state
+        .metrics
+        .stores
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    Ok(Json(ConnectorIngestResponse {
+        dry_run: false,
+        source: prepared
+            .memory
+            .source_key
+            .clone()
+            .unwrap_or_else(|| "ambient-connector".to_string()),
+        review_key: Some(encode_review_key(prepared.memory.id)),
+        preview: prepared.preview,
+    })
+    .into_response())
 }
 
 /// GET /v1/bundles/export?kind=passport — export a portable bundle envelope around runtime artifacts.
