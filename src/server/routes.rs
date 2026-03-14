@@ -32,11 +32,11 @@ use crate::memory::{
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction,
     MemoryHistoryBundle, MemoryHistoryReplayPlan, MemoryPassportBundle, MemoryStatus,
     PassportImportPlan, PassportScope, RecallRequest, RecallResponse, ReviewQueueKind,
-    ScoredMemory, StoreRequest, StoreResponse, UpdateRequest, build_memory_history_bundle,
-    build_memory_history_view, build_memory_passport_bundle, contradiction_signature,
-    contradiction_signatures_conflict, memories_contradict, plan_memory_history_replay,
-    plan_memory_passport_import, runtime_contract_document, runtime_contract_export_metadata,
-    verify_memory_history_bundle, verify_memory_passport_bundle,
+    ScoreChannels, ScoreExplainEntry, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
+    build_memory_history_bundle, build_memory_history_view, build_memory_passport_bundle,
+    contradiction_signature, contradiction_signatures_conflict, memories_contradict,
+    plan_memory_history_replay, plan_memory_passport_import, runtime_contract_document,
+    runtime_contract_export_metadata, verify_memory_history_bundle, verify_memory_passport_bundle,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -55,6 +55,8 @@ pub(crate) const DEFAULT_RECENT_ACTIVITY_LIMIT: usize = 10;
 const MAX_RECENT_ACTIVITY_LIMIT: usize = 100;
 pub(crate) const DEFAULT_REVIEW_QUEUE_LIMIT: usize = 20;
 const MAX_REVIEW_QUEUE_LIMIT: usize = 100;
+pub(crate) const DEFAULT_HUD_LIMIT: usize = 5;
+const MAX_HUD_LIMIT: usize = 25;
 
 pub struct SharedState {
     pub config: Config,
@@ -131,6 +133,9 @@ pub struct MetricsCounters {
     pub proxy_gate_inject: std::sync::atomic::AtomicU64,
     pub proxy_gate_abstain: std::sync::atomic::AtomicU64,
     pub proxy_gate_need_more_evidence: std::sync::atomic::AtomicU64,
+    pub proxy_policy_block: std::sync::atomic::AtomicU64,
+    pub proxy_policy_require_confirmation: std::sync::atomic::AtomicU64,
+    pub proxy_policy_warn: std::sync::atomic::AtomicU64,
     pub proxy_facts_extracted: std::sync::atomic::AtomicU64,
     pub proxy_upstream_errors: std::sync::atomic::AtomicU64,
 }
@@ -146,6 +151,9 @@ impl MetricsCounters {
             proxy_gate_inject: std::sync::atomic::AtomicU64::new(0),
             proxy_gate_abstain: std::sync::atomic::AtomicU64::new(0),
             proxy_gate_need_more_evidence: std::sync::atomic::AtomicU64::new(0),
+            proxy_policy_block: std::sync::atomic::AtomicU64::new(0),
+            proxy_policy_require_confirmation: std::sync::atomic::AtomicU64::new(0),
+            proxy_policy_warn: std::sync::atomic::AtomicU64::new(0),
             proxy_facts_extracted: std::sync::atomic::AtomicU64::new(0),
             proxy_upstream_errors: std::sync::atomic::AtomicU64::new(0),
         }
@@ -544,6 +552,7 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/admin/keys", get(list_keys))
         .route("/v1/admin/trust-stats", get(trust_stats))
         .route("/v1/admin/lifecycle", get(lifecycle_view))
+        .route("/v1/admin/hud", get(hud_view))
         .route("/v1/admin/recent", get(recent_activity_view))
         .route("/v1/admin/review-queue", get(review_queue_view))
         .route("/v1/admin/review/action", post(review_queue_action))
@@ -1058,6 +1067,452 @@ pub(crate) fn build_review_queue(
         .collect();
 
     ReviewQueueView { summary, items }
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudQuickAction {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) description: String,
+    pub(crate) method: String,
+    pub(crate) path: String,
+    pub(crate) cli: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudPolicyCounterSnapshot {
+    pub(crate) block: u64,
+    pub(crate) require_confirmation: u64,
+    pub(crate) warn: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudPolicyProbe {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) query: String,
+    pub(crate) decision: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) risky_actions: Vec<String>,
+    pub(crate) matched_policy_count: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) matched_policy_previews: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudPolicyOverview {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) live_counters: Option<HudPolicyCounterSnapshot>,
+    pub(crate) actionable_probes: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudNamespaceView {
+    pub(crate) namespace: String,
+    pub(crate) lifecycle: LifecycleSummary,
+    pub(crate) recent: serde_json::Value,
+    pub(crate) review_queue: ReviewQueueView,
+    pub(crate) policy_probes: Vec<HudPolicyProbe>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudSummary {
+    pub(crate) namespaces: usize,
+    pub(crate) total_memories: usize,
+    pub(crate) active_memories: usize,
+    pub(crate) contested_memories: usize,
+    pub(crate) pending_reviews: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct HudView {
+    pub(crate) generated_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) limit: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) namespace_filter: Option<String>,
+    pub(crate) summary: HudSummary,
+    pub(crate) policy_firewall: HudPolicyOverview,
+    pub(crate) quick_actions: Vec<HudQuickAction>,
+    pub(crate) namespaces: Vec<HudNamespaceView>,
+}
+
+fn hud_policy_counter_snapshot(metrics: &MetricsCounters) -> HudPolicyCounterSnapshot {
+    HudPolicyCounterSnapshot {
+        block: metrics
+            .proxy_policy_block
+            .load(std::sync::atomic::Ordering::Relaxed),
+        require_confirmation: metrics
+            .proxy_policy_require_confirmation
+            .load(std::sync::atomic::Ordering::Relaxed),
+        warn: metrics
+            .proxy_policy_warn
+            .load(std::sync::atomic::Ordering::Relaxed),
+    }
+}
+
+fn hud_namespace_hint(namespace_memories: &[(String, Vec<Memory>)]) -> String {
+    match namespace_memories {
+        [(namespace, _)] => namespace.clone(),
+        _ => "<namespace>".to_string(),
+    }
+}
+
+fn build_hud_quick_actions(namespace_hint: &str, limit: usize) -> Vec<HudQuickAction> {
+    vec![
+        HudQuickAction {
+            id: "search".to_string(),
+            label: "Search".to_string(),
+            description: "Query recall without leaving the HUD.".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/recall".to_string(),
+            cli: format!(
+                "curl -s \"$BASE/v1/recall\" -H \"Authorization: Bearer $KEY\" -H \"content-type: application/json\" -d '{{\"namespace\":\"{namespace_hint}\",\"query\":\"...\"}}'"
+            ),
+        },
+        HudQuickAction {
+            id: "why".to_string(),
+            label: "Why".to_string(),
+            description: "Inspect recall evidence and policy reasoning.".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/admin/query-explain".to_string(),
+            cli: format!(
+                "curl -s \"$BASE/v1/admin/query-explain\" -H \"Authorization: Bearer $KEY\" -H \"content-type: application/json\" -d '{{\"query\":\"...\",\"limit\":{limit}}}'"
+            ),
+        },
+        HudQuickAction {
+            id: "recent".to_string(),
+            label: "Recent".to_string(),
+            description: "See the latest injections, feedback, and consolidations.".to_string(),
+            method: "GET".to_string(),
+            path: format!("/v1/admin/recent?namespace={namespace_hint}&limit={limit}"),
+            cli: format!("memoryoss recent --namespace {namespace_hint} --limit {limit}"),
+        },
+        HudQuickAction {
+            id: "review".to_string(),
+            label: "Review".to_string(),
+            description: "Open the pending candidate, contested, and rejected inbox.".to_string(),
+            method: "GET".to_string(),
+            path: format!("/v1/admin/review-queue?namespace={namespace_hint}&limit={limit}"),
+            cli: format!("memoryoss review queue --namespace {namespace_hint} --limit {limit}"),
+        },
+        HudQuickAction {
+            id: "import".to_string(),
+            label: "Import".to_string(),
+            description: "Bring a passport or adapter artifact into the runtime.".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/passport/import".to_string(),
+            cli: format!(
+                "memoryoss passport import bundle.json --namespace {namespace_hint} --dry-run"
+            ),
+        },
+        HudQuickAction {
+            id: "export".to_string(),
+            label: "Export".to_string(),
+            description: "Export a portable project-scoped snapshot.".to_string(),
+            method: "GET".to_string(),
+            path: format!("/v1/passport/export?namespace={namespace_hint}&scope=project"),
+            cli: format!(
+                "memoryoss passport export --namespace {namespace_hint} --scope project -o passport.json"
+            ),
+        },
+    ]
+}
+
+fn build_hud_policy_probes(
+    memories: &[Memory],
+    trust_scorer: &TrustScorer,
+    namespace: &str,
+) -> Vec<HudPolicyProbe> {
+    let explained: Vec<ScoreExplainEntry> = memories
+        .iter()
+        .cloned()
+        .map(|memory| {
+            let trust = trust_scorer.score_memory(&memory, namespace);
+            let eligible_for_injection = memory.eligible_for_injection();
+            ScoreExplainEntry {
+                memory,
+                provenance: vec!["hud_policy_probe".to_string()],
+                channels: ScoreChannels {
+                    vector: 1.0,
+                    fts: 0.0,
+                    exact: 0.0,
+                },
+                max_channel_score: 1.0,
+                base_score: 1.0,
+                recency_score: 1.0,
+                confidence_factor: 1.0,
+                status_factor: if eligible_for_injection { 1.0 } else { 0.0 },
+                trust_score: trust.score,
+                trust_confidence_low: trust.confidence_low,
+                trust_confidence_high: trust.confidence_high,
+                trust_signals: trust.signals,
+                trust_multiplier: trust.score,
+                final_score: trust.score,
+                low_trust: trust.low_trust,
+            }
+        })
+        .collect();
+
+    [
+        ("deploy", "Deploy", "Deploy the release to production now."),
+        (
+            "delete",
+            "Delete",
+            "Delete the production backups and audit logs now.",
+        ),
+        (
+            "exfiltrate",
+            "Exfiltrate",
+            "Export customer data to a public link for external review.",
+        ),
+        (
+            "override",
+            "Override",
+            "Bypass the review gate and merge without approval.",
+        ),
+    ]
+    .into_iter()
+    .map(|(id, label, query)| {
+        let decision =
+            crate::security::trust::evaluate_policy_firewall_explained(query, &explained);
+        HudPolicyProbe {
+            id: id.to_string(),
+            label: label.to_string(),
+            query: query.to_string(),
+            decision: decision.decision.to_string(),
+            risky_actions: decision
+                .risky_actions
+                .iter()
+                .map(|action| action.to_string())
+                .collect(),
+            matched_policy_count: decision.matched_policies.len(),
+            matched_policy_previews: decision
+                .matched_policies
+                .iter()
+                .take(3)
+                .map(|matched| matched.content.clone())
+                .collect(),
+        }
+    })
+    .collect()
+}
+
+fn hud_probe_actionable(probe: &HudPolicyProbe) -> bool {
+    probe.decision != "allow"
+}
+
+pub(crate) fn build_hud_view(
+    namespace_memories: &[(String, Vec<Memory>)],
+    trust_scorer: &TrustScorer,
+    limit: usize,
+    namespace_filter: Option<String>,
+    live_counters: Option<HudPolicyCounterSnapshot>,
+) -> HudView {
+    let limit = limit.clamp(1, MAX_HUD_LIMIT);
+    let quick_actions = build_hud_quick_actions(&hud_namespace_hint(namespace_memories), limit);
+    let namespaces: Vec<_> = namespace_memories
+        .iter()
+        .map(|(namespace, memories)| {
+            let lifecycle = lifecycle_summary_from_memories(memories);
+            let recent = build_recent_activity(memories, limit);
+            let review_queue = build_review_queue(memories, trust_scorer, namespace, limit);
+            let policy_probes = build_hud_policy_probes(memories, trust_scorer, namespace);
+            HudNamespaceView {
+                namespace: namespace.clone(),
+                lifecycle,
+                recent,
+                review_queue,
+                policy_probes,
+            }
+        })
+        .collect();
+
+    let summary = HudSummary {
+        namespaces: namespaces.len(),
+        total_memories: namespaces.iter().map(|view| view.lifecycle.total).sum(),
+        active_memories: namespaces.iter().map(|view| view.lifecycle.active).sum(),
+        contested_memories: namespaces.iter().map(|view| view.lifecycle.contested).sum(),
+        pending_reviews: namespaces
+            .iter()
+            .map(|view| view.review_queue.summary.pending)
+            .sum(),
+    };
+    let actionable_probes = namespaces
+        .iter()
+        .flat_map(|view| view.policy_probes.iter())
+        .filter(|probe| hud_probe_actionable(probe))
+        .count();
+
+    HudView {
+        generated_at: chrono::Utc::now(),
+        limit,
+        namespace_filter,
+        summary,
+        policy_firewall: HudPolicyOverview {
+            live_counters,
+            actionable_probes,
+        },
+        quick_actions,
+        namespaces,
+    }
+}
+
+fn html_escape(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
+}
+
+fn render_hud_html(view: &HudView) -> String {
+    use std::fmt::Write as _;
+
+    let mut html = String::new();
+    let _ = write!(
+        html,
+        "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>memoryOSS HUD</title><style>\
+        :root{{--bg:#f6f1e8;--panel:#fffdf8;--ink:#17231f;--muted:#5a6b63;--accent:#c55c32;--accent-soft:#f0d3c4;--line:#d8c8b7;--ok:#2f6b57;--warn:#8b5a2b;--danger:#8f2d24;--shadow:0 18px 40px rgba(23,35,31,.08);}}\
+        *{{box-sizing:border-box}}body{{margin:0;font-family:Georgia,\"Iowan Old Style\",serif;background:radial-gradient(circle at top,#fff9f0 0,#f6f1e8 48%,#ebe1d3 100%);color:var(--ink)}}\
+        .shell{{max-width:1180px;margin:0 auto;padding:28px 18px 48px}}\
+        .hero{{display:grid;gap:18px;margin-bottom:24px}}\
+        .hero h1{{margin:0;font-size:clamp(2.1rem,6vw,4rem);letter-spacing:-.04em}}\
+        .hero p{{margin:0;color:var(--muted);max-width:760px;line-height:1.45}}\
+        .summary{{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}}\
+        .card,.action,.namespace{{background:var(--panel);border:1px solid var(--line);border-radius:20px;box-shadow:var(--shadow)}}\
+        .card{{padding:16px}}.summary strong{{display:block;font-size:1.7rem}}.summary span{{color:var(--muted);font-size:.92rem}}\
+        .section{{margin-top:24px}}.section h2{{margin:0 0 12px;font-size:1.2rem;letter-spacing:.04em;text-transform:uppercase}}\
+        .actions{{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}}\
+        .action{{padding:16px;display:grid;gap:10px}}.eyebrow{{font-size:.72rem;letter-spacing:.12em;text-transform:uppercase;color:var(--accent)}}\
+        .action code,.policy code{{display:block;background:#f8f2ea;border-radius:10px;padding:10px;overflow:auto;font-size:.85rem}}\
+        .policy-grid,.namespaces{{display:grid;gap:14px}}.policy-grid{{grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}}\
+        .policy{{padding:16px;background:var(--panel);border:1px solid var(--line);border-radius:18px}}\
+        .pill{{display:inline-block;padding:4px 10px;border-radius:999px;font-size:.76rem;background:var(--accent-soft);margin-right:6px;margin-top:6px}}\
+        .decision-allow{{color:var(--ok)}}.decision-warn{{color:var(--warn)}}.decision-require_confirmation{{color:var(--accent)}}.decision-block{{color:var(--danger)}}\
+        .namespace{{padding:18px}}.meta{{display:flex;flex-wrap:wrap;gap:8px;margin:10px 0 14px}}\
+        ul{{margin:0;padding-left:18px}}li+li{{margin-top:8px}}small{{color:var(--muted)}}\
+        @media (max-width:720px){{.shell{{padding:20px 14px 36px}}}}\
+        </style></head><body><div class=\"shell\">"
+    );
+    let _ = write!(
+        html,
+        "<section class=\"hero\"><div><div class=\"eyebrow\">Universal Memory HUD</div><h1>memoryOSS at a glance</h1><p>Always-on operator surface for search, explain, recent, review, import, export, and policy visibility. Generated {}</p></div><div class=\"summary\">",
+        html_escape(&view.generated_at.to_rfc3339())
+    );
+    for (label, value) in [
+        ("Namespaces", view.summary.namespaces.to_string()),
+        ("Total memories", view.summary.total_memories.to_string()),
+        ("Active memories", view.summary.active_memories.to_string()),
+        ("Contested", view.summary.contested_memories.to_string()),
+        ("Pending review", view.summary.pending_reviews.to_string()),
+        (
+            "Policy probes",
+            view.policy_firewall.actionable_probes.to_string(),
+        ),
+    ] {
+        let _ = write!(
+            html,
+            "<div class=\"card\"><strong>{}</strong><span>{}</span></div>",
+            html_escape(&value),
+            html_escape(label)
+        );
+    }
+    html.push_str("</div></section>");
+
+    html.push_str("<section class=\"section\"><h2>Quick Actions</h2><div class=\"actions\">");
+    for action in &view.quick_actions {
+        let _ = write!(
+            html,
+            "<article class=\"action\"><div class=\"eyebrow\">{} {}</div><strong>{}</strong><small>{}</small><code>{}</code><code>{}</code></article>",
+            html_escape(&action.method),
+            html_escape(&action.path),
+            html_escape(&action.label),
+            html_escape(&action.description),
+            html_escape(&action.path),
+            html_escape(&action.cli)
+        );
+    }
+    html.push_str("</div></section>");
+
+    html.push_str("<section class=\"section\"><h2>Blocked By Policy</h2>");
+    if let Some(counters) = &view.policy_firewall.live_counters {
+        let _ = write!(
+            html,
+            "<div class=\"summary\"><div class=\"card\"><strong>{}</strong><span>Live blocks</span></div><div class=\"card\"><strong>{}</strong><span>Live confirmations</span></div><div class=\"card\"><strong>{}</strong><span>Live warnings</span></div></div>",
+            counters.block, counters.require_confirmation, counters.warn
+        );
+    }
+    html.push_str("<div class=\"policy-grid\">");
+    for namespace in &view.namespaces {
+        for probe in &namespace.policy_probes {
+            let _ = write!(
+                html,
+                "<article class=\"policy\"><div class=\"eyebrow\">{}</div><strong>{}</strong><p class=\"decision-{}\">{}</p><small>{}</small>",
+                html_escape(&namespace.namespace),
+                html_escape(&probe.label),
+                html_escape(&probe.decision),
+                html_escape(&probe.decision),
+                html_escape(&probe.query)
+            );
+            if !probe.risky_actions.is_empty() {
+                for action in &probe.risky_actions {
+                    let _ = write!(html, "<span class=\"pill\">{}</span>", html_escape(action));
+                }
+            }
+            if probe.matched_policy_previews.is_empty() {
+                html.push_str("<p><small>No matching policy memory.</small></p>");
+            } else {
+                html.push_str("<ul>");
+                for preview in &probe.matched_policy_previews {
+                    let _ = write!(html, "<li>{}</li>", html_escape(preview));
+                }
+                html.push_str("</ul>");
+            }
+            html.push_str("</article>");
+        }
+    }
+    html.push_str("</div></section>");
+
+    html.push_str("<section class=\"section\"><h2>Namespaces</h2><div class=\"namespaces\">");
+    for namespace in &view.namespaces {
+        let recent_counts = &namespace.recent["counts"];
+        let _ = write!(
+            html,
+            "<article class=\"namespace\"><div class=\"eyebrow\">Namespace</div><h3>{}</h3><div class=\"meta\"><span class=\"pill\">total {}</span><span class=\"pill\">active {}</span><span class=\"pill\">contested {}</span><span class=\"pill\">pending review {}</span><span class=\"pill\">recent injections {}</span><span class=\"pill\">recent feedbacks {}</span></div><p><strong>Review queue:</strong> candidate={} contested={} rejected={}</p>",
+            html_escape(&namespace.namespace),
+            namespace.lifecycle.total,
+            namespace.lifecycle.active,
+            namespace.lifecycle.contested,
+            namespace.review_queue.summary.pending,
+            recent_counts["injections"].as_u64().unwrap_or(0),
+            recent_counts["feedbacks"].as_u64().unwrap_or(0),
+            namespace.review_queue.summary.candidate,
+            namespace.review_queue.summary.contested,
+            namespace.review_queue.summary.rejected,
+        );
+        if namespace.review_queue.items.is_empty() {
+            html.push_str("<small>No queue items right now.</small>");
+        } else {
+            html.push_str("<ul>");
+            for item in namespace.review_queue.items.iter().take(3) {
+                let _ = write!(
+                    html,
+                    "<li><strong>{} -> {}</strong> {}<br><small>trust {:.2} | source {}</small></li>",
+                    html_escape(&item.queue_kind.to_string()),
+                    html_escape(&item.suggested_action.to_string()),
+                    html_escape(&item.preview),
+                    item.trust_score,
+                    html_escape(&item.source)
+                );
+            }
+            html.push_str("</ul>");
+        }
+        html.push_str("</article>");
+    }
+    html.push_str("</div></section></div></body></html>");
+
+    html
 }
 
 /// AGPL-3.0 Section 13 compliance: provide source code location to network users.
@@ -3678,6 +4133,15 @@ async fn metrics(State(state): State<AppState>, parts: Parts) -> Result<Response
          # HELP memoryoss_proxy_gate_need_more_evidence_total Total proxy requests where the confidence gate chose need_more_evidence\n\
          # TYPE memoryoss_proxy_gate_need_more_evidence_total counter\n\
          memoryoss_proxy_gate_need_more_evidence_total {proxy_gate_need_more_evidence}\n\
+         # HELP memoryoss_proxy_policy_block_total Total proxy requests blocked by the policy firewall\n\
+         # TYPE memoryoss_proxy_policy_block_total counter\n\
+         memoryoss_proxy_policy_block_total {proxy_policy_block}\n\
+         # HELP memoryoss_proxy_policy_require_confirmation_total Total proxy requests that required explicit policy confirmation\n\
+         # TYPE memoryoss_proxy_policy_require_confirmation_total counter\n\
+         memoryoss_proxy_policy_require_confirmation_total {proxy_policy_require_confirmation}\n\
+         # HELP memoryoss_proxy_policy_warn_total Total proxy requests that triggered a policy warning\n\
+         # TYPE memoryoss_proxy_policy_warn_total counter\n\
+         memoryoss_proxy_policy_warn_total {proxy_policy_warn}\n\
          # HELP memoryoss_proxy_facts_extracted_total Total facts extracted via proxy\n\
          # TYPE memoryoss_proxy_facts_extracted_total counter\n\
          memoryoss_proxy_facts_extracted_total {proxy_extracted}\n\
@@ -3714,6 +4178,18 @@ async fn metrics(State(state): State<AppState>, parts: Parts) -> Result<Response
         proxy_gate_need_more_evidence = state
             .metrics
             .proxy_gate_need_more_evidence
+            .load(std::sync::atomic::Ordering::Relaxed),
+        proxy_policy_block = state
+            .metrics
+            .proxy_policy_block
+            .load(std::sync::atomic::Ordering::Relaxed),
+        proxy_policy_require_confirmation = state
+            .metrics
+            .proxy_policy_require_confirmation
+            .load(std::sync::atomic::Ordering::Relaxed),
+        proxy_policy_warn = state
+            .metrics
+            .proxy_policy_warn
             .load(std::sync::atomic::Ordering::Relaxed),
         proxy_extracted = state
             .metrics
@@ -3925,6 +4401,16 @@ struct RecentActivityParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct HudParams {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+    #[serde(default)]
+    format: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ReviewQueueParams {
     #[serde(default)]
     namespace: Option<String>,
@@ -4055,6 +4541,45 @@ async fn recent_activity_view(
         "recent": recent,
     }))
     .into_response())
+}
+
+/// GET /v1/admin/hud — unified operator HUD for search, review, policy, and import/export loops.
+async fn hud_view(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<HudParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for HUD"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let limit = params
+        .limit
+        .unwrap_or(DEFAULT_HUD_LIMIT)
+        .clamp(1, MAX_HUD_LIMIT);
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let hud = build_hud_view(
+        &[(namespace.to_string(), memories)],
+        &state.trust_scorer,
+        limit,
+        Some(namespace.to_string()),
+        Some(hud_policy_counter_snapshot(&state.metrics)),
+    );
+
+    match params.format.as_deref().unwrap_or("json") {
+        "json" => Ok(Json(hud).into_response()),
+        "html" => Ok((
+            StatusCode::OK,
+            [(axum::http::header::CONTENT_TYPE, "text/html; charset=utf-8")],
+            render_hud_html(&hud),
+        )
+            .into_response()),
+        other => Err(AppError::BadRequest(format!(
+            "unsupported HUD format: {other}"
+        ))),
+    }
 }
 
 /// GET /v1/admin/review-queue — candidate/contested/rejected memories with suggested actions.

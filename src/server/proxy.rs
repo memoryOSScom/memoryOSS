@@ -537,11 +537,30 @@ fn record_gate_decision(state: &AppState, decision: crate::scoring::RetrievalCon
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+fn record_policy_firewall_decision(
+    state: &AppState,
+    policy_firewall: Option<&PolicyFirewallDecision>,
+) {
+    let Some(policy_firewall) = policy_firewall.filter(|decision| decision.active) else {
+        return;
+    };
+    let counter = match policy_firewall.decision {
+        PolicyFirewallDecisionKind::Allow => return,
+        PolicyFirewallDecisionKind::Warn => &state.metrics.proxy_policy_warn,
+        PolicyFirewallDecisionKind::RequireConfirmation => {
+            &state.metrics.proxy_policy_require_confirmation
+        }
+        PolicyFirewallDecisionKind::Block => &state.metrics.proxy_policy_block,
+    };
+    counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn record_proxy_metrics(
     state: &AppState,
     gate_evaluated: bool,
     gate_decision: crate::scoring::RetrievalConfidenceDecision,
     injected_count: u64,
+    policy_firewall: Option<&PolicyFirewallDecision>,
 ) {
     state
         .metrics
@@ -554,6 +573,7 @@ fn record_proxy_metrics(
         .metrics
         .proxy_memories_injected
         .fetch_add(injected_count, std::sync::atomic::Ordering::Relaxed);
+    record_policy_firewall_decision(state, policy_firewall);
 }
 
 fn add_memory_headers(
@@ -1397,7 +1417,13 @@ pub async fn proxy_chat_completions(
                         false,
                         policy_confirmed,
                     ) {
-                        record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+                        record_proxy_metrics(
+                            &state,
+                            gate_evaluated,
+                            gate_decision,
+                            injected_count,
+                            Some(&policy_firewall),
+                        );
                         return response;
                     }
 
@@ -1425,7 +1451,13 @@ pub async fn proxy_chat_completions(
     }
 
     let policy_headers = policy_firewall.active.then_some(policy_firewall.clone());
-    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+    record_proxy_metrics(
+        &state,
+        gate_evaluated,
+        gate_decision,
+        injected_count,
+        policy_headers.as_ref(),
+    );
 
     // Detect streaming mode
     let is_streaming = body
@@ -3019,7 +3051,13 @@ pub async fn proxy_anthropic_messages(
                         true,
                         policy_confirmed,
                     ) {
-                        record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+                        record_proxy_metrics(
+                            &state,
+                            gate_evaluated,
+                            gate_decision,
+                            injected_count,
+                            Some(&policy_firewall),
+                        );
                         return response;
                     }
 
@@ -3046,7 +3084,13 @@ pub async fn proxy_anthropic_messages(
     }
 
     let policy_headers = policy_firewall.active.then_some(policy_firewall.clone());
-    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+    record_proxy_metrics(
+        &state,
+        gate_evaluated,
+        gate_decision,
+        injected_count,
+        policy_headers.as_ref(),
+    );
 
     // Detect streaming
     let is_streaming = body
@@ -4107,7 +4151,13 @@ pub async fn proxy_responses(
                     false,
                     policy_confirmed,
                 ) {
-                    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+                    record_proxy_metrics(
+                        &state,
+                        gate_evaluated,
+                        gate_decision,
+                        injected_count,
+                        Some(&policy_firewall),
+                    );
                     return response;
                 }
 
@@ -4135,7 +4185,13 @@ pub async fn proxy_responses(
     }
 
     let policy_headers = policy_firewall.active.then_some(policy_firewall.clone());
-    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+    record_proxy_metrics(
+        &state,
+        gate_evaluated,
+        gate_decision,
+        injected_count,
+        policy_headers.as_ref(),
+    );
 
     let is_streaming = body
         .get("stream")
@@ -4759,6 +4815,9 @@ pub async fn proxy_debug_stats(State(state): State<AppState>, headers: HeaderMap
             "gate_inject": metrics.proxy_gate_inject.load(std::sync::atomic::Ordering::Relaxed),
             "gate_abstain": metrics.proxy_gate_abstain.load(std::sync::atomic::Ordering::Relaxed),
             "gate_need_more_evidence": metrics.proxy_gate_need_more_evidence.load(std::sync::atomic::Ordering::Relaxed),
+            "policy_block": metrics.proxy_policy_block.load(std::sync::atomic::Ordering::Relaxed),
+            "policy_require_confirmation": metrics.proxy_policy_require_confirmation.load(std::sync::atomic::Ordering::Relaxed),
+            "policy_warn": metrics.proxy_policy_warn.load(std::sync::atomic::Ordering::Relaxed),
             "facts_extracted": metrics.proxy_facts_extracted.load(std::sync::atomic::Ordering::Relaxed),
             "upstream_errors": metrics.proxy_upstream_errors.load(std::sync::atomic::Ordering::Relaxed),
         }

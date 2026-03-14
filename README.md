@@ -329,6 +329,7 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/idf-stats` | GET | IDF index statistics |
 | `/v1/admin/space-stats` | GET | Space index statistics |
 | `/v1/admin/query-explain` | POST | Query debug/explain with summary + evidence drill-down |
+| `/v1/admin/hud` | GET | Unified operator HUD as JSON or `?format=html` desktop view |
 | `/v1/admin/lifecycle` | GET | Lifecycle state summary and latest memories |
 | `/v1/admin/recent` | GET | Recent injections, extractions, feedbacks, and consolidations |
 | `/v1/admin/review-queue` | GET | Candidate / contested / rejected review inbox with suggested actions |
@@ -355,6 +356,8 @@ For recognized task classes (`deploy`, `bugfix`, `review`, `style`), memoryOSS n
 The admin explain surface exposes the same compiled task state plus the input memories and condensation decisions that produced it.
 
 Query explain now also returns a `policy_firewall` section. For risky action prompts (`deploy`, `delete`, `exfiltrate`, `override`) the same policy evaluation used by the proxy reports whether the request would `warn`, `block`, or `require_confirmation`, plus the exact policy memories that caused that intervention.
+
+The operator HUD at `/v1/admin/hud` folds that together with lifecycle, recent activity, review inbox, and import/export launcher actions. Use JSON for scripting or `?format=html` for a browser-ready desktop dashboard.
 
 Proxy responses surface the same preflight via headers:
 - `x-memory-policy-decision`
@@ -584,6 +587,7 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss status` | Show namespace health, lifecycle counts, worker state, and index health |
 | `memoryoss doctor` | Diagnose config, auth, database, and index issues (non-zero on error) |
 | `memoryoss recent` | Show recent injections, extractions, feedbacks, and consolidations |
+| `memoryoss hud --namespace test --limit 5` | Terminal HUD for quick search/why/recent/review/import/export loops |
 | `memoryoss review queue --namespace test` | List the current review inbox without raw UUIDs |
 | `memoryoss review confirm --namespace test --item 1` | Confirm a queue item by inbox position |
 | `memoryoss review reject --namespace test --item 2` | Reject a queue item by inbox position |

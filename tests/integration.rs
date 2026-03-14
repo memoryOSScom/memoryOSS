@@ -6493,6 +6493,223 @@ namespace = "test"
 }
 
 #[tokio::test]
+async fn test_admin_hud_and_cli_surface_policy_review_and_quick_actions() {
+    let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+extraction_enabled = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("hud.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    for payload in [
+        serde_json::json!({
+            "content": "Retention policy: never delete audit logs or production backups from chat.",
+            "tags": ["policy", "retention", "delete"]
+        }),
+        serde_json::json!({
+            "content": "Release policy: staging approval is mandatory before production deploys.",
+            "tags": ["policy", "deploy", "approval"]
+        }),
+        serde_json::json!({
+            "content": "Production deploys require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }),
+        serde_json::json!({
+            "content": "Production deploys do not require staging approval before rollout.",
+            "tags": ["deploy", "approval"]
+        }),
+        serde_json::json!({
+            "content": "Rejected operator note for HUD review coverage.",
+            "tags": ["review", "hud"]
+        }),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    let rejected_id = export_body["memories"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|memory| {
+            memory["content"].as_str() == Some("Rejected operator note for HUD review coverage.")
+        })
+        .and_then(|memory| memory["id"].as_str())
+        .expect("rejected coverage memory should exist")
+        .to_string();
+
+    let reject_resp = client
+        .post(format!("{base}/v1/feedback"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": rejected_id,
+            "action": "reject"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(reject_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let blocked_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [
+                {"role": "user", "content": "Delete the production backups now."}
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), 403);
+
+    let hud_resp = client
+        .get(format!("{base}/v1/admin/hud?limit=3"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(hud_resp.status(), 200);
+    let hud_body: serde_json::Value = hud_resp.json().await.unwrap();
+    assert_eq!(hud_body["namespace_filter"].as_str(), Some("test"));
+    assert!(
+        hud_body["summary"]["contested_memories"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 2
+    );
+    assert!(hud_body["summary"]["pending_reviews"].as_u64().unwrap_or(0) >= 3);
+    assert_eq!(
+        hud_body["policy_firewall"]["live_counters"]["block"].as_u64(),
+        Some(1)
+    );
+
+    let quick_labels: Vec<_> = hud_body["quick_actions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|action| action["label"].as_str())
+        .collect();
+    for expected in ["Search", "Why", "Recent", "Review", "Import", "Export"] {
+        assert!(
+            quick_labels.contains(&expected),
+            "HUD should expose quick action {expected}"
+        );
+    }
+
+    let probes = hud_body["namespaces"][0]["policy_probes"]
+        .as_array()
+        .unwrap();
+    assert!(probes.iter().any(|probe| {
+        probe["label"].as_str() == Some("Delete") && probe["decision"].as_str() == Some("block")
+    }));
+    assert!(probes.iter().any(|probe| {
+        probe["label"].as_str() == Some("Deploy")
+            && probe["decision"].as_str() != Some("allow")
+            && probe["matched_policy_count"].as_u64().unwrap_or(0) >= 1
+    }));
+
+    let html_resp = client
+        .get(format!("{base}/v1/admin/hud?limit=3&format=html"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(html_resp.status(), 200);
+    assert!(
+        html_resp
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("")
+            .starts_with("text/html"),
+        "HUD html should return text/html"
+    );
+    let html_body = html_resp.text().await.unwrap();
+    assert!(html_body.contains("Blocked By Policy"));
+    assert!(html_body.contains("/v1/admin/query-explain"));
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+    upstream_handle.abort();
+
+    let hud_cli = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "hud",
+            "--namespace",
+            "test",
+            "--limit",
+            "3",
+        ])
+        .output()
+        .await
+        .expect("failed to run hud");
+    assert!(
+        hud_cli.status.success(),
+        "hud failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hud_cli.stdout),
+        String::from_utf8_lossy(&hud_cli.stderr)
+    );
+    let hud_stdout = String::from_utf8_lossy(&hud_cli.stdout);
+    assert!(hud_stdout.contains("Memory HUD"));
+    assert!(hud_stdout.contains("Quick actions:"));
+    assert!(hud_stdout.contains("Blocked by policy:"));
+    assert!(hud_stdout.contains("Delete: block"));
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     let port = free_port();
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");

@@ -98,6 +98,15 @@ enum Commands {
         #[arg(long, default_value_t = server::routes::DEFAULT_RECENT_ACTIVITY_LIMIT)]
         limit: usize,
     },
+    /// Open the universal memory HUD for operator loops
+    Hud {
+        /// Only inspect a specific namespace
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Maximum items per HUD section
+        #[arg(long, default_value_t = server::routes::DEFAULT_HUD_LIMIT)]
+        limit: usize,
+    },
     /// Review candidate, contested, and rejected memories without raw UUIDs
     Review {
         #[command(subcommand)]
@@ -816,6 +825,122 @@ fn render_review_queue_report(
     output
 }
 
+fn render_hud_report(config_path: &Path, hud: &crate::server::routes::HudView) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Memory HUD");
+    let _ = writeln!(output, "Config: {}", config_path.display());
+    let _ = writeln!(output, "Generated: {}", hud.generated_at.to_rfc3339());
+    if let Some(namespace) = &hud.namespace_filter {
+        let _ = writeln!(output, "Namespace filter: {}", namespace);
+    }
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Overview:");
+    let _ = writeln!(
+        output,
+        "- namespaces={} total={} active={} contested={} pending_review={}",
+        hud.summary.namespaces,
+        hud.summary.total_memories,
+        hud.summary.active_memories,
+        hud.summary.contested_memories,
+        hud.summary.pending_reviews
+    );
+    if let Some(counters) = &hud.policy_firewall.live_counters {
+        let _ = writeln!(
+            output,
+            "- live policy: block={} require_confirmation={} warn={}",
+            counters.block, counters.require_confirmation, counters.warn
+        );
+    } else {
+        let _ = writeln!(output, "- live policy: unavailable in offline CLI mode");
+    }
+    let _ = writeln!(
+        output,
+        "- actionable policy probes={}",
+        hud.policy_firewall.actionable_probes
+    );
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Quick actions:");
+    for action in &hud.quick_actions {
+        let _ = writeln!(
+            output,
+            "- {} [{} {}]",
+            action.label, action.method, action.path
+        );
+        let _ = writeln!(output, "  {}", action.description);
+        let _ = writeln!(output, "  {}", action.cli);
+    }
+
+    for namespace in &hud.namespaces {
+        let counts = &namespace.recent["counts"];
+        let _ = writeln!(output);
+        let _ = writeln!(output, "Namespace: {}", namespace.namespace);
+        let _ = writeln!(
+            output,
+            "  Lifecycle: total={} active={} candidate={} contested={} stale={} archived={}",
+            namespace.lifecycle.total,
+            namespace.lifecycle.active,
+            namespace.lifecycle.candidate,
+            namespace.lifecycle.contested,
+            namespace.lifecycle.stale,
+            namespace.lifecycle.archived
+        );
+        let _ = writeln!(
+            output,
+            "  Recent: injections={} extractions={} feedbacks={} consolidations={}",
+            counts["injections"].as_u64().unwrap_or(0),
+            counts["extractions"].as_u64().unwrap_or(0),
+            counts["feedbacks"].as_u64().unwrap_or(0),
+            counts["consolidations"].as_u64().unwrap_or(0)
+        );
+        let _ = writeln!(
+            output,
+            "  Review: pending={} candidate={} contested={} rejected={}",
+            namespace.review_queue.summary.pending,
+            namespace.review_queue.summary.candidate,
+            namespace.review_queue.summary.contested,
+            namespace.review_queue.summary.rejected
+        );
+        if namespace.review_queue.items.is_empty() {
+            let _ = writeln!(output, "  Queue items: none");
+        } else {
+            let _ = writeln!(output, "  Queue items:");
+            for (idx, item) in namespace.review_queue.items.iter().take(3).enumerate() {
+                let _ = writeln!(
+                    output,
+                    "    {}. [{} -> {}] trust={:.2} {}",
+                    idx + 1,
+                    item.queue_kind,
+                    item.suggested_action,
+                    item.trust_score,
+                    item.preview
+                );
+            }
+        }
+        let _ = writeln!(output, "  Blocked by policy:");
+        for probe in &namespace.policy_probes {
+            let actions = if probe.risky_actions.is_empty() {
+                "-".to_string()
+            } else {
+                probe.risky_actions.join(",")
+            };
+            let _ = writeln!(
+                output,
+                "    - {}: {} matches={} actions={}",
+                probe.label, probe.decision, probe.matched_policy_count, actions
+            );
+            for preview in probe.matched_policy_previews.iter().take(2) {
+                let _ = writeln!(output, "      {}", preview);
+            }
+        }
+    }
+
+    output
+}
+
 fn run_status(
     config: &config::Config,
     config_path: &Path,
@@ -848,6 +973,27 @@ fn run_recent(
         })
         .collect();
     print!("{}", render_recent_report(&activities, limit));
+    Ok(())
+}
+
+fn run_hud(
+    config: &config::Config,
+    config_path: &Path,
+    namespace_filter: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let trust_scorer = crate::security::trust::TrustScorer::new(config.trust.threshold);
+    let _ = trust_scorer.load_from_redb(doc_engine.db());
+    let namespace_memories = collect_namespace_memories(config, &doc_engine, namespace_filter)?;
+    let hud = crate::server::routes::build_hud_view(
+        &namespace_memories,
+        &trust_scorer,
+        limit,
+        namespace_filter.map(str::to_string),
+        None,
+    );
+    print!("{}", render_hud_report(config_path, &hud));
     Ok(())
 }
 
@@ -2413,6 +2559,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Status { .. }
             | Commands::Doctor
             | Commands::Recent { .. }
+            | Commands::Hud { .. }
             | Commands::Passport { .. }
             | Commands::Adapter { .. }
             | Commands::History { .. }
@@ -2518,6 +2665,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Recent { namespace, limit } => {
             run_recent(&config, namespace.as_deref(), limit)?;
+        }
+        Commands::Hud { namespace, limit } => {
+            run_hud(&config, &cli.config, namespace.as_deref(), limit)?;
         }
         Commands::Review { command } => match command {
             ReviewCommands::Queue { namespace, limit } => {
