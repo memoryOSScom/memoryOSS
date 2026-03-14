@@ -153,6 +153,29 @@ fn test_key_id(raw_key: &str) -> String {
     hex::encode(&hash[..8])
 }
 
+fn compact_json_bytes(value: &serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(value).unwrap()
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(Sha256::digest(bytes))
+}
+
+fn passport_payload_sha256(bundle: &serde_json::Value) -> String {
+    let payload = serde_json::json!({
+        "bundle_version": bundle["bundle_version"],
+        "passport_id": bundle["passport_id"],
+        "runtime_contract": bundle["runtime_contract"],
+        "scope": bundle["scope"],
+        "namespace": bundle["namespace"],
+        "exported_at": bundle["exported_at"],
+        "provenance": bundle["provenance"],
+        "memories": bundle["memories"],
+    });
+    sha256_hex(&compact_json_bytes(&payload))
+}
+
 fn writer_only_test_config(port: u16, data_dir: &str) -> String {
     test_config_with_sections(
         port,
@@ -8031,6 +8054,200 @@ async fn test_cli_memory_bundle_export_preview_validate_and_diff_without_runtime
     assert!(diff_stdout.contains("Memory bundle diff"));
     assert!(diff_stdout.contains("Added"));
     assert!(diff_stdout.contains("Team policy: security review is mandatory before merge."));
+}
+
+#[tokio::test]
+async fn test_cli_reader_open_and_diff_work_without_runtime_and_surface_signature_provenance() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_content = test_config_http(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("reader-cli.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    for payload in [
+        serde_json::json!({
+            "content": "Project decision: keep MCP-first auth as the default path.",
+            "tags": ["project", "decision"]
+        }),
+        serde_json::json!({
+            "content": "Team policy: security review is mandatory before merge.",
+            "tags": ["team", "policy"]
+        }),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+
+    let project_bundle = tmp_dir.path().join("project-reader.membundle.json");
+    let all_bundle = tmp_dir.path().join("all-reader.membundle.json");
+    for (scope, output) in [("project", &project_bundle), ("all", &all_bundle)] {
+        let export = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+            .args([
+                "--config",
+                config_path.to_str().unwrap(),
+                "bundle",
+                "export",
+                "--kind",
+                "passport",
+                "--namespace",
+                "test",
+                "--scope",
+                scope,
+                "--output",
+                output.to_str().unwrap(),
+            ])
+            .output()
+            .await
+            .expect("failed to run bundle export for reader test");
+        assert!(
+            export.status.success(),
+            "reader bundle export failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&export.stdout),
+            String::from_utf8_lossy(&export.stderr)
+        );
+    }
+
+    let missing_config = tmp_dir.path().join("missing-reader.toml");
+    let open = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "reader",
+            "open",
+            project_bundle.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader open");
+    assert!(
+        open.status.success(),
+        "reader open failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&open.stdout),
+        String::from_utf8_lossy(&open.stderr)
+    );
+    let open_body: serde_json::Value = serde_json::from_slice(&open.stdout).unwrap();
+    assert_eq!(
+        open_body["artifact_type"].as_str(),
+        Some("memory_bundle_envelope")
+    );
+    assert_eq!(open_body["kind"].as_str(), Some("passport"));
+    assert_eq!(open_body["scope"].as_str(), Some("project"));
+    assert_eq!(open_body["signature"]["scheme"].as_str(), Some("unsigned"));
+    assert_eq!(
+        open_body["provenance"]["exported_from_namespace"].as_str(),
+        Some("test")
+    );
+    assert!(
+        open_body["preview"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry
+                .as_str()
+                .unwrap_or("")
+                .contains("Project decision: keep MCP-first auth"))
+    );
+
+    let diff = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "reader",
+            "diff",
+            project_bundle.to_str().unwrap(),
+            all_bundle.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run reader diff");
+    assert!(
+        diff.status.success(),
+        "reader diff failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&diff.stdout),
+        String::from_utf8_lossy(&diff.stderr)
+    );
+    let diff_stdout = String::from_utf8_lossy(&diff.stdout);
+    assert!(diff_stdout.contains("Universal memory reader diff"));
+    assert!(diff_stdout.contains("Added"));
+    assert!(diff_stdout.contains("Team policy: security review is mandatory before merge."));
+}
+
+#[tokio::test]
+async fn test_cli_reader_rejects_malformed_artifacts_and_escapes_html_preview() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let fixture_path = root.join("conformance/fixtures/passport-bundle.json");
+    let mut bundle: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&fixture_path).unwrap()).unwrap();
+    bundle["memories"][0]["content"] = serde_json::Value::String(
+        "<script>alert('x')</script> Release checklist lives in docs/releases.md.".to_string(),
+    );
+    bundle["integrity"]["payload_sha256"] =
+        serde_json::Value::String(passport_payload_sha256(&bundle));
+
+    let tmp_dir = tempfile::tempdir().expect("failed to create reader temp dir");
+    let escaped_path = tmp_dir.path().join("escaped-passport.json");
+    std::fs::write(&escaped_path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+    let missing_config = tmp_dir.path().join("missing-reader.toml");
+
+    let html = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "reader",
+            "open",
+            escaped_path.to_str().unwrap(),
+            "--format",
+            "html",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader html open");
+    assert!(
+        html.status.success(),
+        "reader html open failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&html.stdout),
+        String::from_utf8_lossy(&html.stderr)
+    );
+    let html_stdout = String::from_utf8_lossy(&html.stdout);
+    assert!(html_stdout.contains("&lt;script&gt;alert(&#39;x&#39;)&lt;/script&gt;"));
+    assert!(!html_stdout.contains("<script>alert('x')</script>"));
+
+    let malformed_path = tmp_dir.path().join("malformed.json");
+    std::fs::write(&malformed_path, b"{\"bundle_version\":").unwrap();
+    let malformed = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "reader",
+            "open",
+            malformed_path.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run malformed reader open");
+    assert!(
+        !malformed.status.success(),
+        "reader open should fail for malformed artifacts"
+    );
+    let malformed_stderr = String::from_utf8_lossy(&malformed.stderr);
+    assert!(malformed_stderr.contains("unsupported or malformed memory reader artifact"));
 }
 
 #[tokio::test]

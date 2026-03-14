@@ -137,6 +137,11 @@ enum Commands {
         #[command(subcommand)]
         command: BundleCommands,
     },
+    /// Open and diff portable memory artifacts in a read-only universal reader
+    Reader {
+        #[command(subcommand)]
+        command: ReaderCommands,
+    },
     /// Inspect a memory by ID
     Inspect {
         /// Memory UUID
@@ -408,6 +413,28 @@ enum BundleCommands {
         left: PathBuf,
         /// Right-hand bundle JSON
         right: PathBuf,
+    },
+}
+
+#[derive(Subcommand)]
+enum ReaderCommands {
+    /// Open a portable memory artifact read-only
+    Open {
+        /// Path to a memory bundle envelope or raw passport/history artifact
+        path: PathBuf,
+        /// Output format: text, json, or html
+        #[arg(long, default_value = "text")]
+        format: String,
+    },
+    /// Diff two portable memory artifacts read-only
+    Diff {
+        /// Left-hand artifact path
+        left: PathBuf,
+        /// Right-hand artifact path
+        right: PathBuf,
+        /// Output format: text, json, or html
+        #[arg(long, default_value = "text")]
+        format: String,
     },
 }
 
@@ -1678,6 +1705,665 @@ fn read_memory_bundle(path: &Path) -> anyhow::Result<crate::server::routes::Memo
     Ok(serde_json::from_slice(&std::fs::read(path)?)?)
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ReaderFormat {
+    Text,
+    Json,
+    Html,
+}
+
+impl FromStr for ReaderFormat {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.trim().to_ascii_lowercase().as_str() {
+            "text" => Ok(Self::Text),
+            "json" => Ok(Self::Json),
+            "html" => Ok(Self::Html),
+            other => Err(format!("unsupported reader format: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ReaderArtifact {
+    Envelope(crate::server::routes::MemoryBundleEnvelope),
+    Passport(crate::memory::MemoryPassportBundle),
+    History(crate::memory::MemoryHistoryBundle),
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReaderIntegrityView {
+    envelope_valid: bool,
+    nested_valid: bool,
+    algorithm: String,
+    payload_sha256: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReaderSignatureView {
+    scheme: String,
+    signer: Option<String>,
+    signable: bool,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReaderProvenanceView {
+    exported_from_namespace: String,
+    source_key_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReaderOpenView {
+    source_path: String,
+    artifact_line: String,
+    artifact_type: String,
+    kind: String,
+    namespace: String,
+    scope: Option<String>,
+    runtime_contract_id: String,
+    exported_at: chrono::DateTime<chrono::Utc>,
+    memory_count: usize,
+    visible_count: usize,
+    root_id: Option<uuid::Uuid>,
+    reference_uri: Option<String>,
+    attachment_name: Option<String>,
+    integrity: ReaderIntegrityView,
+    signature: Option<ReaderSignatureView>,
+    provenance: Option<ReaderProvenanceView>,
+    preview: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReaderDiffView {
+    left: ReaderOpenView,
+    right: ReaderOpenView,
+    same_kind: bool,
+    changed_fields: Vec<String>,
+    added_preview: Vec<String>,
+    removed_preview: Vec<String>,
+    shared_preview_count: usize,
+}
+
+fn reader_preview_text(content: &str, max_chars: usize) -> String {
+    let trimmed = content.trim();
+    let mut chars = trimmed.chars();
+    let preview: String = chars.by_ref().take(max_chars).collect();
+    if chars.next().is_some() {
+        format!("{preview}...")
+    } else {
+        preview
+    }
+}
+
+fn escape_reader_html(raw: &str) -> String {
+    raw.chars()
+        .map(|ch| match ch {
+            '&' => "&amp;".to_string(),
+            '<' => "&lt;".to_string(),
+            '>' => "&gt;".to_string(),
+            '"' => "&quot;".to_string(),
+            '\'' => "&#39;".to_string(),
+            _ => ch.to_string(),
+        })
+        .collect()
+}
+
+fn read_reader_artifact(path: &Path) -> anyhow::Result<ReaderArtifact> {
+    let bytes = std::fs::read(path)?;
+    if let Ok(bundle) =
+        serde_json::from_slice::<crate::server::routes::MemoryBundleEnvelope>(&bytes)
+    {
+        return Ok(ReaderArtifact::Envelope(bundle));
+    }
+    if let Ok(passport) = serde_json::from_slice::<crate::memory::MemoryPassportBundle>(&bytes) {
+        return Ok(ReaderArtifact::Passport(passport));
+    }
+    if let Ok(history) = serde_json::from_slice::<crate::memory::MemoryHistoryBundle>(&bytes) {
+        return Ok(ReaderArtifact::History(history));
+    }
+    anyhow::bail!(
+        "unsupported or malformed memory reader artifact: {}",
+        path.display()
+    )
+}
+
+fn reader_entry_set(
+    artifact: &ReaderArtifact,
+) -> anyhow::Result<std::collections::BTreeSet<String>> {
+    match artifact {
+        ReaderArtifact::Envelope(bundle) => match bundle.kind {
+            crate::server::routes::MemoryBundleKind::Passport => {
+                let passport: crate::memory::MemoryPassportBundle =
+                    serde_json::from_value(bundle.payload.clone())?;
+                Ok(passport
+                    .memories
+                    .into_iter()
+                    .map(|memory| memory.content)
+                    .collect())
+            }
+            crate::server::routes::MemoryBundleKind::History => {
+                let history: crate::memory::MemoryHistoryBundle =
+                    serde_json::from_value(bundle.payload.clone())?;
+                Ok(history
+                    .memories
+                    .into_iter()
+                    .map(|memory| memory.content)
+                    .collect())
+            }
+        },
+        ReaderArtifact::Passport(passport) => Ok(passport
+            .memories
+            .iter()
+            .map(|memory| memory.content.clone())
+            .collect()),
+        ReaderArtifact::History(history) => Ok(history
+            .memories
+            .iter()
+            .map(|memory| memory.content.clone())
+            .collect()),
+    }
+}
+
+fn build_reader_open_view(
+    path: &Path,
+    artifact: &ReaderArtifact,
+) -> anyhow::Result<ReaderOpenView> {
+    let source_path = path.display().to_string();
+    match artifact {
+        ReaderArtifact::Envelope(bundle) => {
+            let preview =
+                crate::server::routes::preview_memory_bundle(bundle).map_err(anyhow::Error::msg)?;
+            let nested_valid = match bundle.kind {
+                crate::server::routes::MemoryBundleKind::Passport => {
+                    let passport: crate::memory::MemoryPassportBundle =
+                        serde_json::from_value(bundle.payload.clone())?;
+                    crate::memory::verify_memory_passport_bundle(&passport)
+                }
+                crate::server::routes::MemoryBundleKind::History => {
+                    let history: crate::memory::MemoryHistoryBundle =
+                        serde_json::from_value(bundle.payload.clone())?;
+                    crate::memory::verify_memory_history_bundle(&history)
+                }
+            };
+            let provenance = match bundle.kind {
+                crate::server::routes::MemoryBundleKind::Passport => {
+                    let passport: crate::memory::MemoryPassportBundle =
+                        serde_json::from_value(bundle.payload.clone())?;
+                    Some(ReaderProvenanceView {
+                        exported_from_namespace: passport.provenance.exported_from_namespace,
+                        source_key_ids: passport.provenance.source_key_ids,
+                    })
+                }
+                crate::server::routes::MemoryBundleKind::History => None,
+            };
+            Ok(ReaderOpenView {
+                source_path,
+                artifact_line: bundle.bundle_version.clone(),
+                artifact_type: "memory_bundle_envelope".to_string(),
+                kind: bundle.kind.to_string(),
+                namespace: bundle.namespace.clone(),
+                scope: preview.scope,
+                runtime_contract_id: bundle.runtime_contract_id.clone(),
+                exported_at: bundle.exported_at,
+                memory_count: preview.memory_count,
+                visible_count: preview.visible_count,
+                root_id: preview.root_id,
+                reference_uri: Some(bundle.reference.uri.clone()),
+                attachment_name: Some(bundle.reference.attachment_name.clone()),
+                integrity: ReaderIntegrityView {
+                    envelope_valid: preview.integrity_valid,
+                    nested_valid,
+                    algorithm: bundle.integrity.algorithm.clone(),
+                    payload_sha256: bundle.integrity.payload_sha256.clone(),
+                },
+                signature: Some(ReaderSignatureView {
+                    scheme: bundle.signature.scheme.clone(),
+                    signer: bundle.signature.signer.clone(),
+                    signable: bundle.signature.signable,
+                }),
+                provenance,
+                preview: preview.preview,
+            })
+        }
+        ReaderArtifact::Passport(passport) => Ok(ReaderOpenView {
+            source_path,
+            artifact_line: passport.bundle_version.clone(),
+            artifact_type: "passport_bundle".to_string(),
+            kind: "passport".to_string(),
+            namespace: passport.namespace.clone(),
+            scope: Some(passport.scope.to_string()),
+            runtime_contract_id: passport.runtime_contract.contract_id.clone(),
+            exported_at: passport.exported_at,
+            memory_count: passport.memories.len(),
+            visible_count: passport.memories.len(),
+            root_id: None,
+            reference_uri: None,
+            attachment_name: None,
+            integrity: ReaderIntegrityView {
+                envelope_valid: true,
+                nested_valid: crate::memory::verify_memory_passport_bundle(passport),
+                algorithm: passport.integrity.algorithm.clone(),
+                payload_sha256: passport.integrity.payload_sha256.clone(),
+            },
+            signature: Some(ReaderSignatureView {
+                scheme: if passport.integrity.signed {
+                    "embedded_passport_integrity".to_string()
+                } else {
+                    "unsigned".to_string()
+                },
+                signer: None,
+                signable: false,
+            }),
+            provenance: Some(ReaderProvenanceView {
+                exported_from_namespace: passport.provenance.exported_from_namespace.clone(),
+                source_key_ids: passport.provenance.source_key_ids.clone(),
+            }),
+            preview: passport
+                .memories
+                .iter()
+                .take(5)
+                .map(|memory| reader_preview_text(&memory.content, 100))
+                .collect(),
+        }),
+        ReaderArtifact::History(history) => Ok(ReaderOpenView {
+            source_path,
+            artifact_line: history.bundle_version.clone(),
+            artifact_type: "history_bundle".to_string(),
+            kind: "history".to_string(),
+            namespace: history.namespace.clone(),
+            scope: None,
+            runtime_contract_id: history.runtime_contract.contract_id.clone(),
+            exported_at: history.exported_at,
+            memory_count: history.memories.len(),
+            visible_count: history.memories.len(),
+            root_id: Some(history.root_id),
+            reference_uri: None,
+            attachment_name: None,
+            integrity: ReaderIntegrityView {
+                envelope_valid: true,
+                nested_valid: crate::memory::verify_memory_history_bundle(history),
+                algorithm: history.integrity.algorithm.clone(),
+                payload_sha256: history.integrity.payload_sha256.clone(),
+            },
+            signature: Some(ReaderSignatureView {
+                scheme: "unsigned".to_string(),
+                signer: None,
+                signable: false,
+            }),
+            provenance: None,
+            preview: history
+                .memories
+                .iter()
+                .take(5)
+                .map(|memory| reader_preview_text(&memory.content, 100))
+                .collect(),
+        }),
+    }
+}
+
+fn build_reader_diff_view(
+    left_path: &Path,
+    left: &ReaderArtifact,
+    right_path: &Path,
+    right: &ReaderArtifact,
+) -> anyhow::Result<ReaderDiffView> {
+    let left_view = build_reader_open_view(left_path, left)?;
+    let right_view = build_reader_open_view(right_path, right)?;
+    let left_entries = reader_entry_set(left)?;
+    let right_entries = reader_entry_set(right)?;
+
+    let mut changed_fields = Vec::new();
+    if left_view.artifact_line != right_view.artifact_line {
+        changed_fields.push("artifact_line".to_string());
+    }
+    if left_view.artifact_type != right_view.artifact_type {
+        changed_fields.push("artifact_type".to_string());
+    }
+    if left_view.kind != right_view.kind {
+        changed_fields.push("kind".to_string());
+    }
+    if left_view.namespace != right_view.namespace {
+        changed_fields.push("namespace".to_string());
+    }
+    if left_view.scope != right_view.scope {
+        changed_fields.push("scope".to_string());
+    }
+    if left_view.runtime_contract_id != right_view.runtime_contract_id {
+        changed_fields.push("runtime_contract_id".to_string());
+    }
+    if left_view.memory_count != right_view.memory_count {
+        changed_fields.push("memory_count".to_string());
+    }
+    if left_view.root_id != right_view.root_id {
+        changed_fields.push("root_id".to_string());
+    }
+    if left_view
+        .signature
+        .as_ref()
+        .map(|sig| (&sig.scheme, &sig.signer, sig.signable))
+        != right_view
+            .signature
+            .as_ref()
+            .map(|sig| (&sig.scheme, &sig.signer, sig.signable))
+    {
+        changed_fields.push("signature".to_string());
+    }
+
+    Ok(ReaderDiffView {
+        same_kind: left_view.kind == right_view.kind,
+        left: left_view,
+        right: right_view,
+        changed_fields,
+        added_preview: right_entries
+            .difference(&left_entries)
+            .take(5)
+            .map(|entry| reader_preview_text(entry, 100))
+            .collect(),
+        removed_preview: left_entries
+            .difference(&right_entries)
+            .take(5)
+            .map(|entry| reader_preview_text(entry, 100))
+            .collect(),
+        shared_preview_count: left_entries.intersection(&right_entries).count(),
+    })
+}
+
+fn render_reader_open_text(view: &ReaderOpenView) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Universal memory reader");
+    let _ = writeln!(output, "Path:       {}", view.source_path);
+    let _ = writeln!(output, "Artifact:   {}", view.artifact_type);
+    let _ = writeln!(output, "Line:       {}", view.artifact_line);
+    let _ = writeln!(output, "Kind:       {}", view.kind);
+    let _ = writeln!(output, "Namespace:  {}", view.namespace);
+    if let Some(scope) = &view.scope {
+        let _ = writeln!(output, "Scope:      {}", scope);
+    }
+    let _ = writeln!(output, "Contract:   {}", view.runtime_contract_id);
+    let _ = writeln!(output, "Exported:   {}", view.exported_at.to_rfc3339());
+    let _ = writeln!(output, "Memories:   {}", view.memory_count);
+    let _ = writeln!(output, "Visible:    {}", view.visible_count);
+    if let Some(root_id) = view.root_id {
+        let _ = writeln!(output, "Root:       {}", root_id);
+    }
+    if let Some(uri) = &view.reference_uri {
+        let _ = writeln!(output, "URI:        {}", uri);
+    }
+    if let Some(attachment_name) = &view.attachment_name {
+        let _ = writeln!(output, "Attachment: {}", attachment_name);
+    }
+    let _ = writeln!(
+        output,
+        "Integrity:  envelope={} nested={} algo={}",
+        view.integrity.envelope_valid, view.integrity.nested_valid, view.integrity.algorithm
+    );
+    if let Some(signature) = &view.signature {
+        let _ = writeln!(
+            output,
+            "Signature:  scheme={} signer={} signable={}",
+            signature.scheme,
+            signature.signer.as_deref().unwrap_or("none"),
+            signature.signable
+        );
+    }
+    if let Some(provenance) = &view.provenance {
+        let _ = writeln!(
+            output,
+            "Provenance: namespace={} source_keys={}",
+            provenance.exported_from_namespace,
+            provenance.source_key_ids.len()
+        );
+    }
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Preview");
+    if view.preview.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for item in &view.preview {
+            let _ = writeln!(output, "- {}", item);
+        }
+    }
+    output
+}
+
+fn render_reader_open_html(view: &ReaderOpenView) -> String {
+    let preview_items = if view.preview.is_empty() {
+        "<li>none</li>".to_string()
+    } else {
+        view.preview
+            .iter()
+            .map(|item| format!("<li>{}</li>", escape_reader_html(item)))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let scope_row = view
+        .scope
+        .as_ref()
+        .map(|scope| {
+            format!(
+                "<tr><th>Scope</th><td>{}</td></tr>",
+                escape_reader_html(scope)
+            )
+        })
+        .unwrap_or_default();
+    let root_row = view
+        .root_id
+        .map(|root_id| format!("<tr><th>Root</th><td>{root_id}</td></tr>"))
+        .unwrap_or_default();
+    let uri_row = view
+        .reference_uri
+        .as_ref()
+        .map(|uri| format!("<tr><th>URI</th><td>{}</td></tr>", escape_reader_html(uri)))
+        .unwrap_or_default();
+    let attachment_row = view
+        .attachment_name
+        .as_ref()
+        .map(|name| {
+            format!(
+                "<tr><th>Attachment</th><td>{}</td></tr>",
+                escape_reader_html(name)
+            )
+        })
+        .unwrap_or_default();
+    let signature_row = view
+        .signature
+        .as_ref()
+        .map(|signature| {
+            format!(
+                "<tr><th>Signature</th><td>scheme={} signer={} signable={}</td></tr>",
+                escape_reader_html(&signature.scheme),
+                escape_reader_html(signature.signer.as_deref().unwrap_or("none")),
+                signature.signable
+            )
+        })
+        .unwrap_or_default();
+    let provenance_row = view
+        .provenance
+        .as_ref()
+        .map(|provenance| {
+            format!(
+                "<tr><th>Provenance</th><td>namespace={} source_keys={}</td></tr>",
+                escape_reader_html(&provenance.exported_from_namespace),
+                provenance.source_key_ids.len()
+            )
+        })
+        .unwrap_or_default();
+
+    format!(
+        concat!(
+            "<!doctype html><html><head><meta charset=\"utf-8\">",
+            "<title>memoryOSS Reader</title>",
+            "<style>",
+            ":root{{font-family:'IBM Plex Sans',sans-serif;color:#17202a;background:#f5f1e8;}}",
+            "body{{max-width:900px;margin:0 auto;padding:32px;}}",
+            "h1{{font-size:2rem;margin-bottom:1rem;}}",
+            "table{{width:100%;border-collapse:collapse;background:#fffdf8;}}",
+            "th,td{{padding:10px 12px;border-bottom:1px solid #d8d2c7;text-align:left;vertical-align:top;}}",
+            "th{{width:180px;color:#6b4f2a;}}",
+            "ul{{background:#fffdf8;padding:16px 24px;border:1px solid #d8d2c7;}}",
+            "</style></head><body>",
+            "<h1>Universal memory reader</h1>",
+            "<table>",
+            "<tr><th>Path</th><td>{path}</td></tr>",
+            "<tr><th>Artifact</th><td>{artifact}</td></tr>",
+            "<tr><th>Line</th><td>{line}</td></tr>",
+            "<tr><th>Kind</th><td>{kind}</td></tr>",
+            "<tr><th>Namespace</th><td>{namespace}</td></tr>",
+            "{scope_row}",
+            "<tr><th>Contract</th><td>{contract}</td></tr>",
+            "<tr><th>Exported</th><td>{exported}</td></tr>",
+            "<tr><th>Memories</th><td>{memory_count}</td></tr>",
+            "<tr><th>Visible</th><td>{visible_count}</td></tr>",
+            "{root_row}{uri_row}{attachment_row}",
+            "<tr><th>Integrity</th><td>envelope={envelope_valid} nested={nested_valid} algo={algo}</td></tr>",
+            "{signature_row}{provenance_row}",
+            "</table><h2>Preview</h2><ul>{preview_items}</ul></body></html>"
+        ),
+        path = escape_reader_html(&view.source_path),
+        artifact = escape_reader_html(&view.artifact_type),
+        line = escape_reader_html(&view.artifact_line),
+        kind = escape_reader_html(&view.kind),
+        namespace = escape_reader_html(&view.namespace),
+        scope_row = scope_row,
+        contract = escape_reader_html(&view.runtime_contract_id),
+        exported = escape_reader_html(&view.exported_at.to_rfc3339()),
+        memory_count = view.memory_count,
+        visible_count = view.visible_count,
+        root_row = root_row,
+        uri_row = uri_row,
+        attachment_row = attachment_row,
+        envelope_valid = view.integrity.envelope_valid,
+        nested_valid = view.integrity.nested_valid,
+        algo = escape_reader_html(&view.integrity.algorithm),
+        signature_row = signature_row,
+        provenance_row = provenance_row,
+        preview_items = preview_items,
+    )
+}
+
+fn render_reader_diff_text(diff: &ReaderDiffView) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Universal memory reader diff");
+    let _ = writeln!(output, "Kinds match: {}", diff.same_kind);
+    let _ = writeln!(output, "Shared entries: {}", diff.shared_preview_count);
+    if diff.changed_fields.is_empty() {
+        let _ = writeln!(output, "Changed fields: none");
+    } else {
+        let _ = writeln!(output, "Changed fields: {}", diff.changed_fields.join(", "));
+    }
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Left");
+    let _ = writeln!(
+        output,
+        "  {} {} memories={}",
+        diff.left.kind, diff.left.source_path, diff.left.memory_count
+    );
+    let _ = writeln!(output, "Right");
+    let _ = writeln!(
+        output,
+        "  {} {} memories={}",
+        diff.right.kind, diff.right.source_path, diff.right.memory_count
+    );
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Added");
+    if diff.added_preview.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for item in &diff.added_preview {
+            let _ = writeln!(output, "- {}", item);
+        }
+    }
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Removed");
+    if diff.removed_preview.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for item in &diff.removed_preview {
+            let _ = writeln!(output, "- {}", item);
+        }
+    }
+    output
+}
+
+fn render_reader_diff_html(diff: &ReaderDiffView) -> String {
+    let changed = if diff.changed_fields.is_empty() {
+        "none".to_string()
+    } else {
+        diff.changed_fields.join(", ")
+    };
+    let added = if diff.added_preview.is_empty() {
+        "<li>none</li>".to_string()
+    } else {
+        diff.added_preview
+            .iter()
+            .map(|item| format!("<li>{}</li>", escape_reader_html(item)))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    let removed = if diff.removed_preview.is_empty() {
+        "<li>none</li>".to_string()
+    } else {
+        diff.removed_preview
+            .iter()
+            .map(|item| format!("<li>{}</li>", escape_reader_html(item)))
+            .collect::<Vec<_>>()
+            .join("")
+    };
+    format!(
+        concat!(
+            "<!doctype html><html><head><meta charset=\"utf-8\">",
+            "<title>memoryOSS Reader Diff</title>",
+            "<style>",
+            ":root{{font-family:'IBM Plex Sans',sans-serif;color:#17202a;background:#f5f1e8;}}",
+            "body{{max-width:900px;margin:0 auto;padding:32px;}}",
+            "section{{background:#fffdf8;border:1px solid #d8d2c7;padding:16px 20px;margin-bottom:16px;}}",
+            "ul{{padding-left:20px;}}",
+            "</style></head><body>",
+            "<h1>Universal memory reader diff</h1>",
+            "<section><strong>Changed fields:</strong> {changed}</section>",
+            "<section><strong>Left:</strong> {left} ({left_count} memories)<br><strong>Right:</strong> {right} ({right_count} memories)</section>",
+            "<section><h2>Added</h2><ul>{added}</ul></section>",
+            "<section><h2>Removed</h2><ul>{removed}</ul></section>",
+            "</body></html>"
+        ),
+        changed = escape_reader_html(&changed),
+        left = escape_reader_html(&diff.left.source_path),
+        left_count = diff.left.memory_count,
+        right = escape_reader_html(&diff.right.source_path),
+        right_count = diff.right.memory_count,
+        added = added,
+        removed = removed,
+    )
+}
+
+fn run_reader_open(path: &Path, format: ReaderFormat) -> anyhow::Result<()> {
+    let artifact = read_reader_artifact(path)?;
+    let view = build_reader_open_view(path, &artifact)?;
+    match format {
+        ReaderFormat::Text => print!("{}", render_reader_open_text(&view)),
+        ReaderFormat::Json => println!("{}", serde_json::to_string_pretty(&view)?),
+        ReaderFormat::Html => print!("{}", render_reader_open_html(&view)),
+    }
+    Ok(())
+}
+
+fn run_reader_diff(left: &Path, right: &Path, format: ReaderFormat) -> anyhow::Result<()> {
+    let left_artifact = read_reader_artifact(left)?;
+    let right_artifact = read_reader_artifact(right)?;
+    let diff = build_reader_diff_view(left, &left_artifact, right, &right_artifact)?;
+    match format {
+        ReaderFormat::Text => print!("{}", render_reader_diff_text(&diff)),
+        ReaderFormat::Json => println!("{}", serde_json::to_string_pretty(&diff)?),
+        ReaderFormat::Html => print!("{}", render_reader_diff_html(&diff)),
+    }
+    Ok(())
+}
+
 fn render_memory_bundle_preview(preview: &crate::server::routes::MemoryBundlePreview) -> String {
     use std::fmt::Write as _;
 
@@ -2921,6 +3607,25 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Commands::Reader { command } = &command {
+        match command {
+            ReaderCommands::Open { path, format } => {
+                let format = format.parse::<ReaderFormat>().map_err(anyhow::Error::msg)?;
+                run_reader_open(path, format)?;
+                return Ok(());
+            }
+            ReaderCommands::Diff {
+                left,
+                right,
+                format,
+            } => {
+                let format = format.parse::<ReaderFormat>().map_err(anyhow::Error::msg)?;
+                run_reader_diff(left, right, format)?;
+                return Ok(());
+            }
+        }
+    }
+
     let operator_command = matches!(
         &command,
         Commands::Status { .. }
@@ -3210,6 +3915,9 @@ async fn main() -> anyhow::Result<()> {
                 unreachable!("bundle preview/validate/diff are handled before config loading")
             }
         },
+        Commands::Reader { .. } => {
+            unreachable!("reader commands are handled before config loading")
+        }
         Commands::Inspect { id } => {
             let uuid: uuid::Uuid = id
                 .parse()

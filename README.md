@@ -455,7 +455,11 @@ memoryoss bundle export --kind passport --namespace test --scope project -o proj
 memoryoss bundle preview project.membundle.json
 memoryoss bundle validate project.membundle.json
 memoryoss bundle diff old.membundle.json new.membundle.json
+memoryoss reader open project.membundle.json
+memoryoss reader diff old.membundle.json new.membundle.json --format html
 ```
+
+`memoryoss reader` is the offline read-only path on top of those artifacts. It can open an exported envelope or a raw published passport/history artifact, print summary/provenance/signature data, and diff two artifacts without needing a running daemon or even a valid local config file.
 
 ### Cross-App Adapter Bridges
 
@@ -680,6 +684,8 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss bundle preview project.membundle.json` | Preview bundle metadata, URI, and sampled contents without import |
 | `memoryoss bundle validate project.membundle.json` | Validate envelope and nested artifact integrity |
 | `memoryoss bundle diff old.membundle.json new.membundle.json` | Diff two bundle envelopes offline |
+| `memoryoss reader open project.membundle.json` | Open a bundle or raw published artifact in the offline universal reader |
+| `memoryoss reader diff old.membundle.json new.membundle.json --format html` | Diff two offline artifacts in text, JSON, or HTML without a running runtime |
 | `memoryoss review queue --namespace test` | List the current review inbox without raw UUIDs |
 | `memoryoss review confirm --namespace test --item 1` | Confirm a queue item by inbox position |
 | `memoryoss review reject --namespace test --item 2` | Reject a queue item by inbox position |
