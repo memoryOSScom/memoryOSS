@@ -52,6 +52,13 @@ impl MemoryAdapterKind {
     pub fn supports_export(&self) -> bool {
         !matches!(self, Self::GitHistory)
     }
+
+    pub fn imported_status(&self) -> MemoryStatus {
+        match self {
+            Self::ClaudeProject | Self::CursorRules => MemoryStatus::Active,
+            Self::GitHistory => MemoryStatus::Candidate,
+        }
+    }
 }
 
 impl std::fmt::Display for MemoryAdapterKind {
@@ -189,7 +196,7 @@ fn normalize_adapter_memories(
         }
         memory.namespace = Some(target_namespace.to_string());
         memory.memory_type = memory_type;
-        memory.status = MemoryStatus::Candidate;
+        memory.status = kind.imported_status();
         memory.tags = base_tags
             .iter()
             .cloned()
@@ -581,5 +588,26 @@ alwaysApply: false
         assert_eq!(plan.preview.normalized_count, 2);
         assert_eq!(plan.preview.preview.create_count, 2);
         assert_eq!(plan.staged_memories.len(), 2);
+        assert!(
+            plan.staged_memories
+                .iter()
+                .all(|memory| memory.status == crate::memory::MemoryStatus::Active)
+        );
+    }
+
+    #[test]
+    fn test_git_history_imports_stay_candidate() {
+        let plan = plan_adapter_import(
+            "test",
+            MemoryAdapterKind::GitHistory,
+            "repo",
+            "abc123\u{1f}feat(api): add adapter bridge\u{1f}\u{1e}",
+            &[],
+        );
+        assert_eq!(plan.staged_memories.len(), 1);
+        assert_eq!(
+            plan.staged_memories[0].status,
+            crate::memory::MemoryStatus::Candidate
+        );
     }
 }

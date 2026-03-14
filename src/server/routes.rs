@@ -955,6 +955,41 @@ pub(crate) fn refresh_review_queue_summary(
     Ok(())
 }
 
+fn note_indexer_writes(state: &AppState, write_count: usize) {
+    if write_count == 0 {
+        return;
+    }
+
+    state
+        .indexer_state
+        .write_seq
+        .fetch_add(write_count as u64, std::sync::atomic::Ordering::Relaxed);
+    state.indexer_state.wake();
+}
+
+async fn wait_for_indexer_catchup(state: &AppState, target_seq: u64) -> Result<(), AppError> {
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        let vector_seq = state
+            .indexer_state
+            .vector_seq
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let fts_seq = state
+            .indexer_state
+            .fts_seq
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if vector_seq >= target_seq && fts_seq >= target_seq {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            return Err(AppError::Internal(anyhow::anyhow!(
+                "derived indexes did not catch up after import"
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+}
+
 pub(crate) fn build_review_queue(
     memories: &[Memory],
     trust_scorer: &TrustScorer,
@@ -3046,13 +3081,28 @@ async fn adapter_import(
     let imported_ids = if req.dry_run {
         Vec::new()
     } else {
+        let staged_memories =
+            materialize_staged_import_memories(&state, &plan.staged_memories).await?;
         apply_staged_import_memories(
             &state,
             &target_namespace,
-            &plan.staged_memories,
+            &staged_memories,
             &format!("adapter-import-api:{kind}"),
         )?
     };
+    if !imported_ids.is_empty() {
+        let target_seq = state
+            .indexer_state
+            .write_seq
+            .load(std::sync::atomic::Ordering::Relaxed)
+            + imported_ids.len() as u64;
+        note_indexer_writes(&state, imported_ids.len());
+        wait_for_indexer_catchup(&state, target_seq).await?;
+        state
+            .intent_cache
+            .invalidate_namespace(&target_namespace)
+            .await;
+    }
 
     Ok(Json(AdapterImportResponse {
         dry_run: req.dry_run,
@@ -3096,13 +3146,47 @@ fn apply_staged_import_memories(
     Ok(imported_ids)
 }
 
-fn apply_passport_import_plan(
+async fn materialize_staged_import_memories(
+    state: &AppState,
+    staged_memories: &[Memory],
+) -> Result<Vec<Memory>, AppError> {
+    let pending_embeddings: Vec<String> = staged_memories
+        .iter()
+        .filter(|memory| memory.embedding.is_none())
+        .map(|memory| memory.content.clone())
+        .collect();
+    if pending_embeddings.is_empty() {
+        return Ok(staged_memories.to_vec());
+    }
+
+    let mut generated = state.embedding.embed(pending_embeddings).await?.into_iter();
+    let mut prepared = staged_memories.to_vec();
+    for memory in &mut prepared {
+        if memory.embedding.is_none() {
+            memory.embedding = Some(generated.next().ok_or_else(|| {
+                AppError::Internal(anyhow::anyhow!(
+                    "import embedding generation produced fewer vectors than expected"
+                ))
+            })?);
+        }
+    }
+    if generated.next().is_some() {
+        return Err(AppError::Internal(anyhow::anyhow!(
+            "import embedding generation produced more vectors than expected"
+        )));
+    }
+
+    Ok(prepared)
+}
+
+async fn apply_passport_import_plan(
     state: &AppState,
     namespace: &str,
     plan: &PassportImportPlan,
     subject: &str,
 ) -> Result<Vec<uuid::Uuid>, AppError> {
-    apply_staged_import_memories(state, namespace, &plan.staged_memories, subject)
+    let staged_memories = materialize_staged_import_memories(state, &plan.staged_memories).await?;
+    apply_staged_import_memories(state, namespace, &staged_memories, subject)
 }
 
 /// POST /v1/passport/import — import a portable memory passport bundle with dry-run preview.
@@ -3140,8 +3224,21 @@ async fn passport_import(
     let imported_ids = if req.dry_run {
         Vec::new()
     } else {
-        apply_passport_import_plan(&state, &target_namespace, &plan, "passport-import-api")?
+        apply_passport_import_plan(&state, &target_namespace, &plan, "passport-import-api").await?
     };
+    if !imported_ids.is_empty() {
+        let target_seq = state
+            .indexer_state
+            .write_seq
+            .load(std::sync::atomic::Ordering::Relaxed)
+            + imported_ids.len() as u64;
+        note_indexer_writes(&state, imported_ids.len());
+        wait_for_indexer_catchup(&state, target_seq).await?;
+        state
+            .intent_cache
+            .invalidate_namespace(&target_namespace)
+            .await;
+    }
 
     Ok(Json(PassportImportResponse {
         dry_run: req.dry_run,
@@ -3198,14 +3295,15 @@ async fn history_bundle(
     Ok(Json(bundle).into_response())
 }
 
-fn apply_history_replay_plan(
+async fn apply_history_replay_plan(
     state: &AppState,
     namespace: &str,
     plan: &MemoryHistoryReplayPlan,
     subject: &str,
 ) -> Result<Vec<uuid::Uuid>, AppError> {
+    let staged_memories = materialize_staged_import_memories(state, &plan.staged_memories).await?;
     let mut imported_ids = Vec::new();
-    for memory in &plan.staged_memories {
+    for memory in &staged_memories {
         state
             .doc_engine
             .store(memory, subject)
@@ -3269,7 +3367,20 @@ async fn history_replay(
     }
 
     let imported_ids =
-        apply_history_replay_plan(&state, &target_namespace, &plan, "history-replay-api")?;
+        apply_history_replay_plan(&state, &target_namespace, &plan, "history-replay-api").await?;
+    if !imported_ids.is_empty() {
+        let target_seq = state
+            .indexer_state
+            .write_seq
+            .load(std::sync::atomic::Ordering::Relaxed)
+            + imported_ids.len() as u64;
+        note_indexer_writes(&state, imported_ids.len());
+        wait_for_indexer_catchup(&state, target_seq).await?;
+        state
+            .intent_cache
+            .invalidate_namespace(&target_namespace)
+            .await;
+    }
 
     Ok(Json(HistoryReplayResponse {
         dry_run: false,

@@ -6464,6 +6464,29 @@ alwaysApply: false
     let import_body: serde_json::Value = import.json().await.unwrap();
     assert_eq!(import_body["imported"].as_u64(), Some(2));
 
+    let explain = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "What review rules should I follow before merge?"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain.status(), 200);
+    let explain_body: serde_json::Value = explain.json().await.unwrap();
+    assert_eq!(
+        explain_body["retrieval_gate"]["decision"].as_str(),
+        Some("inject")
+    );
+    assert!(
+        explain_body["summary_results"]
+            .as_array()
+            .map(|items| !items.is_empty())
+            .unwrap_or(false),
+        "curated adapter imports should be eligible for immediate recall"
+    );
+
     let export = client
         .get(format!("{base}/v1/adapters/export?kind=claude_project"))
         .header("Authorization", "Bearer test-key-integration")
