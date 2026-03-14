@@ -1,0 +1,121 @@
+{
+  "runner": "tests/run_universal_memory_loop.py",
+  "generated_at": "2026-03-14T11:51:03Z",
+  "duration_seconds": 5,
+  "summary": {
+    "demo_clients": [
+      "http_api_store",
+      "cli_passport_export",
+      "http_api_import",
+      "http_query_explain",
+      "http_history_replay"
+    ],
+    "bundle_entries": 5,
+    "portability_queries": 4,
+    "portability_success_rate": 1.0,
+    "merge_count": 1,
+    "conflict_count": 1,
+    "merge_conflict_rate": 0.2,
+    "replay_fidelity": 1.0,
+    "task_state_cases": 2,
+    "task_state_quality": 1.0
+  },
+  "items": [
+    {
+      "name": "Public demo path",
+      "status": "pass",
+      "note": "HTTP API store -> CLI passport export -> HTTP import dry-run/apply -> HTTP query-explain -> HTTP history replay"
+    },
+    {
+      "name": "Portability success rate",
+      "status": "pass",
+      "note": "4/4 preserved query anchors after the API -> CLI -> API loop"
+    },
+    {
+      "name": "Passport merge/conflict rate",
+      "status": "pass",
+      "note": "5 bundle entries; create=3, merge=1, conflict=1 (20.0% conflicts)"
+    },
+    {
+      "name": "Replay fidelity",
+      "status": "pass",
+      "note": "8/8 checks matched after replay into a clean namespace"
+    },
+    {
+      "name": "Task-state quality",
+      "status": "pass",
+      "note": "2/2 task classes produced the expected kind, structure, and recall anchors"
+    }
+  ],
+  "details": {
+    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-m756hm0s/portable-loop-passport.json (scope=all memories=5)",
+    "portability_cases": [
+      {
+        "label": "review style",
+        "success": true,
+        "expected_anchor": "findings first",
+        "top_result": "For review responses, keep findings first and summary brief."
+      },
+      {
+        "label": "deploy rollback",
+        "success": true,
+        "expected_anchor": "roll back within 15 minutes",
+        "top_result": "Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes."
+      },
+      {
+        "label": "deploy checklist",
+        "success": true,
+        "expected_anchor": "staging approval",
+        "top_result": "Deployment checklist: require staging approval before production release."
+      },
+      {
+        "label": "review checklist",
+        "success": true,
+        "expected_anchor": "security review",
+        "top_result": "Auth review checklist: require tests and security review before merging sensitive changes."
+      }
+    ],
+    "task_state_cases": [
+      {
+        "label": "deploy",
+        "success": true,
+        "task_context_kind": "deploy",
+        "task_state_kind": "deploy",
+        "anchors": [
+          "staging approval",
+          "roll back within 15 minutes"
+        ]
+      },
+      {
+        "label": "review",
+        "success": true,
+        "task_context_kind": "review",
+        "task_state_kind": "review",
+        "anchors": [
+          "security review",
+          "findings first"
+        ]
+      }
+    ],
+    "replay_checks": {
+      "root_id": true,
+      "branch_safe": true,
+      "node_count": true,
+      "timeline_count": true,
+      "visible_memory_ids": true,
+      "preview_create_count": true,
+      "imported_count": true,
+      "conflict_node_present": true
+    },
+    "source_history": {
+      "root_id": "019cec2f-83e8-7533-a101-d3e9a2807c27",
+      "node_count": 3,
+      "timeline_count": 7
+    },
+    "target_history": {
+      "root_id": "019cec2f-83e8-7533-a101-d3e9a2807c27",
+      "node_count": 3,
+      "timeline_count": 7
+    }
+  }
+}

@@ -10,7 +10,7 @@ memoryOSS is for project context, preferences, prior fixes, and working history 
 
 Agents lose project context between sessions. memoryOSS persists the things that actually matter in day-to-day work: decisions, conventions, fixes, constraints, and user preferences.
 
-In public retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands. The public test page publishes the current proof set: 20k retention, long-memory regression, soak stability, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix.
+In public retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands. The public test page publishes the current proof set: 20k retention, long-memory regression, soak stability, a universal memory loop proof, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix.
 
 In a separate constrained 10-task Claude benchmark, using recalled memory context instead of replaying the full task context reduced average input tokens by 44.4%. We treat this as evidence for repeated-task context compression in that workload, not as a universal promise of lower token usage in every workload.
 
@@ -405,6 +405,31 @@ Compatibility policy:
 - readers must ignore unknown additive fields inside a published line
 - once a successor line ships, memoryOSS keeps reader compatibility for the previous published line for at least two minor releases
 - the conformance harness is the authoritative pass/fail gate for published lines
+
+### Universal Memory Loop Proof
+
+The public portability claim is now backed by a reproducible proof runner:
+
+```bash
+python3 tests/run_universal_memory_loop.py
+```
+
+That runner executes one stable end-to-end loop on local runtimes:
+- store durable memories through the HTTP API
+- export a passport through the CLI
+- import that passport into a second runtime with dry-run merge/conflict preview
+- verify portability through `query-explain`
+- replay a history bundle into a clean namespace and compare lineage fidelity
+
+The published report tracks four hard metrics from that loop:
+- portability success rate
+- passport merge/conflict rate
+- replay fidelity
+- task-state quality
+
+Stable claims and experimental claims stay separate:
+- stable: passport portability, history replay, task-state portability proof
+- experimental: retrieval tuning, confidence gating, identifier-first routing, extraction quality deltas
 
 ### Memory Bundle Envelope
 

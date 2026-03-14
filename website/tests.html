@@ -78,7 +78,8 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
   <div class="hero">
     <h1>Test Results</h1>
     <p>These are real runner results generated from the same automated validation path used for releases.</p>
-    <p>The main public proof set is simple: retention under load, explicit long-memory regression, sustained soak stability, compatibility across the supported Claude and Codex flows, and live quality metrics for extraction and injection.</p>
+    <p>The main public proof set is simple: retention under load, explicit long-memory regression, a stable universal memory loop proof, sustained soak stability, compatibility across the supported Claude and Codex flows, and live quality metrics for extraction and injection.</p>
+    <p>Stable portability and replay claims are published separately from experimental retrieval and extraction metrics.</p>
   </div>
 
   <div class="card">
@@ -99,6 +100,10 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
     <div class="test-row">
       <span class="status pass">MATRIX</span>
       <div><strong>Compatibility matrix</strong><div class="note">Claude OAuth/API and Codex OAuth/API are tested across the supported MCP and proxy paths rather than left as undocumented assumptions.</div></div>
+    </div>
+    <div class="test-row">
+      <span class="status pass">LOOP</span>
+      <div><strong>Universal memory loop</strong><div class="note">A published proof stores memory through the HTTP API, exports a passport via CLI, imports into a second runtime with merge/conflict preview, and replays history into a clean namespace while checking task-state quality.</div></div>
     </div>
     <div class="test-row">
       <span class="status pass">QUAL</span>

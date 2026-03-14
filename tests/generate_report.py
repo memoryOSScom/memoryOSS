@@ -367,6 +367,7 @@ def build_sections(
     coverage_gaps_report=None,
     long_memory_report=None,
     token_savings_report=None,
+    universal_loop_report=None,
 ):
     step_by_slug = {step["slug"]: step for step in steps}
 
@@ -785,6 +786,33 @@ def build_sections(
             }
         )
 
+    universal_loop_step = step_by_slug.get("universal_memory_loop")
+    if universal_loop_report:
+        sections.append(
+            {
+                "title": "Universal Memory Loop Proof",
+                "count": len(universal_loop_report.get("items", [])),
+                "items": universal_loop_report.get("items", []),
+            }
+        )
+    elif universal_loop_step:
+        sections.append(
+            {
+                "title": "Universal Memory Loop Proof",
+                "count": 1,
+                "items": [
+                    item(
+                        universal_loop_step["label"],
+                        universal_loop_step["status"],
+                        (
+                            f"{universal_loop_step['duration_seconds']}s"
+                            " — report artifact not available"
+                        ),
+                    )
+                ],
+            }
+        )
+
     coverage_gaps_step = step_by_slug.get("coverage_gaps")
     if coverage_gaps_report:
         for group in coverage_gaps_report.get("groups", []):
@@ -823,6 +851,7 @@ def build_report(
     coverage_gaps_report=None,
     long_memory_report=None,
     token_savings_report=None,
+    universal_loop_report=None,
 ):
     cargo_step = next((step for step in steps if step["slug"] == "cargo_test"), None)
     ts_step = next((step for step in steps if step["slug"] == "typescript_sdk"), None)
@@ -845,6 +874,7 @@ def build_report(
         coverage_gaps_report,
         long_memory_report,
         token_savings_report,
+        universal_loop_report,
     )
 
     total_checks = sum(
@@ -884,6 +914,21 @@ def build_report(
             "token_savings_percent": (
                 token_savings_report["summary"]["avg_savings_percent"]
                 if token_savings_report
+                else 0
+            ),
+            "universal_loop_portability_rate": (
+                universal_loop_report["summary"]["portability_success_rate"]
+                if universal_loop_report
+                else 0
+            ),
+            "universal_loop_replay_fidelity": (
+                universal_loop_report["summary"]["replay_fidelity"]
+                if universal_loop_report
+                else 0
+            ),
+            "universal_loop_task_state_quality": (
+                universal_loop_report["summary"]["task_state_quality"]
+                if universal_loop_report
                 else 0
             ),
         },
@@ -936,6 +981,7 @@ def main():
     parser.add_argument("--coverage-gaps-json")
     parser.add_argument("--long-memory-json")
     parser.add_argument("--token-savings-json")
+    parser.add_argument("--universal-loop-json")
     parser.add_argument("--duration", required=True, type=int)
     args = parser.parse_args()
 
@@ -947,6 +993,7 @@ def main():
     coverage_gaps_report = load_optional_json(args.coverage_gaps_json)
     long_memory_report = load_optional_json(args.long_memory_json)
     token_savings_report = load_optional_json(args.token_savings_json)
+    universal_loop_report = load_optional_json(args.universal_loop_json)
     report = build_report(
         steps,
         args.duration,
@@ -957,6 +1004,7 @@ def main():
         coverage_gaps_report=coverage_gaps_report,
         long_memory_report=long_memory_report,
         token_savings_report=token_savings_report,
+        universal_loop_report=universal_loop_report,
     )
 
     output_json = Path(args.output_json)
