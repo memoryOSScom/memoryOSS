@@ -68,6 +68,9 @@ EXPERIMENTAL_CONFIDENCE_GATE = os.environ.get(
 EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING = os.environ.get(
     "BENCHMARK_EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING", ""
 ).strip()
+EXPERIMENTAL_PRIMITIVE_ALGEBRA = os.environ.get(
+    "BENCHMARK_EXPERIMENTAL_PRIMITIVE_ALGEBRA", ""
+).strip()
 
 MIN_SUBSTRING_TOKENS = 5
 MIN_JACCARD_TOKENS = 6
@@ -143,6 +146,51 @@ RETRIEVAL_PROBE_MEMORIES = [
     {
         "content": "The Anthropic proxy endpoint is /proxy/anthropic/v1/messages and the OpenAI chat endpoint is /proxy/v1/chat/completions.",
         "tags": ["probe", "proxy", "endpoint"],
+    },
+    {
+        "content": "Auth hotfix dependency: flush the token cache before production deploy.",
+        "tags": ["probe", "auth", "hotfix", "dependency"],
+    },
+    {
+        "content": "Auth hotfix incident: token cache failures blocked rollout last week until the cache was cleared.",
+        "tags": ["probe", "auth", "hotfix", "incident"],
+    },
+    {
+        "content": "Auth rollback prerequisite: token cache flush must happen before the patch ships.",
+        "tags": ["probe", "auth", "hotfix", "dependency"],
+    },
+    {
+        "content": "After rollback, page ops-red and attach the smoke dashboard evidence for review.",
+        "tags": ["probe", "ops", "rollback", "evidence"],
+    },
+]
+
+PRIMITIVE_ALGEBRA_CASES = [
+    {
+        "id": "PA01",
+        "query": "Which auth hotfix memory is the blocking dependency before production deploy?",
+        "expected_anchor": "flush the token cache",
+        "expect_collapse": True,
+        "expected_fragments": [
+            "before production deploy",
+            "before the patch ships",
+        ],
+    },
+    {
+        "id": "PA02",
+        "query": "What prerequisite must carry forward before the auth patch ships?",
+        "expected_anchor": "token cache flush",
+        "expect_collapse": True,
+        "expected_fragments": [
+            "before production deploy",
+            "before the patch ships",
+        ],
+    },
+    {
+        "id": "PA03",
+        "query": "After rollback, who gets paged and what evidence should be attached?",
+        "expected_anchor": "ops-red",
+        "expect_collapse": False,
     },
 ]
 
@@ -403,6 +451,7 @@ def build_proxy_sections(
     min_recall_score: float,
     confidence_gate: bool,
     identifier_first_routing: bool,
+    primitive_algebra: bool,
     default_memory_mode: str = "full",
 ) -> str:
     return f"""
@@ -414,6 +463,7 @@ default_memory_mode = "{default_memory_mode}"
 min_recall_score = {min_recall_score}
 confidence_gate = {"true" if confidence_gate else "false"}
 identifier_first_routing = {"true" if identifier_first_routing else "false"}
+primitive_algebra = {"true" if primitive_algebra else "false"}
 extraction_enabled = false
 
 [[proxy.key_mapping]]
@@ -807,6 +857,95 @@ def compare_retrieval_injection_lanes(stable: dict, experimental: dict) -> dict:
     }
 
 
+def run_primitive_algebra_lane(
+    base_url: str,
+    auth_header: str,
+    *,
+    lane_name: str,
+) -> dict:
+    top_hits = 0
+    collapsed = 0
+    surfaced = 0
+    cases = []
+
+    for case in PRIMITIVE_ALGEBRA_CASES:
+        explain_status, explain = http_json_with_retry(
+            "POST",
+            f"{base_url}/v1/admin/query-explain",
+            headers={"Authorization": auth_header},
+            body={"query": case["query"], "limit": 3, "namespace": "probe"},
+            timeout=120.0,
+        )
+        if explain_status != 200:
+            raise RuntimeError(
+                f"primitive algebra explain failed for {case['id']}: {explain_status} {explain}"
+            )
+        results = explain.get("final_results") or []
+        top_content = (((results[0] if results else {}).get("memory") or {}).get("content") or "")
+        primitive_view = explain.get("primitive_algebra") or {}
+        hit = case["expected_anchor"].lower() in top_content.lower()
+        collapsed_ok = (not case["expect_collapse"]) or all(
+            fragment.lower() in top_content.lower()
+            for fragment in case.get("expected_fragments", [])
+        )
+        surfaced_ok = bool(primitive_view.get("matched_memories"))
+        top_hits += 1 if hit else 0
+        collapsed += 1 if collapsed_ok else 0
+        surfaced += 1 if surfaced_ok else 0
+        cases.append(
+            {
+                "id": case["id"],
+                "query": case["query"],
+                "expected_anchor": case["expected_anchor"],
+                "top_hit": hit,
+                "collapsed": collapsed_ok,
+                "primitive_surface": surfaced_ok,
+                "result_count": len(results),
+                "top_content": top_content,
+            }
+        )
+
+    total = len(PRIMITIVE_ALGEBRA_CASES)
+    return {
+        "summary": {
+            "lane": lane_name,
+            "dataset_size": total,
+            "top_hit_rate": round(top_hits / total, 4) if total else 1.0,
+            "collapsed_duplicate_rate": round(collapsed / total, 4) if total else 1.0,
+            "primitive_surface_rate": round(surfaced / total, 4) if total else 1.0,
+        },
+        "cases": cases,
+    }
+
+
+def compare_primitive_algebra_lanes(stable: dict, experimental: dict) -> dict:
+    metrics = []
+    regressions = 0
+    for metric in ("top_hit_rate", "collapsed_duplicate_rate", "primitive_surface_rate"):
+        stable_value = stable["summary"].get(metric)
+        experimental_value = experimental["summary"].get(metric)
+        delta = round(experimental_value - stable_value, 4)
+        regression = experimental_value < stable_value
+        if regression:
+            regressions += 1
+        metrics.append(
+            {
+                "metric": metric,
+                "stable": stable_value,
+                "experimental": experimental_value,
+                "delta": delta,
+                "direction": "higher_is_better",
+                "regression": regression,
+            }
+        )
+    return {
+        "stable_lane": "stable",
+        "experimental_lane": "experimental",
+        "regressions": regressions,
+        "metrics": metrics,
+    }
+
+
 def proxy_request(
     base_url: str,
     proxy_key: str,
@@ -896,6 +1035,7 @@ namespace = "probe"
         min_recall_score=THRESHOLD,
         confidence_gate=CONFIDENCE_GATE_ENABLED,
         identifier_first_routing=IDENTIFIER_FIRST_ROUTING_ENABLED,
+        primitive_algebra=False,
         default_memory_mode="full",
     )
     write_test_config(
@@ -1177,12 +1317,23 @@ namespace = "probe"
             },
             "comparison": None,
         }
+        primitive_algebra_eval = {
+            "lanes": {
+                "stable": run_primitive_algebra_lane(
+                    base_url,
+                    probe_auth_header,
+                    lane_name="stable",
+                )
+            },
+            "comparison": None,
+        }
 
         if (
             EXPERIMENTAL_MIN_RECALL_SCORE
             or EXPERIMENTAL_MEMORY_MODE
             or EXPERIMENTAL_CONFIDENCE_GATE
             or EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING
+            or EXPERIMENTAL_PRIMITIVE_ALGEBRA
         ):
             experimental_port = free_port()
             experimental_config_path = tmp / "benchmark-experimental.toml"
@@ -1204,6 +1355,11 @@ namespace = "probe"
                 if EXPERIMENTAL_IDENTIFIER_FIRST_ROUTING
                 else IDENTIFIER_FIRST_ROUTING_ENABLED
             )
+            experimental_primitive_algebra = (
+                EXPERIMENTAL_PRIMITIVE_ALGEBRA.lower() not in ("0", "false", "no", "off")
+                if EXPERIMENTAL_PRIMITIVE_ALGEBRA
+                else False
+            )
             stop_process(process)
             write_test_config(
                 experimental_config_path,
@@ -1215,6 +1371,7 @@ namespace = "probe"
                     min_recall_score=experimental_threshold,
                     confidence_gate=experimental_confidence_gate,
                     identifier_first_routing=experimental_identifier_first_routing,
+                    primitive_algebra=experimental_primitive_algebra,
                     default_memory_mode=experimental_memory_mode,
                 ),
             )
@@ -1232,6 +1389,15 @@ namespace = "probe"
             retrieval_injection_eval["comparison"] = compare_retrieval_injection_lanes(
                 retrieval_injection_eval["lanes"]["stable"],
                 retrieval_injection_eval["lanes"]["experimental"],
+            )
+            primitive_algebra_eval["lanes"]["experimental"] = run_primitive_algebra_lane(
+                base_url,
+                probe_auth_header,
+                lane_name="experimental",
+            )
+            primitive_algebra_eval["comparison"] = compare_primitive_algebra_lanes(
+                primitive_algebra_eval["lanes"]["stable"],
+                primitive_algebra_eval["lanes"]["experimental"],
             )
 
         report = {
@@ -1282,6 +1448,7 @@ namespace = "probe"
                 "negative_probe_count": negative_probe_count,
             },
             "retrieval_injection_eval": retrieval_injection_eval,
+            "primitive_algebra_eval": primitive_algebra_eval,
             "latency_ms": {
                 "min": round(min(latency_ms), 2),
                 "p50": round(percentile(latency_ms, 0.50), 2),

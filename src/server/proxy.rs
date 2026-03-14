@@ -2006,6 +2006,7 @@ async fn recall_for_proxy(
     let diversity = state.config.proxy.diversity_factor.unwrap_or(0.3);
 
     let options = crate::scoring::MergeOptions {
+        query: query.to_string(),
         weights: crate::memory::ScoringWeights::default(),
         idf_boost,
         min_channel_score: min_channel,
@@ -2015,8 +2016,9 @@ async fn recall_for_proxy(
         limit: limit * 2,
         agent_filter: None,
         diversity_factor: diversity,
-        task_context,
+        task_context: task_context.clone(),
         identifier_route: identifier_route.clone(),
+        primitive_algebra: state.config.proxy.primitive_algebra,
     };
 
     let mut scored = crate::scoring::score_and_merge(
@@ -2027,7 +2029,12 @@ async fn recall_for_proxy(
         Some(&state.trust_scorer),
         &options,
     );
-    scored = crate::fusion::collapse_scored_memories_for_query(scored, identifier_route.as_ref());
+    scored = crate::fusion::collapse_scored_memories_with_options(
+        scored,
+        identifier_route.as_ref(),
+        state.config.proxy.primitive_algebra,
+        task_context.as_ref(),
+    );
     scored.truncate(limit);
     Ok(scored)
 }

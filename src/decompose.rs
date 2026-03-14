@@ -370,12 +370,14 @@ async fn run_sub_query(
     let idf_boost = crate::scoring::compute_idf_boost(idf_index, &sub_query.query);
 
     let options = crate::scoring::MergeOptions {
+        query: sub_query.query.clone(),
         idf_boost,
         namespace: namespace.to_string(),
         limit,
         agent_filter: sub_query.agent_filter.clone(),
         task_context: crate::scoring::detect_task_context(&sub_query.query),
         identifier_route: crate::scoring::detect_identifier_route(&sub_query.query),
+        primitive_algebra: false,
         ..Default::default()
     };
 

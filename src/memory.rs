@@ -230,6 +230,18 @@ pub fn runtime_contract_document() -> RuntimeContractDocument {
                 ],
                 excluded_from_contract: true,
             },
+            RuntimeExperimentalLayer {
+                name: "primitive_algebra".to_string(),
+                description:
+                    "Experimental decomposition of memories into reusable primitives and transfer operators for reranking, explain, and duplicate collapse."
+                        .to_string(),
+                current_surfaces: vec![
+                    "proxy.primitive_algebra".to_string(),
+                    "/v1/admin/query-explain".to_string(),
+                    "/proxy/*".to_string(),
+                ],
+                excluded_from_contract: true,
+            },
         ],
         object_model: vec![
             RuntimeObjectModelEntry {
@@ -537,6 +549,7 @@ pub fn runtime_contract_export_metadata() -> RuntimeContractExportMetadata {
             "retrieval_confidence_gate".to_string(),
             "identifier_first_routing".to_string(),
             "summary_evidence_recall".to_string(),
+            "primitive_algebra".to_string(),
         ],
     }
 }
@@ -2225,6 +2238,126 @@ pub struct SummaryEvidenceItem {
     pub provenance: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryPrimitiveKind {
+    Policy,
+    Constraint,
+    Incident,
+    Habit,
+    Environment,
+    Dependency,
+    Actor,
+    Evidence,
+    TaskState,
+}
+
+impl MemoryPrimitiveKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Policy => "policy",
+            Self::Constraint => "constraint",
+            Self::Incident => "incident",
+            Self::Habit => "habit",
+            Self::Environment => "environment",
+            Self::Dependency => "dependency",
+            Self::Actor => "actor",
+            Self::Evidence => "evidence",
+            Self::TaskState => "task_state",
+        }
+    }
+}
+
+impl std::fmt::Display for MemoryPrimitiveKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrimitiveTransferOperator {
+    EnforcePolicy,
+    ApplyConstraint,
+    ReuseIncidentFix,
+    CarryForwardDependency,
+    RouteToActor,
+    AttachEvidence,
+    CompileTaskState,
+}
+
+impl PrimitiveTransferOperator {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::EnforcePolicy => "enforce_policy",
+            Self::ApplyConstraint => "apply_constraint",
+            Self::ReuseIncidentFix => "reuse_incident_fix",
+            Self::CarryForwardDependency => "carry_forward_dependency",
+            Self::RouteToActor => "route_to_actor",
+            Self::AttachEvidence => "attach_evidence",
+            Self::CompileTaskState => "compile_task_state",
+        }
+    }
+}
+
+impl std::fmt::Display for PrimitiveTransferOperator {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.as_str())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPrimitive {
+    pub kind: MemoryPrimitiveKind,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<String>,
+    #[serde(default)]
+    pub confidence: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrimitiveTransfer {
+    pub operator: PrimitiveTransferOperator,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub anchors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MemoryPrimitiveDecomposition {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub primitives: Vec<MemoryPrimitive>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transfer_operators: Vec<PrimitiveTransfer>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrimitiveMemoryExplain {
+    pub memory_id: Uuid,
+    pub summary: String,
+    pub primitive_score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merge_key: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub primitives: Vec<MemoryPrimitive>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub transfer_operators: Vec<PrimitiveTransfer>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PrimitiveAlgebraExplain {
+    pub enabled: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query_primitives: Vec<MemoryPrimitive>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub query_transfer_operators: Vec<PrimitiveTransfer>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub matched_memories: Vec<PrimitiveMemoryExplain>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MemorySummaryEntry {
     pub memory_id: Uuid,
@@ -2263,6 +2396,10 @@ pub struct ScoreExplainEntry {
     pub trust_confidence_high: f64,
     pub trust_signals: crate::security::trust::TrustSignals,
     pub trust_multiplier: f64,
+    #[serde(default)]
+    pub primitive_score: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub primitive_decomposition: Option<MemoryPrimitiveDecomposition>,
     pub final_score: f64,
     pub low_trust: bool,
 }

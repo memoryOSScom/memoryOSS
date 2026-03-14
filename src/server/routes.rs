@@ -1646,6 +1646,8 @@ fn build_hud_policy_probes(
                 trust_confidence_high: trust.confidence_high,
                 trust_signals: trust.signals,
                 trust_multiplier: trust.score,
+                primitive_score: 0.0,
+                primitive_decomposition: None,
                 final_score: trust.score,
                 low_trust: trust.low_trust,
             }
@@ -3136,6 +3138,7 @@ async fn recall_inner(
 
     // Use shared score_and_merge core
     let options = crate::scoring::MergeOptions {
+        query: req.query.clone(),
         weights,
         idf_boost,
         min_channel_score: state.config.proxy.min_channel_score.unwrap_or(0.0),
@@ -3147,6 +3150,7 @@ async fn recall_inner(
         diversity_factor: state.config.proxy.diversity_factor.unwrap_or(0.0),
         task_context: task_context.clone(),
         identifier_route: identifier_route.clone(),
+        primitive_algebra: state.config.proxy.primitive_algebra,
     };
 
     let mut scored = crate::scoring::score_and_merge(
@@ -3217,7 +3221,12 @@ async fn recall_inner(
         true
     });
 
-    scored = crate::fusion::collapse_scored_memories_for_query(scored, identifier_route.as_ref());
+    scored = crate::fusion::collapse_scored_memories_with_options(
+        scored,
+        identifier_route.as_ref(),
+        state.config.proxy.primitive_algebra,
+        task_context.as_ref(),
+    );
 
     // Cursor pagination: skip results before cursor position
     if let Some(ref cursor) = req.cursor
@@ -3748,6 +3757,7 @@ async fn query_explain(
     let task_context = crate::scoring::detect_task_context(&req.query);
 
     let options = crate::scoring::MergeOptions {
+        query: req.query.clone(),
         weights: weights.clone(),
         idf_boost,
         min_channel_score,
@@ -3759,6 +3769,7 @@ async fn query_explain(
         diversity_factor,
         task_context: task_context.clone(),
         identifier_route: identifier_route.clone(),
+        primitive_algebra: state.config.proxy.primitive_algebra,
     };
 
     let mut explained = crate::scoring::score_and_explain(
@@ -3796,8 +3807,12 @@ async fn query_explain(
         }
         true
     });
-    explained =
-        crate::fusion::collapse_explained_entries_for_query(explained, identifier_route.as_ref());
+    explained = crate::fusion::collapse_explained_entries_with_options(
+        explained,
+        identifier_route.as_ref(),
+        state.config.proxy.primitive_algebra,
+        task_context.as_ref(),
+    );
     explained.truncate(req.limit);
     let (retrieval_gate, _) = crate::scoring::apply_retrieval_confidence_gate(
         &explained,
@@ -3828,6 +3843,12 @@ async fn query_explain(
     let compiled_task_state = task_context
         .as_ref()
         .and_then(|context| crate::fusion::compile_explained_task_state(&explained, context));
+    let primitive_algebra = crate::scoring::build_primitive_algebra_explain(
+        &req.query,
+        &explained,
+        task_context.as_ref(),
+        state.config.proxy.primitive_algebra,
+    );
     let policy_firewall =
         crate::security::trust::evaluate_policy_firewall_explained(&req.query, &explained);
 
@@ -3853,6 +3874,7 @@ async fn query_explain(
             "matched_terms": ctx.matched_terms,
         })),
         "task_state": compiled_task_state,
+        "primitive_algebra": primitive_algebra,
         "policy_firewall": policy_firewall,
         "idf_boost": idf_boost,
         "min_channel_score": min_channel_score,

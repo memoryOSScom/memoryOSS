@@ -1349,6 +1349,122 @@ async fn test_query_explain_prioritizes_task_context_for_deploy_bugfix_and_revie
 }
 
 #[tokio::test]
+async fn test_query_explain_surfaces_primitive_algebra_and_collapses_dependency_duplicates() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let extra_sections = r#"
+[proxy]
+primitive_algebra = true
+"#;
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#,
+        extra_sections,
+    );
+    let config_path = tmp_dir.path().join("primitive-algebra.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store/batch"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "memories": [
+                {
+                    "content": "Auth hotfix dependency: flush the token cache before production deploy.",
+                    "tags": ["auth", "hotfix", "dependency"]
+                },
+                {
+                    "content": "Auth hotfix incident: token cache failures blocked rollout last week until the cache was cleared.",
+                    "tags": ["auth", "hotfix", "incident"]
+                },
+                {
+                    "content": "Auth rollback prerequisite: token cache flush must happen before the patch ships.",
+                    "tags": ["auth", "hotfix", "dependency"]
+                }
+            ]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Which auth hotfix memory is the blocking dependency before production deploy?",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["primitive_algebra"]["enabled"].as_bool(),
+        Some(true)
+    );
+    assert!(
+        explain_body["primitive_algebra"]["query_primitives"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| item["kind"].as_str() == Some("dependency"))),
+        "query explain should surface dependency primitives for the query"
+    );
+    assert!(
+        explain_body["primitive_algebra"]["matched_memories"]
+            .as_array()
+            .is_some_and(|items| !items.is_empty()),
+        "primitive explain should surface matched memories when the lane is enabled"
+    );
+    let top_result = &explain_body["final_results"][0];
+    let top_content = top_result["memory"]["content"].as_str().unwrap_or("");
+    assert!(
+        top_content.contains("flush the token cache"),
+        "dependency memory should rank first under primitive algebra"
+    );
+    assert!(
+        top_content.contains("before production deploy")
+            && top_content.contains("before the patch ships"),
+        "primitive collapse should fuse same-merge-key dependency memories"
+    );
+    assert!(
+        top_result["primitive_decomposition"]["transfer_operators"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| { item["operator"].as_str() == Some("carry_forward_dependency") })),
+        "top result should expose dependency transfer operators"
+    );
+    assert!(
+        top_result["provenance"]
+            .as_array()
+            .is_some_and(|items| items
+                .iter()
+                .any(|item| { item.as_str() == Some("primitive_kind_match:dependency") })),
+        "primitive provenance should explain the rerank"
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
 async fn test_proxy_injection_prefers_review_context_memory() {
     let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
 

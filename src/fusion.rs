@@ -739,6 +739,15 @@ pub fn collapse_scored_memories_for_query(
     scored: Vec<ScoredMemory>,
     route: Option<&crate::scoring::IdentifierRouteProfile>,
 ) -> Vec<ScoredMemory> {
+    collapse_scored_memories_with_options(scored, route, false, None)
+}
+
+pub fn collapse_scored_memories_with_options(
+    scored: Vec<ScoredMemory>,
+    route: Option<&crate::scoring::IdentifierRouteProfile>,
+    primitive_algebra: bool,
+    task_context: Option<&TaskContext>,
+) -> Vec<ScoredMemory> {
     let mut collapsed: Vec<ScoredMemory> = Vec::new();
 
     for candidate in scored {
@@ -751,6 +760,18 @@ pub fn collapse_scored_memories_for_query(
                         route,
                     )
                 })
+                || (primitive_algebra
+                    && crate::scoring::primitive_merge_key_for_content(
+                        &entry.memory.content,
+                        &entry.memory.tags,
+                        task_context,
+                    )
+                    .zip(crate::scoring::primitive_merge_key_for_content(
+                        &candidate.memory.content,
+                        &candidate.memory.tags,
+                        task_context,
+                    ))
+                    .is_some_and(|(left, right)| left == right))
         }) {
             let mut merged = if prefer_scored(&candidate, existing) {
                 candidate.clone()
@@ -792,6 +813,15 @@ pub fn collapse_explained_entries_for_query(
     explained: Vec<ScoreExplainEntry>,
     route: Option<&crate::scoring::IdentifierRouteProfile>,
 ) -> Vec<ScoreExplainEntry> {
+    collapse_explained_entries_with_options(explained, route, false, None)
+}
+
+pub fn collapse_explained_entries_with_options(
+    explained: Vec<ScoreExplainEntry>,
+    route: Option<&crate::scoring::IdentifierRouteProfile>,
+    primitive_algebra: bool,
+    task_context: Option<&TaskContext>,
+) -> Vec<ScoreExplainEntry> {
     let mut collapsed: Vec<ScoreExplainEntry> = Vec::new();
 
     for candidate in explained {
@@ -804,6 +834,18 @@ pub fn collapse_explained_entries_for_query(
                         route,
                     )
                 })
+                || (primitive_algebra
+                    && crate::scoring::primitive_merge_key_for_content(
+                        &entry.memory.content,
+                        &entry.memory.tags,
+                        task_context,
+                    )
+                    .zip(crate::scoring::primitive_merge_key_for_content(
+                        &candidate.memory.content,
+                        &candidate.memory.tags,
+                        task_context,
+                    ))
+                    .is_some_and(|(left, right)| left == right))
         }) {
             let mut merged = if prefer_explained(&candidate, existing) {
                 candidate.clone()
@@ -827,6 +869,10 @@ pub fn collapse_explained_entries_for_query(
             merged.max_channel_score = merged.max_channel_score.max(other.max_channel_score);
             merged.trust_score = merged.trust_score.max(other.trust_score);
             merged.trust_multiplier = merged.trust_multiplier.max(other.trust_multiplier);
+            merged.primitive_score = merged.primitive_score.max(other.primitive_score);
+            if merged.primitive_decomposition.is_none() {
+                merged.primitive_decomposition = other.primitive_decomposition.clone();
+            }
             merged.final_score = merged.final_score.max(other.final_score);
             merged.low_trust = merged.low_trust && other.low_trust;
             merged.channels.vector = merged.channels.vector.max(other.channels.vector);
@@ -1020,7 +1066,8 @@ mod tests {
     use uuid::Uuid;
 
     use super::{
-        are_structural_duplicates, collapse_explained_entries, collapse_scored_memories,
+        are_structural_duplicates, collapse_explained_entries,
+        collapse_explained_entries_with_options, collapse_scored_memories,
         collapse_scored_memories_for_query, compile_scored_task_state, fuse_contents,
         render_task_state_xml,
     };
@@ -1102,6 +1149,8 @@ mod tests {
                 outcome_learning: 0.8,
             },
             trust_multiplier: 0.92,
+            primitive_score: 0.0,
+            primitive_decomposition: None,
             final_score: 0.46,
             low_trust: false,
         };
@@ -1132,6 +1181,8 @@ mod tests {
                 outcome_learning: 0.9,
             },
             trust_multiplier: 0.96,
+            primitive_score: 0.0,
+            primitive_decomposition: None,
             final_score: 0.7,
             low_trust: false,
         };
@@ -1143,6 +1194,101 @@ mod tests {
             collapsed[0]
                 .provenance
                 .contains(&"fused_duplicate".to_string())
+        );
+    }
+
+    #[test]
+    fn test_primitive_collapse_merges_shared_dependency_key() {
+        let mut first_memory = Memory::new(
+            "Auth hotfix dependency: flush the token cache before production deploy.".to_string(),
+        );
+        first_memory.tags = vec!["auth".into(), "hotfix".into(), "dependency".into()];
+        let mut second_memory = Memory::new(
+            "Auth rollback prerequisite: token cache flush must happen before the patch ships."
+                .to_string(),
+        );
+        second_memory.tags = vec!["auth".into(), "hotfix".into(), "dependency".into()];
+        let context = TaskContext {
+            kind: crate::scoring::TaskContextKind::Deploy,
+            matched_terms: vec!["deploy".into()],
+        };
+        let collapsed = collapse_explained_entries_with_options(
+            vec![
+                ScoreExplainEntry {
+                    memory: first_memory,
+                    provenance: vec!["vector".to_string()],
+                    channels: ScoreChannels {
+                        vector: 0.6,
+                        fts: 0.0,
+                        exact: 0.0,
+                    },
+                    max_channel_score: 0.6,
+                    base_score: 0.4,
+                    recency_score: 0.0,
+                    confidence_factor: 1.0,
+                    status_factor: 1.0,
+                    trust_score: 0.9,
+                    trust_confidence_low: 0.8,
+                    trust_confidence_high: 1.0,
+                    trust_signals: crate::security::trust::TrustSignals {
+                        recency: 1.0,
+                        source_reputation: 1.0,
+                        embedding_coherence: 1.0,
+                        access_frequency: 0.5,
+                        outcome_learning: 0.5,
+                    },
+                    trust_multiplier: 1.0,
+                    primitive_score: 0.1,
+                    primitive_decomposition: None,
+                    final_score: 0.5,
+                    low_trust: false,
+                },
+                ScoreExplainEntry {
+                    memory: second_memory,
+                    provenance: vec!["fts".to_string()],
+                    channels: ScoreChannels {
+                        vector: 0.5,
+                        fts: 0.0,
+                        exact: 0.0,
+                    },
+                    max_channel_score: 0.5,
+                    base_score: 0.35,
+                    recency_score: 0.0,
+                    confidence_factor: 1.0,
+                    status_factor: 1.0,
+                    trust_score: 0.85,
+                    trust_confidence_low: 0.8,
+                    trust_confidence_high: 0.9,
+                    trust_signals: crate::security::trust::TrustSignals {
+                        recency: 1.0,
+                        source_reputation: 1.0,
+                        embedding_coherence: 1.0,
+                        access_frequency: 0.5,
+                        outcome_learning: 0.5,
+                    },
+                    trust_multiplier: 1.0,
+                    primitive_score: 0.12,
+                    primitive_decomposition: None,
+                    final_score: 0.48,
+                    low_trust: false,
+                },
+            ],
+            None,
+            true,
+            Some(&context),
+        );
+        assert_eq!(collapsed.len(), 1);
+        assert!(
+            collapsed[0]
+                .memory
+                .content
+                .contains("before production deploy")
+        );
+        assert!(
+            collapsed[0]
+                .memory
+                .content
+                .contains("before the patch ships")
         );
     }
 

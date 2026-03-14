@@ -6,14 +6,18 @@
 //! Implements GrepRAG multi-channel scoring + RLM IDF boost + precision gate + diversity.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use uuid::Uuid;
 
 use crate::engines::document::DocumentEngine;
 use crate::engines::fts::FtsEngine;
-use crate::memory::{ScoreChannels, ScoreExplainEntry, ScoredMemory, ScoringWeights};
+use crate::memory::{
+    Memory, MemoryPrimitive, MemoryPrimitiveDecomposition, MemoryPrimitiveKind,
+    PrimitiveAlgebraExplain, PrimitiveMemoryExplain, PrimitiveTransfer, PrimitiveTransferOperator,
+    ScoreChannels, ScoreExplainEntry, ScoredMemory, ScoringWeights,
+};
 use crate::merger::IdfIndex;
 use crate::security::trust::TrustScorer;
 
@@ -353,6 +357,578 @@ pub fn detect_task_context(query: &str) -> Option<TaskContext> {
     Some(TaskContext {
         kind,
         matched_terms,
+    })
+}
+
+#[derive(Debug, Clone)]
+pub struct PrimitiveQueryProfile {
+    pub decomposition: MemoryPrimitiveDecomposition,
+    pub task_context: Option<TaskContext>,
+}
+
+impl PrimitiveQueryProfile {
+    pub fn merge_key(&self) -> Option<&str> {
+        self.decomposition.merge_key.as_deref()
+    }
+}
+
+fn primitive_text(text: &str) -> String {
+    normalize_task_text(text)
+}
+
+fn primitive_contains_normalized(normalized: &str, needles: &[&str]) -> bool {
+    let padded = format!(" {normalized} ");
+    needles.iter().any(|needle| {
+        let normalized_needle = primitive_text(needle).trim().to_string();
+        if normalized_needle.is_empty() {
+            return false;
+        }
+        let pattern = format!(" {normalized_needle} ");
+        padded.contains(&pattern)
+            || (normalized_needle.len() > 4 && normalized.contains(&normalized_needle))
+    })
+}
+
+fn collect_primitive_anchors(text: &str, tags: &[String]) -> Vec<String> {
+    let normalized = primitive_text(text);
+    let mut anchors = extract_identifiers(text)
+        .into_iter()
+        .map(|identifier| identifier.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+
+    for keyword in [
+        "smoke",
+        "staging",
+        "production",
+        "rollback",
+        "review",
+        "security",
+        "deploy",
+        "release",
+        "cache",
+        "token cache",
+        "systemd",
+        "incident",
+        "root cause",
+        "approval",
+        "policy",
+        "checklist",
+        "runbook",
+        "ops",
+        "reviewer",
+        "evidence",
+        "metrics",
+        "log",
+    ] {
+        if primitive_contains_normalized(&normalized, &[keyword]) {
+            anchors.push(keyword.replace(' ', "_"));
+        }
+    }
+
+    for tag in tags {
+        let normalized_tag = primitive_text(tag).trim().replace(' ', "_");
+        if normalized_tag.len() >= 3 {
+            anchors.push(normalized_tag);
+        }
+    }
+
+    anchors.sort_unstable();
+    anchors.dedup();
+    anchors
+}
+
+fn label_from_anchors(prefix: &str, anchors: &[String], fallback: &str) -> String {
+    if anchors.is_empty() {
+        fallback.to_string()
+    } else {
+        format!(
+            "{prefix}: {}",
+            anchors
+                .iter()
+                .take(3)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
+fn push_primitive(
+    primitives: &mut Vec<MemoryPrimitive>,
+    seen: &mut HashSet<MemoryPrimitiveKind>,
+    kind: MemoryPrimitiveKind,
+    label: String,
+    anchors: &[String],
+    confidence: f64,
+) {
+    if seen.insert(kind) {
+        primitives.push(MemoryPrimitive {
+            kind,
+            label,
+            anchors: anchors.iter().take(4).cloned().collect(),
+            confidence,
+        });
+    }
+}
+
+fn push_transfer(
+    transfers: &mut Vec<PrimitiveTransfer>,
+    seen: &mut HashSet<PrimitiveTransferOperator>,
+    operator: PrimitiveTransferOperator,
+    reason: &str,
+    anchors: &[String],
+) {
+    if seen.insert(operator) {
+        transfers.push(PrimitiveTransfer {
+            operator,
+            reason: reason.to_string(),
+            anchors: anchors.iter().take(3).cloned().collect(),
+        });
+    }
+}
+
+pub fn decompose_memory_primitives(
+    memory: &Memory,
+    task_context: Option<&TaskContext>,
+) -> MemoryPrimitiveDecomposition {
+    decompose_text_primitives(&memory.content, &memory.tags, task_context)
+}
+
+pub fn decompose_query_primitives(
+    query: &str,
+    task_context: Option<&TaskContext>,
+) -> PrimitiveQueryProfile {
+    PrimitiveQueryProfile {
+        decomposition: decompose_text_primitives(query, &[], task_context),
+        task_context: task_context.cloned(),
+    }
+}
+
+pub fn decompose_text_primitives(
+    text: &str,
+    tags: &[String],
+    task_context: Option<&TaskContext>,
+) -> MemoryPrimitiveDecomposition {
+    let normalized = primitive_text(text);
+    let tag_text = primitive_text(&tags.join(" "));
+    let anchors = collect_primitive_anchors(text, tags);
+    let mut primitives = Vec::new();
+    let mut transfers = Vec::new();
+    let mut seen_kinds = HashSet::new();
+    let mut seen_transfers = HashSet::new();
+
+    let normative = primitive_contains_normalized(
+        &normalized,
+        &[
+            "must",
+            "required",
+            "requires",
+            "should",
+            "never",
+            "policy",
+            "approval",
+            "guardrail",
+            "checklist",
+        ],
+    ) || primitive_contains_normalized(
+        &tag_text,
+        &["policy", "approval", "checklist", "security"],
+    );
+    let dependency = primitive_contains_normalized(
+        &normalized,
+        &[
+            "before",
+            "after",
+            "depends on",
+            "requires",
+            "need",
+            "needs",
+            "only after",
+            "using",
+            "with",
+        ],
+    ) || primitive_contains_normalized(&tag_text, &["dependency", "prerequisite"]);
+    let incident = primitive_contains_normalized(
+        &normalized,
+        &[
+            "incident",
+            "root cause",
+            "error",
+            "failure",
+            "regression",
+            "rollback",
+            "workaround",
+            "hotfix",
+            "bug",
+        ],
+    ) || primitive_contains_normalized(
+        &tag_text,
+        &["incident", "hotfix", "bugfix", "root-cause"],
+    );
+    let habit = primitive_contains_normalized(
+        &normalized,
+        &[
+            "always",
+            "usually",
+            "prefer",
+            "for this repo",
+            "keep",
+            "name feature branches",
+            "name bugfix branches",
+        ],
+    ) || primitive_contains_normalized(&tag_text, &["preference", "habit", "style"]);
+    let environment =
+        primitive_contains_normalized(
+            &normalized,
+            &[
+                "systemd",
+                "host",
+                "staging",
+                "production",
+                "config path",
+                "binary path",
+                "docker",
+                "env",
+                "/",
+            ],
+        ) || primitive_contains_normalized(&tag_text, &["env", "host", "systemd", "deployment"]);
+    let actor =
+        primitive_contains_normalized(
+            &normalized,
+            &[
+                "ops", "reviewer", "security", "team", "operator", "owner", "notify",
+            ],
+        ) || primitive_contains_normalized(&tag_text, &["ops", "review", "security", "owner"]);
+    let evidence = primitive_contains_normalized(
+        &normalized,
+        &[
+            "because", "due to", "metrics", "evidence", "logs", "snippet", "caused", "trace",
+        ],
+    ) || primitive_contains_normalized(&tag_text, &["evidence", "metrics", "trace"]);
+    let task_state = task_context.is_some()
+        || primitive_contains_normalized(
+            &normalized,
+            &[
+                "deploy", "review", "fix", "debug", "audit", "release", "ship",
+            ],
+        );
+
+    if normative {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Policy,
+            label_from_anchors("policy", &anchors, "policy guidance"),
+            &anchors,
+            0.86,
+        );
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Constraint,
+            label_from_anchors("constraint", &anchors, "constraint"),
+            &anchors,
+            0.78,
+        );
+    }
+    if incident {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Incident,
+            label_from_anchors("incident", &anchors, "incident or workaround"),
+            &anchors,
+            0.79,
+        );
+    }
+    if habit {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Habit,
+            label_from_anchors("habit", &anchors, "habit or preference"),
+            &anchors,
+            0.72,
+        );
+    }
+    if environment {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Environment,
+            label_from_anchors("environment", &anchors, "environment anchor"),
+            &anchors,
+            0.75,
+        );
+    }
+    if dependency {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Dependency,
+            label_from_anchors("dependency", &anchors, "dependency edge"),
+            &anchors,
+            0.8,
+        );
+    }
+    if actor {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Actor,
+            label_from_anchors("actor", &anchors, "actor handoff"),
+            &anchors,
+            0.7,
+        );
+    }
+    if evidence {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::Evidence,
+            label_from_anchors("evidence", &anchors, "supporting evidence"),
+            &anchors,
+            0.68,
+        );
+    }
+    if task_state {
+        push_primitive(
+            &mut primitives,
+            &mut seen_kinds,
+            MemoryPrimitiveKind::TaskState,
+            label_from_anchors("task_state", &anchors, "task-state scaffold"),
+            &anchors,
+            0.74,
+        );
+    }
+
+    if normative {
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::EnforcePolicy,
+            "Normative memory should directly constrain later recall and merge choices.",
+            &anchors,
+        );
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::ApplyConstraint,
+            "Constraint anchors should survive reranking and collapse decisions.",
+            &anchors,
+        );
+    }
+    if incident {
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::ReuseIncidentFix,
+            "Incident/runbook memory can transfer root cause or workaround state into the task.",
+            &anchors,
+        );
+    }
+    if dependency {
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::CarryForwardDependency,
+            "Dependency prerequisites should be preserved when selecting or fusing candidate memories.",
+            &anchors,
+        );
+    }
+    if actor {
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::RouteToActor,
+            "Actor memory can surface the responsible reviewer or operator.",
+            &anchors,
+        );
+    }
+    if evidence {
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::AttachEvidence,
+            "Evidence-bearing memory should keep one verification trace attached.",
+            &anchors,
+        );
+    }
+    if task_state {
+        push_transfer(
+            &mut transfers,
+            &mut seen_transfers,
+            PrimitiveTransferOperator::CompileTaskState,
+            "Task-shaped memories can compile a bounded working state instead of a flat fact list.",
+            &anchors,
+        );
+    }
+
+    let merge_anchor = anchors
+        .iter()
+        .find(|anchor| anchor.len() >= 4)
+        .cloned()
+        .or_else(|| {
+            tags.first()
+                .map(|tag| primitive_text(tag).replace(' ', "_"))
+        });
+    let merge_kind = [
+        MemoryPrimitiveKind::Dependency,
+        MemoryPrimitiveKind::Policy,
+        MemoryPrimitiveKind::Constraint,
+        MemoryPrimitiveKind::Environment,
+        MemoryPrimitiveKind::Habit,
+        MemoryPrimitiveKind::Incident,
+        MemoryPrimitiveKind::Actor,
+        MemoryPrimitiveKind::Evidence,
+        MemoryPrimitiveKind::TaskState,
+    ]
+    .into_iter()
+    .find(|kind| primitives.iter().any(|primitive| primitive.kind == *kind))
+    .map(|kind| kind.as_str());
+    let merge_key = merge_kind
+        .zip(merge_anchor)
+        .map(|(kind, anchor)| format!("{kind}:{anchor}"));
+
+    MemoryPrimitiveDecomposition {
+        primitives,
+        transfer_operators: transfers,
+        merge_key,
+    }
+}
+
+pub fn primitive_merge_key_for_content(
+    content: &str,
+    tags: &[String],
+    task_context: Option<&TaskContext>,
+) -> Option<String> {
+    decompose_text_primitives(content, tags, task_context).merge_key
+}
+
+fn primitive_overlap_score(
+    query: &PrimitiveQueryProfile,
+    decomposition: &MemoryPrimitiveDecomposition,
+) -> (f64, Vec<String>) {
+    let mut provenance = Vec::new();
+    let query_kinds = query
+        .decomposition
+        .primitives
+        .iter()
+        .map(|primitive| primitive.kind)
+        .collect::<HashSet<_>>();
+    let memory_kinds = decomposition
+        .primitives
+        .iter()
+        .map(|primitive| primitive.kind)
+        .collect::<HashSet<_>>();
+    let kind_matches = query_kinds
+        .intersection(&memory_kinds)
+        .copied()
+        .collect::<Vec<_>>();
+    let mut score = (kind_matches.len() as f64 * 0.05).min(0.2);
+    for kind in &kind_matches {
+        provenance.push(format!("primitive_kind_match:{}", kind.as_str()));
+    }
+
+    let query_anchors = query
+        .decomposition
+        .primitives
+        .iter()
+        .flat_map(|primitive| primitive.anchors.iter().cloned())
+        .collect::<HashSet<_>>();
+    let memory_anchors = decomposition
+        .primitives
+        .iter()
+        .flat_map(|primitive| primitive.anchors.iter().cloned())
+        .collect::<HashSet<_>>();
+    let anchor_matches = query_anchors
+        .intersection(&memory_anchors)
+        .take(3)
+        .cloned()
+        .collect::<Vec<_>>();
+    score += (anchor_matches.len() as f64 * 0.03).min(0.09);
+    for anchor in &anchor_matches {
+        provenance.push(format!("primitive_anchor_match:{anchor}"));
+    }
+
+    let query_ops = query
+        .decomposition
+        .transfer_operators
+        .iter()
+        .map(|operator| operator.operator)
+        .collect::<HashSet<_>>();
+    let memory_ops = decomposition
+        .transfer_operators
+        .iter()
+        .map(|operator| operator.operator)
+        .collect::<HashSet<_>>();
+    let op_matches = query_ops
+        .intersection(&memory_ops)
+        .copied()
+        .collect::<Vec<_>>();
+    score += (op_matches.len() as f64 * 0.035).min(0.105);
+    for operator in &op_matches {
+        provenance.push(format!("primitive_operator:{}", operator.as_str()));
+    }
+
+    if query.merge_key().is_some() && query.merge_key() == decomposition.merge_key.as_deref() {
+        score += 0.08;
+        provenance.push("primitive_merge_key_match".to_string());
+    }
+
+    if query.task_context.is_some()
+        && decomposition
+            .primitives
+            .iter()
+            .any(|primitive| primitive.kind == MemoryPrimitiveKind::TaskState)
+    {
+        score += 0.04;
+        provenance.push("primitive_task_state_match".to_string());
+    }
+
+    (score.min(0.32), provenance)
+}
+
+pub fn build_primitive_algebra_explain(
+    query: &str,
+    explained: &[ScoreExplainEntry],
+    task_context: Option<&TaskContext>,
+    enabled: bool,
+) -> Option<PrimitiveAlgebraExplain> {
+    if !enabled {
+        return None;
+    }
+    let query_profile = decompose_query_primitives(query, task_context);
+    let matched_memories = explained
+        .iter()
+        .filter_map(|entry| {
+            let decomposition = entry.primitive_decomposition.as_ref()?;
+            if entry.primitive_score <= 0.0 {
+                return None;
+            }
+            Some(PrimitiveMemoryExplain {
+                memory_id: entry.memory.id,
+                summary: entry
+                    .memory
+                    .content
+                    .split_terminator(['.', '!', '?'])
+                    .next()
+                    .unwrap_or(&entry.memory.content)
+                    .trim()
+                    .to_string(),
+                primitive_score: entry.primitive_score,
+                merge_key: decomposition.merge_key.clone(),
+                primitives: decomposition.primitives.clone(),
+                transfer_operators: decomposition.transfer_operators.clone(),
+            })
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+    Some(PrimitiveAlgebraExplain {
+        enabled: true,
+        query_primitives: query_profile.decomposition.primitives,
+        query_transfer_operators: query_profile.decomposition.transfer_operators,
+        matched_memories,
     })
 }
 
@@ -1396,6 +1972,8 @@ pub fn apply_scored_retrieval_confidence_gate(
 /// Options for score_and_merge — configurable per caller.
 #[derive(Debug, Clone)]
 pub struct MergeOptions {
+    /// Original query text used for optional experimental reranking lanes.
+    pub query: String,
     pub weights: ScoringWeights,
     /// IDF boost factor (1.0 = no boost). Computed from query terms.
     pub idf_boost: f64,
@@ -1417,11 +1995,14 @@ pub struct MergeOptions {
     pub task_context: Option<TaskContext>,
     /// Optional identifier-first lexical routing profile for code-, path-, and policy-heavy queries.
     pub identifier_route: Option<IdentifierRouteProfile>,
+    /// Experimental primitive decomposition and transfer-operator reranking lane.
+    pub primitive_algebra: bool,
 }
 
 impl Default for MergeOptions {
     fn default() -> Self {
         Self {
+            query: String::new(),
             weights: ScoringWeights::default(),
             idf_boost: 1.0,
             min_channel_score: 0.0,
@@ -1433,6 +2014,7 @@ impl Default for MergeOptions {
             diversity_factor: 0.0,
             task_context: None,
             identifier_route: None,
+            primitive_algebra: false,
         }
     }
 }
@@ -1618,6 +2200,9 @@ pub fn score_and_explain(
 ) -> Vec<ScoreExplainEntry> {
     let weights = &options.weights;
     let identifier_route = options.identifier_route.as_ref();
+    let primitive_query = options
+        .primitive_algebra
+        .then(|| decompose_query_primitives(&options.query, options.task_context.as_ref()));
     let (vector_weight, fts_weight, exact_weight) =
         route_adjusted_channel_weights(weights, identifier_route);
 
@@ -1749,6 +2334,24 @@ pub fn score_and_explain(
             }
 
             let mut final_score = base_score + recency + task_boost;
+            let primitive_decomposition = options
+                .primitive_algebra
+                .then(|| decompose_memory_primitives(&memory, options.task_context.as_ref()));
+            let mut primitive_score = 0.0;
+            if let (Some(query), Some(decomposition)) =
+                (primitive_query.as_ref(), primitive_decomposition.as_ref())
+            {
+                let (boost, primitive_provenance) = primitive_overlap_score(query, decomposition);
+                if boost > 0.0 {
+                    primitive_score = boost;
+                    final_score += boost;
+                    for signal in primitive_provenance {
+                        if !provenance.contains(&signal) {
+                            provenance.push(signal);
+                        }
+                    }
+                }
+            }
 
             if let Some(route) = identifier_route {
                 let signal = analyze_identifier_signal(&memory, route);
@@ -1939,6 +2542,8 @@ pub fn score_and_explain(
                 trust_confidence_high,
                 trust_signals,
                 trust_multiplier,
+                primitive_score,
+                primitive_decomposition,
                 final_score,
                 low_trust,
             });
@@ -2122,6 +2727,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_decompose_text_primitives_extracts_dependency_and_transfer_operators() {
+        let decomposition = decompose_text_primitives(
+            "Auth hotfix dependency: flush the token cache before production deploy.",
+            &["auth".into(), "hotfix".into(), "dependency".into()],
+            Some(&TaskContext {
+                kind: TaskContextKind::Deploy,
+                matched_terms: vec!["deploy".into()],
+            }),
+        );
+        assert!(
+            decomposition
+                .primitives
+                .iter()
+                .any(|primitive| primitive.kind == MemoryPrimitiveKind::Dependency)
+        );
+        assert!(
+            decomposition
+                .transfer_operators
+                .iter()
+                .any(|operator| operator.operator
+                    == PrimitiveTransferOperator::CarryForwardDependency)
+        );
+        assert_eq!(decomposition.merge_key.as_deref(), Some("dependency:auth"));
+    }
+
+    #[test]
+    fn test_primitive_overlap_score_prefers_dependency_memory_over_incident_note() {
+        let query = decompose_query_primitives(
+            "Which auth hotfix memory is the blocking dependency before production deploy?",
+            Some(&TaskContext {
+                kind: TaskContextKind::Deploy,
+                matched_terms: vec!["deploy".into()],
+            }),
+        );
+        let dependency = decompose_text_primitives(
+            "Auth hotfix dependency: flush the token cache before production deploy.",
+            &["auth".into(), "hotfix".into(), "dependency".into()],
+            Some(&TaskContext {
+                kind: TaskContextKind::Deploy,
+                matched_terms: vec!["deploy".into()],
+            }),
+        );
+        let incident = decompose_text_primitives(
+            "Auth hotfix incident: token cache failures blocked rollout last week until the cache was cleared.",
+            &["auth".into(), "hotfix".into(), "incident".into()],
+            Some(&TaskContext {
+                kind: TaskContextKind::Deploy,
+                matched_terms: vec!["deploy".into()],
+            }),
+        );
+        let (dependency_score, _) = primitive_overlap_score(&query, &dependency);
+        let (incident_score, _) = primitive_overlap_score(&query, &incident);
+        assert!(dependency_score > incident_score);
+    }
+
     fn explained_entry(
         content: &str,
         final_score: f64,
@@ -2154,6 +2815,8 @@ mod tests {
                 outcome_learning: 0.5,
             },
             trust_multiplier: 1.0,
+            primitive_score: 0.0,
+            primitive_decomposition: None,
             final_score,
             low_trust: false,
         }
