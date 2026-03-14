@@ -16,6 +16,8 @@ on:
 
 permissions:
   contents: read
+  attestations: write
+  id-token: write
 
 concurrency:
   group: release-smoke-${{ github.ref }}
@@ -29,6 +31,114 @@ jobs:
     uses: ./.github/workflows/build-release-artifacts.yml
     with:
       artifact_retention_days: 14
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: write
+      id-token: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          merge-multiple: true
+
+      - name: Attest smoke artifacts
+        uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: |
+            *.tar.gz
+            *.zip
+            *.sha256
+
+  install-upgrade-smoke:
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            artifact_name: memoryoss-linux-x86_64
+            archive_name: memoryoss-linux-x86_64.tar.gz
+            sha_name: memoryoss-linux-x86_64.tar.gz.sha256
+            binary_name: memoryoss
+          - os: macos-latest
+            artifact_name: memoryoss-darwin-aarch64
+            archive_name: memoryoss-darwin-aarch64.tar.gz
+            sha_name: memoryoss-darwin-aarch64.tar.gz.sha256
+            binary_name: memoryoss
+          - os: windows-latest
+            artifact_name: memoryoss-windows-x86_64
+            archive_name: memoryoss-windows-x86_64.zip
+            sha_name: memoryoss-windows-x86_64.zip.sha256
+            binary_name: memoryoss.exe
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist
+
+      - name: Verify checksum and extract archive (Unix)
+        if: runner.os != 'Windows'
+        id: extract_unix
+        shell: bash
+        run: |
+          cd dist
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum -c "${{ matrix.sha_name }}"
+          else
+            shasum -a 256 -c "${{ matrix.sha_name }}"
+          fi
+          mkdir -p extracted
+          tar xzf "${{ matrix.archive_name }}" -C extracted
+          echo "binary_path=$PWD/extracted/${{ matrix.binary_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Verify checksum and extract archive (Windows)
+        if: runner.os == 'Windows'
+        id: extract_windows
+        shell: pwsh
+        run: |
+          Set-Location dist
+          $expected = (Get-Content "${{ matrix.sha_name }}").Split()[0].ToLower()
+          $actual = (Get-FileHash -Path "${{ matrix.archive_name }}" -Algorithm SHA256).Hash.ToLower()
+          if ($expected -ne $actual) {
+            throw "checksum mismatch: expected=$expected actual=$actual"
+          }
+          Expand-Archive -Path "${{ matrix.archive_name }}" -DestinationPath extracted -Force
+          $binaryPath = (Resolve-Path ("extracted/" + "${{ matrix.binary_name }}")).Path
+          "binary_path=$binaryPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Run update plane smoke (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          python tests/run_update_plane_smoke.py \
+            --binary "${{ steps.extract_unix.outputs.binary_path }}" \
+            --channel smoke \
+            --output-json dist/update-plane-smoke-report.json
+
+      - name: Run update plane smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python tests/run_update_plane_smoke.py `
+            --binary "${{ steps.extract_windows.outputs.binary_path }}" `
+            --channel smoke `
+            --output-json dist/update-plane-smoke-report.json
+
+      - name: Upload update plane smoke report
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: update-plane-smoke-${{ runner.os }}
+          path: dist/update-plane-smoke-report.json
+          retention-days: 14
 
   publish-container:
     needs: build

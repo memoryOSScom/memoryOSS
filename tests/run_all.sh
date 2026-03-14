@@ -16,6 +16,7 @@ COVERAGE_GAPS_JSON="${RUN_ALL_COVERAGE_GAPS_JSON:-$ROOT_DIR/tests/coverage-gaps-
 LONG_MEMORY_JSON="${RUN_ALL_LONG_MEMORY_JSON:-$ROOT_DIR/tests/long-memory-regression-report.json}"
 TOKEN_SAVINGS_JSON="${RUN_ALL_TOKEN_SAVINGS_JSON:-$ROOT_DIR/tests/token-savings-report.json}"
 UNIVERSAL_LOOP_JSON="${RUN_ALL_UNIVERSAL_LOOP_JSON:-$ROOT_DIR/tests/universal-memory-loop-report.json}"
+UPDATE_PLANE_JSON="${RUN_ALL_UPDATE_PLANE_JSON:-$ROOT_DIR/tests/update-plane-report.json}"
 mkdir -p "$REPORT_DIR"
 
 # Generate report even on early failure (Codex Befund 4)
@@ -268,6 +269,7 @@ run_step "20k benchmark" benchmark env BENCHMARK_OUTPUT_JSON="$BENCHMARK_JSON" b
 run_step "scoring calibration" calibration env CALIBRATION_OUTPUT_JSON="$CALIBRATION_JSON" bash "$ROOT_DIR/tests/run_calibration.sh"
 run_step "extraction quality evaluation" extraction_eval run_extraction_eval_step
 run_step "coverage gaps" coverage_gaps env COVERAGE_GAPS_OUTPUT_JSON="$COVERAGE_GAPS_JSON" bash "$ROOT_DIR/tests/run_coverage_gaps.sh"
+run_step "zero-friction update plane" update_plane env UPDATE_PLANE_OUTPUT_JSON="$UPDATE_PLANE_JSON" python3 "$ROOT_DIR/tests/run_update_plane_smoke.py"
 run_step "TypeScript SDK build/test" typescript_sdk typescript_sdk_checks
 run_step "runtime conformance kit" conformance_kit env CONFORMANCE_OUTPUT_JSON="$ROOT_DIR/tests/conformance-report.json" python3 "$ROOT_DIR/tests/run_conformance_kit.py"
 run_step "everyday utility loop" universal_memory_loop env UNIVERSAL_LOOP_OUTPUT_JSON="$UNIVERSAL_LOOP_JSON" python3 "$ROOT_DIR/tests/run_universal_memory_loop.py"

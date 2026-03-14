@@ -42,6 +42,8 @@ memoryoss setup
 
 Windows has a PowerShell example in [Windows](#windows).
 
+Every published archive ships with a matching `.sha256` file, and the release workflows now attach a GitHub artifact attestation for the built archives before the GitHub Release is published. That is the signed install surface for the binary/update path today; memoryOSS is not claiming OS-native notarization or MSI/PKG installers yet.
+
 ## From Source
 
 ```bash
@@ -132,6 +134,37 @@ Windows-specific notes:
 The setup wizard auto-detects your environment, registers MCP for Claude/Codex, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
 If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup` again so memoryOSS can safely update the integration path.
+
+## Update Channels
+
+memoryOSS now treats install and upgrade flow as an explicit product surface:
+
+- stable channel: GitHub Releases tagged `vX.Y.Z` plus `ghcr.io/memoryosscom/memoryoss:latest`
+- beta channel: prerelease tags such as `vX.Y.Z-beta.N` or `vX.Y.Z-rc.N` plus `ghcr.io/memoryosscom/memoryoss:beta`
+- rollback channel: reinstall the last known-good release archive or pinned container tag, then restore the pre-update backup
+
+The release smoke workflow exercises install, checksum verification, doctor, migrate, failed-update detection, and rollback recovery on Linux, macOS, and Windows before a smoke branch is promoted to a published release.
+
+Recommended binary upgrade flow:
+
+```bash
+memoryoss backup -o memoryoss-preupdate.tar.zst --include-key
+curl -L https://github.com/memoryOSScom/memoryOSS/releases/latest/download/memoryoss-linux-x86_64.tar.gz -o memoryoss.tar.gz
+tar xzf memoryoss.tar.gz
+sudo install -m 0755 memoryoss /usr/local/bin/memoryoss
+memoryoss doctor
+memoryoss migrate
+```
+
+If `doctor`, `migrate`, or post-upgrade startup fails:
+
+```bash
+sudo install -m 0755 ./previous-memoryoss /usr/local/bin/memoryoss
+memoryoss restore memoryoss-preupdate.tar.zst
+memoryoss doctor
+```
+
+For container installs, the equivalent rollback is to pin the previous image tag and keep the same mounted data volume plus the same backup/restore sequence.
 
 ## Hybrid Mode (Recommended)
 
