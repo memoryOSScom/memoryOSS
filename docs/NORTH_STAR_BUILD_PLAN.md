@@ -553,74 +553,35 @@ If this block does not work, the rest of P12 should be treated as optional resea
 
 ## Cross-Phase Execution Order
 
-### Block 1 - Reliability and Operator Control
+This section is synchronized to the current repository state as of 2026-03-14.
 
-Do first:
+### Completed so far
 
-- `P10-T1`
-- `P10-T2`
-- `P10-T3`
-- `P10-T4`
-- `P10-T5`
+- `P10` is complete
+- `P11` is complete
+- `P12-T1` through `P12-T6` are complete
 
-Reason:
-This block turns the current engine into something measurable, debuggable, and adaptable.
+Completed block summary:
 
-### Block 2 - Runtime Semantics
+- Reliability, operator control, and adaptive recall are shipped.
+- Runtime semantics, portability, and cross-app proof are shipped.
+- The current utility surface, ambient mesh, primitive algebra lane, and local coprocessor are shipped.
 
-Do next:
+### Remaining build order
 
-- `P10-T6`
-- `P10-T8`
-- `P11-T1`
-- `P11-T2`
-- `P11-T4`
-- `P11-T7`
-
-Reason:
-This block creates portable semantics, explicit state, and task compilation.
-
-### Block 3 - Portability and Cross-App Proof
-
-Do next:
-
-- `P11-T3`
-- `P11-T8`
-- `P11-T9`
-- `P12-T1`
-- `P12-T2`
+1. `P12-T7` team memory governance
+2. `P12-T9` universal memory reader
+3. `P12-T10` trust and revocation fabric
+4. `P12-T11` zero-friction update plane
+5. `P12-T12` compatibility and LTS
+6. `P12-T8` everyday utility loop
 
 Reason:
-This is where memoryOSS can first make a credible "write once, remember everywhere" claim.
 
-### Block 4 - Utility Surface
-
-Do next:
-
-- `P12-T3`
-- `P12-T9`
-- `P12-T10`
-- `P12-T11`
-- `P12-T12`
-- `P12-T8`
-
-Reason:
-This is where the product becomes visible, trusted, and habit-forming.
-
-### Block 5 - High-Risk Research Bets
-
-Only after earlier blocks show clear wins:
-
-- `P10-T7`
-- `P11-T5`
-- `P11-T6`
-- `P12-T4`
-- `P12-T5`
-- `P12-T6`
-- `P12-T7`
-
-Reason:
-These tasks can create a serious moat, but they also carry the highest complexity, privacy, and adoption risk.
+- `P12-T7` unlocks the remaining team-governed utility proof path.
+- `P12-T9`, `P12-T10`, and `P12-T11` finish the reader/trust/update prerequisites for a true utility artifact.
+- `P12-T12` depends on `P12-T11` and closes the long-term compatibility claim.
+- `P12-T8` should run last so the public everyday-utility proof reflects the finished governance and trust surfaces rather than an intermediate product state.
 
 ## Kill-Switch Rules
 
@@ -741,226 +702,81 @@ Everything else should remain in the plan, but not at equal priority.
 
 ## Master Sequence
 
-This is the exact implementation order to execute from the current state.
+This is the exact implementation order from the current state, not from the original empty roadmap.
 
-### Wave 0 - Execution Baseline
+### Wave R0 - Plan Hygiene
 
 Purpose:
-Keep the project honest while the roadmap gets ambitious.
+Keep the public and local planning surfaces aligned with the shipped build.
 
 Tasks:
 
-- Treat `P10-T9` as ongoing hygiene, not as a roadmap wave.
-- Keep `P10-T10` in a side platform-quality lane only when it does not slow the core runtime path.
+- Keep `P10-T9` as ongoing documentation hygiene, not as a standalone roadmap wave.
+- Preserve `P10-T10` as platform-quality maintenance instead of reopening the main sequencing path.
 
-Stop/go gate:
-
-- The roadmap, proof pages, and local plan stay aligned enough that the team does not lose trust in its own sequence.
-
-### Wave 1 - Measurement First
+### Wave R1 - Team Governance
 
 Purpose:
-Build the benchmark substrate before changing behavior.
+Finish the last missing collaborative control surface before the final utility proof.
 
 Primary task:
 
-- `P10-T3` expanded experimental evaluation harness
-
-Why first:
-
-- Every later bet depends on stable-vs-experimental comparisons.
-- Without this wave, later improvements are mostly anecdotal.
+- `P12-T7` team memory governance
 
 Exit gate:
 
-- 100+ extraction cases exist.
-- Retrieval/injection/abstain eval exists.
-- Stable-vs-experimental reporting is visible in the report pipeline.
+- Team memory can be proposed, reviewed, merged, and replayed with explicit owner/policy semantics.
 
-### Wave 2 - Operator Control
+### Wave R2 - Reader and Trust Utility Core
 
 Purpose:
-Make the system operable before making it smarter.
+Finish the artifact reader and the operational trust/update layer around it.
 
 Tasks:
 
-- `P10-T1` doctor/status/recent
-- `P10-T2` candidate review inbox
-
-Why now:
-
-- These tasks give the operator control surfaces for everything that follows.
-
-Exit gate:
-
-- An operator can inspect health, recent actions, and pending candidates without raw database archaeology.
-
-### Wave 3 - Adaptive Recall Core
-
-Purpose:
-Improve retrieval quality in the most practical, low-regret ways.
-
-Tasks:
-
-- `P10-T4` retrieval confidence gate
-- `P10-T5` route by identifiers first
-- `P10-T6` summary plus evidence recall
-
-Why now:
-
-- This is the strongest near-term quality gain and produces the first truly differentiated runtime behavior.
-
-Exit gate:
-
-- Wrong-injection rate is lower than the stable baseline.
-- Identifier-heavy tasks beat the prior path.
-- Summary + evidence is explainable and benchmarked.
-
-### Wave 4 - Runtime Semantics Core
-
-Purpose:
-Turn memoryOSS from a featureful system into a true runtime.
-
-Tasks:
-
-- `P11-T1` universal memory contract
-- `P11-T2` memory passport bundles
-- `P11-T4` memory time machine
-- `P11-T9` runtime conformance kit
-
-Why now:
-
-- This wave defines the actual object model, portability, replayability, and standardizability.
-
-Exit gate:
-
-- The runtime contract is versioned.
-- Portable bundles exist.
-- Replay/branch/history are real.
-- A conformance harness exists for multiple language paths.
-
-### Wave 5 - Compiled Memory and Cross-App Proof
-
-Purpose:
-Prove that the runtime is more than storage and more than one app.
-
-Tasks:
-
-- `P11-T7` task-state compiler
-- `P11-T3` cross-app memory adapters
-- `P11-T8` prove universal memory loop
-
-Why now:
-
-- This is the first moment where memoryOSS can credibly claim "write once, remember everywhere."
-
-Exit gate:
-
-- At least one compiled task-state path beats flat memory injection.
-- At least one cross-app loop works end-to-end and is publicly benchmarked.
-
-### Wave 6 - Portable Artifact Utility Core
-
-Purpose:
-Build the non-negotiable prerequisites for an Acrobat/WinRAR-class utility.
-
-Tasks:
-
-- `P12-T1` memory bundle format
 - `P12-T9` universal memory reader
 - `P12-T10` trust and revocation fabric
 - `P12-T11` zero-friction update plane
 - `P12-T12` compatibility and LTS
 
-Why now:
-
-- This is the utility trust layer: readable artifacts, trust semantics, boring updates, long-term compatibility.
-
 Exit gate:
 
-- Memory bundles are a real artifact.
-- They can be opened safely without import.
-- Trust/revocation is visible.
-- Updates and compatibility are operationally boring.
+- Bundles can be opened safely without import.
+- Trust and revocation are explicit in runtime surfaces.
+- Update and rollback paths are boring and tested.
+- Compatibility policy is executable, not just documented.
 
-### Wave 7 - Everyday Utility Layer
+### Wave R3 - Everyday Utility Proof
 
 Purpose:
-Make the product something people want installed all the time.
+Close the phase with a public proof loop on top of the finished utility surfaces.
 
-Tasks:
+Primary task:
 
-- `P12-T2` multi-device sync fabric
-- `P12-T3` universal memory HUD
-- `P12-T8` prove everyday utility loop
-
-Why now:
-
-- This wave turns portability into daily habit and visible utility.
+- `P12-T8` everyday utility loop
 
 Exit gate:
 
-- The product syncs across devices.
-- The HUD makes the runtime easy to access.
-- Public utility loops show real repeated-context savings and workflow relief.
-
-### Wave 8 - Conditional Expansion
-
-Purpose:
-Only extend into broader adoption surfaces if the core runtime and utility waves already win.
-
-Tasks:
-
-- `P10-T8` working-set tiers
-- `P11-T5` policy memory firewall
-- `P11-T6` ambient memory sidecar
-- `P12-T4` ambient connector mesh
-- `P12-T7` team memory governance
-
-Why conditional:
-
-- These are strong multipliers, but only after the core runtime is trusted and useful.
-
-Exit gate:
-
-- Review capacity, trust semantics, and product utility remain strong after adding these flows.
-
-### Wave 9 - Moonshot Research Lane
-
-Purpose:
-Pursue the deepest moat only after the product has already become credible and useful.
-
-Tasks:
-
-- `P10-T7` recursive recall engine
-- `P12-T5` memory primitive algebra
-- `P12-T6` distilled memory coprocessor
-
-Why later:
-
-- These can be category-defining, but they are the easiest place to burn time before product-market clarity.
-
-Exit gate:
-
-- Each moonshot must beat the prior path on fixed public benchmarks or remain experimental.
+- The benchmark and public proof loop measure repeated-context elimination, governance throughput, replay fidelity, and blocked bad actions against the finished product surface.
 
 ## First Build Step
 
-If execution starts now, the first task should be:
+From the current state, the next task should be:
 
-- `P10-T3` expanded experimental evaluation harness
+- `P12-T7` team memory governance
 
 Immediate follow-on after that:
 
-- `P10-T1`
-- `P10-T2`
-- `P10-T4`
-- `P10-T5`
-- `P10-T6`
+- `P12-T9`
+- `P12-T10`
+- `P12-T11`
+- `P12-T12`
+- `P12-T8`
 
 Reason:
 
-- This sequence creates measurement first, then operator control, then adaptive quality gains.
+- `P12-T7` is the first remaining dependency for the everyday utility proof.
+- The reader/trust/update/LTS stack should be completed before freezing the public "installed everywhere" claim in `P12-T8`.
 
 ## Origin Map
 
