@@ -57,6 +57,114 @@ pub(crate) const DEFAULT_REVIEW_QUEUE_LIMIT: usize = 20;
 const MAX_REVIEW_QUEUE_LIMIT: usize = 100;
 pub(crate) const DEFAULT_HUD_LIMIT: usize = 5;
 const MAX_HUD_LIMIT: usize = 25;
+pub(crate) const MEMORY_BUNDLE_FORMAT_VERSION: &str = "memoryoss.bundle.v1alpha1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum MemoryBundleKind {
+    Passport,
+    History,
+}
+
+impl std::fmt::Display for MemoryBundleKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Passport => write!(f, "passport"),
+            Self::History => write!(f, "history"),
+        }
+    }
+}
+
+impl std::str::FromStr for MemoryBundleKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "passport" => Ok(Self::Passport),
+            "history" => Ok(Self::History),
+            other => Err(format!("unsupported memory bundle kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemoryBundleReference {
+    pub(crate) uri: String,
+    pub(crate) attachment_name: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemoryBundleIntegrity {
+    pub(crate) algorithm: String,
+    pub(crate) payload_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemoryBundleSignature {
+    pub(crate) scheme: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) signer: Option<String>,
+    pub(crate) signable: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(crate) struct MemoryBundleEnvelope {
+    pub(crate) bundle_version: String,
+    pub(crate) bundle_id: uuid::Uuid,
+    pub(crate) kind: MemoryBundleKind,
+    pub(crate) namespace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope: Option<String>,
+    pub(crate) runtime_contract_id: String,
+    pub(crate) exported_at: chrono::DateTime<chrono::Utc>,
+    pub(crate) reference: MemoryBundleReference,
+    pub(crate) integrity: MemoryBundleIntegrity,
+    pub(crate) signature: MemoryBundleSignature,
+    pub(crate) payload: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryBundlePreview {
+    pub(crate) bundle_id: uuid::Uuid,
+    pub(crate) bundle_version: String,
+    pub(crate) kind: MemoryBundleKind,
+    pub(crate) namespace: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) scope: Option<String>,
+    pub(crate) runtime_contract_id: String,
+    pub(crate) uri: String,
+    pub(crate) attachment_name: String,
+    pub(crate) memory_count: usize,
+    pub(crate) visible_count: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) root_id: Option<uuid::Uuid>,
+    pub(crate) integrity_valid: bool,
+    pub(crate) nested_integrity_valid: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) preview: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryBundleValidation {
+    pub(crate) valid: bool,
+    pub(crate) preview: MemoryBundlePreview,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct MemoryBundleDiff {
+    pub(crate) same_kind: bool,
+    pub(crate) left: MemoryBundlePreview,
+    pub(crate) right: MemoryBundlePreview,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) changed_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) added_preview: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) removed_preview: Vec<String>,
+    pub(crate) shared_preview_count: usize,
+}
 
 pub struct SharedState {
     pub config: Config,
@@ -581,6 +689,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/history/{id}", get(history_view))
         .route("/v1/adapters/export", get(adapter_export))
         .route("/v1/adapters/import", post(adapter_import))
+        .route("/v1/bundles/export", get(bundle_export))
+        .route("/v1/bundles/preview", post(bundle_preview))
+        .route("/v1/bundles/validate", post(bundle_validate))
+        .route("/v1/bundles/diff", post(bundle_diff))
         .route("/v1/passport/export", get(passport_export))
         .route("/v1/passport/import", post(passport_import))
         .route("/v1/runtime/contract", get(runtime_contract))
@@ -1513,6 +1625,308 @@ fn render_hud_html(view: &HudView) -> String {
     html.push_str("</div></section></div></body></html>");
 
     html
+}
+
+fn bundle_attachment_name(
+    kind: MemoryBundleKind,
+    namespace: &str,
+    scope: Option<&str>,
+    bundle_id: uuid::Uuid,
+) -> String {
+    let scope_suffix = scope
+        .filter(|scope| !scope.is_empty())
+        .map(|scope| format!("-{scope}"))
+        .unwrap_or_default();
+    format!("memoryoss-{kind}-{namespace}{scope_suffix}-{bundle_id}.membundle.json")
+}
+
+fn build_memory_bundle_reference(
+    kind: MemoryBundleKind,
+    bundle_id: uuid::Uuid,
+    namespace: &str,
+    scope: Option<&str>,
+) -> MemoryBundleReference {
+    let mut uri = format!("memoryoss://bundle/{bundle_id}?kind={kind}&namespace={namespace}");
+    if let Some(scope) = scope.filter(|scope| !scope.is_empty()) {
+        uri.push_str("&scope=");
+        uri.push_str(scope);
+    }
+    MemoryBundleReference {
+        uri,
+        attachment_name: bundle_attachment_name(kind, namespace, scope, bundle_id),
+    }
+}
+
+fn memory_bundle_payload_sha256(bundle: &MemoryBundleEnvelope) -> String {
+    use sha2::Digest as _;
+
+    let payload = json!({
+        "bundle_version": bundle.bundle_version,
+        "bundle_id": bundle.bundle_id,
+        "kind": bundle.kind,
+        "namespace": bundle.namespace,
+        "scope": bundle.scope,
+        "runtime_contract_id": bundle.runtime_contract_id,
+        "exported_at": bundle.exported_at,
+        "reference": bundle.reference,
+        "signature": bundle.signature,
+        "payload": bundle.payload,
+    });
+    let bytes = serde_json::to_vec(&payload).expect("memory bundle payload should serialize");
+    hex::encode(sha2::Sha256::digest(bytes))
+}
+
+pub(crate) fn build_memory_bundle_from_passport(
+    bundle: MemoryPassportBundle,
+) -> MemoryBundleEnvelope {
+    let bundle_id = bundle.passport_id;
+    let scope = bundle.scope.to_string();
+    let reference = build_memory_bundle_reference(
+        MemoryBundleKind::Passport,
+        bundle_id,
+        &bundle.namespace,
+        Some(&scope),
+    );
+    let mut envelope = MemoryBundleEnvelope {
+        bundle_version: MEMORY_BUNDLE_FORMAT_VERSION.to_string(),
+        bundle_id,
+        kind: MemoryBundleKind::Passport,
+        namespace: bundle.namespace.clone(),
+        scope: Some(scope),
+        runtime_contract_id: bundle.runtime_contract.contract_id.clone(),
+        exported_at: bundle.exported_at,
+        reference,
+        integrity: MemoryBundleIntegrity {
+            algorithm: "sha256".to_string(),
+            payload_sha256: String::new(),
+        },
+        signature: MemoryBundleSignature {
+            scheme: "unsigned".to_string(),
+            signer: None,
+            signable: true,
+        },
+        payload: serde_json::to_value(bundle).expect("passport bundle should serialize"),
+    };
+    envelope.integrity.payload_sha256 = memory_bundle_payload_sha256(&envelope);
+    envelope
+}
+
+pub(crate) fn build_memory_bundle_from_history(
+    bundle: MemoryHistoryBundle,
+) -> MemoryBundleEnvelope {
+    let bundle_id = bundle.history_id;
+    let reference = build_memory_bundle_reference(
+        MemoryBundleKind::History,
+        bundle_id,
+        &bundle.namespace,
+        None,
+    );
+    let mut envelope = MemoryBundleEnvelope {
+        bundle_version: MEMORY_BUNDLE_FORMAT_VERSION.to_string(),
+        bundle_id,
+        kind: MemoryBundleKind::History,
+        namespace: bundle.namespace.clone(),
+        scope: None,
+        runtime_contract_id: bundle.runtime_contract.contract_id.clone(),
+        exported_at: bundle.exported_at,
+        reference,
+        integrity: MemoryBundleIntegrity {
+            algorithm: "sha256".to_string(),
+            payload_sha256: String::new(),
+        },
+        signature: MemoryBundleSignature {
+            scheme: "unsigned".to_string(),
+            signer: None,
+            signable: true,
+        },
+        payload: serde_json::to_value(bundle).expect("history bundle should serialize"),
+    };
+    envelope.integrity.payload_sha256 = memory_bundle_payload_sha256(&envelope);
+    envelope
+}
+
+fn invalid_memory_bundle_preview(bundle: &MemoryBundleEnvelope) -> MemoryBundlePreview {
+    MemoryBundlePreview {
+        bundle_id: bundle.bundle_id,
+        bundle_version: bundle.bundle_version.clone(),
+        kind: bundle.kind,
+        namespace: bundle.namespace.clone(),
+        scope: bundle.scope.clone(),
+        runtime_contract_id: bundle.runtime_contract_id.clone(),
+        uri: bundle.reference.uri.clone(),
+        attachment_name: bundle.reference.attachment_name.clone(),
+        memory_count: 0,
+        visible_count: 0,
+        root_id: None,
+        integrity_valid: bundle.integrity.algorithm.eq_ignore_ascii_case("sha256")
+            && bundle.integrity.payload_sha256 == memory_bundle_payload_sha256(bundle),
+        nested_integrity_valid: false,
+        preview: Vec::new(),
+    }
+}
+
+pub(crate) fn preview_memory_bundle(
+    bundle: &MemoryBundleEnvelope,
+) -> Result<MemoryBundlePreview, String> {
+    let integrity_valid = bundle.bundle_version == MEMORY_BUNDLE_FORMAT_VERSION
+        && bundle.integrity.algorithm.eq_ignore_ascii_case("sha256")
+        && bundle.integrity.payload_sha256 == memory_bundle_payload_sha256(bundle);
+    match bundle.kind {
+        MemoryBundleKind::Passport => {
+            let passport: MemoryPassportBundle = serde_json::from_value(bundle.payload.clone())
+                .map_err(|err| format!("invalid passport bundle payload: {err}"))?;
+            let preview = passport
+                .memories
+                .iter()
+                .take(5)
+                .map(|memory| preview_text(&memory.content, 100))
+                .collect();
+            Ok(MemoryBundlePreview {
+                bundle_id: bundle.bundle_id,
+                bundle_version: bundle.bundle_version.clone(),
+                kind: bundle.kind,
+                namespace: bundle.namespace.clone(),
+                scope: Some(passport.scope.to_string()),
+                runtime_contract_id: bundle.runtime_contract_id.clone(),
+                uri: bundle.reference.uri.clone(),
+                attachment_name: bundle.reference.attachment_name.clone(),
+                memory_count: passport.memories.len(),
+                visible_count: passport.memories.len(),
+                root_id: None,
+                integrity_valid,
+                nested_integrity_valid: verify_memory_passport_bundle(&passport),
+                preview,
+            })
+        }
+        MemoryBundleKind::History => {
+            let history: MemoryHistoryBundle = serde_json::from_value(bundle.payload.clone())
+                .map_err(|err| format!("invalid history bundle payload: {err}"))?;
+            let preview = history
+                .memories
+                .iter()
+                .take(5)
+                .map(|memory| preview_text(&memory.content, 100))
+                .collect();
+            Ok(MemoryBundlePreview {
+                bundle_id: bundle.bundle_id,
+                bundle_version: bundle.bundle_version.clone(),
+                kind: bundle.kind,
+                namespace: bundle.namespace.clone(),
+                scope: None,
+                runtime_contract_id: bundle.runtime_contract_id.clone(),
+                uri: bundle.reference.uri.clone(),
+                attachment_name: bundle.reference.attachment_name.clone(),
+                memory_count: history.memories.len(),
+                visible_count: history.memories.len(),
+                root_id: Some(history.root_id),
+                integrity_valid,
+                nested_integrity_valid: verify_memory_history_bundle(&history),
+                preview,
+            })
+        }
+    }
+}
+
+fn memory_bundle_entry_set(
+    bundle: &MemoryBundleEnvelope,
+) -> Result<std::collections::BTreeSet<String>, String> {
+    match bundle.kind {
+        MemoryBundleKind::Passport => {
+            let passport: MemoryPassportBundle = serde_json::from_value(bundle.payload.clone())
+                .map_err(|err| format!("invalid passport bundle payload: {err}"))?;
+            Ok(passport
+                .memories
+                .into_iter()
+                .map(|memory| memory.content)
+                .collect())
+        }
+        MemoryBundleKind::History => {
+            let history: MemoryHistoryBundle = serde_json::from_value(bundle.payload.clone())
+                .map_err(|err| format!("invalid history bundle payload: {err}"))?;
+            Ok(history
+                .memories
+                .into_iter()
+                .map(|memory| memory.content)
+                .collect())
+        }
+    }
+}
+
+pub(crate) fn validate_memory_bundle(bundle: &MemoryBundleEnvelope) -> MemoryBundleValidation {
+    let mut errors = Vec::new();
+    if bundle.bundle_version != MEMORY_BUNDLE_FORMAT_VERSION {
+        errors.push(format!(
+            "unsupported bundle version: {}",
+            bundle.bundle_version
+        ));
+    }
+    let preview = match preview_memory_bundle(bundle) {
+        Ok(preview) => preview,
+        Err(err) => {
+            errors.push(err);
+            invalid_memory_bundle_preview(bundle)
+        }
+    };
+    if !preview.integrity_valid {
+        errors.push("bundle envelope integrity check failed".to_string());
+    }
+    if !preview.nested_integrity_valid {
+        errors.push("nested artifact integrity check failed".to_string());
+    }
+
+    MemoryBundleValidation {
+        valid: errors.is_empty(),
+        preview,
+        errors,
+    }
+}
+
+pub(crate) fn diff_memory_bundles(
+    left: &MemoryBundleEnvelope,
+    right: &MemoryBundleEnvelope,
+) -> Result<MemoryBundleDiff, String> {
+    let left_preview = preview_memory_bundle(left)?;
+    let right_preview = preview_memory_bundle(right)?;
+    let left_entries = memory_bundle_entry_set(left)?;
+    let right_entries = memory_bundle_entry_set(right)?;
+
+    let mut changed_fields = Vec::new();
+    if left.kind != right.kind {
+        changed_fields.push("kind".to_string());
+    }
+    if left.namespace != right.namespace {
+        changed_fields.push("namespace".to_string());
+    }
+    if left.scope != right.scope {
+        changed_fields.push("scope".to_string());
+    }
+    if left.runtime_contract_id != right.runtime_contract_id {
+        changed_fields.push("runtime_contract_id".to_string());
+    }
+    if left_preview.memory_count != right_preview.memory_count {
+        changed_fields.push("memory_count".to_string());
+    }
+    if left_preview.visible_count != right_preview.visible_count {
+        changed_fields.push("visible_count".to_string());
+    }
+
+    Ok(MemoryBundleDiff {
+        same_kind: left.kind == right.kind,
+        left: left_preview,
+        right: right_preview,
+        changed_fields,
+        added_preview: right_entries
+            .difference(&left_entries)
+            .take(5)
+            .map(|entry| preview_text(entry, 100))
+            .collect(),
+        removed_preview: left_entries
+            .difference(&right_entries)
+            .take(5)
+            .map(|entry| preview_text(entry, 100))
+            .collect(),
+        shared_preview_count: left_entries.intersection(&right_entries).count(),
+    })
 }
 
 /// AGPL-3.0 Section 13 compliance: provide source code location to network users.
@@ -3412,6 +3826,25 @@ struct PassportExportParams {
 }
 
 #[derive(Deserialize)]
+struct BundleExportParams {
+    namespace: Option<String>,
+    kind: String,
+    scope: Option<String>,
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct BundleEnvelopeRequest {
+    bundle: MemoryBundleEnvelope,
+}
+
+#[derive(Deserialize)]
+struct BundleDiffRequest {
+    left: MemoryBundleEnvelope,
+    right: MemoryBundleEnvelope,
+}
+
+#[derive(Deserialize)]
 struct PassportImportRequest {
     #[serde(default)]
     namespace: Option<String>,
@@ -3479,6 +3912,101 @@ struct HistoryReplayResponse {
     imported: usize,
     preview: crate::memory::MemoryHistoryReplayPreview,
     imported_ids: Vec<uuid::Uuid>,
+}
+
+/// GET /v1/bundles/export?kind=passport — export a portable bundle envelope around runtime artifacts.
+async fn bundle_export(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<BundleExportParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let kind = params
+        .kind
+        .parse::<MemoryBundleKind>()
+        .map_err(AppError::BadRequest)?;
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let bundle = match kind {
+        MemoryBundleKind::Passport => {
+            let scope = params
+                .scope
+                .as_deref()
+                .unwrap_or("project")
+                .parse::<PassportScope>()
+                .map_err(AppError::BadRequest)?;
+            build_memory_bundle_from_passport(build_memory_passport_bundle(
+                namespace, scope, &memories,
+            ))
+        }
+        MemoryBundleKind::History => {
+            let root_id = params
+                .id
+                .as_deref()
+                .ok_or_else(|| {
+                    AppError::BadRequest("history bundle export requires id".to_string())
+                })?
+                .parse::<uuid::Uuid>()
+                .map_err(|_| AppError::BadRequest("invalid UUID".to_string()))?;
+            let history = build_memory_history_bundle(namespace, root_id, &memories)
+                .ok_or_else(|| AppError::NotFound("history root not found".to_string()))?;
+            build_memory_bundle_from_history(history)
+        }
+    };
+
+    Ok(Json(bundle).into_response())
+}
+
+/// POST /v1/bundles/preview — summarize bundle metadata without importing it.
+async fn bundle_preview(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<BundleEnvelopeRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let preview = preview_memory_bundle(&req.bundle).map_err(AppError::BadRequest)?;
+    Ok(Json(preview).into_response())
+}
+
+/// POST /v1/bundles/validate — validate envelope and nested bundle integrity.
+async fn bundle_validate(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<BundleEnvelopeRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    Ok(Json(validate_memory_bundle(&req.bundle)).into_response())
+}
+
+/// POST /v1/bundles/diff — compare two bundles without importing either one.
+async fn bundle_diff(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<BundleDiffRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    check_read_rate_limit(&state, &claims)?;
+    if !rbac::can_recall(claims.role) {
+        return Err(AppError::Forbidden("insufficient permissions"));
+    }
+
+    let diff = diff_memory_bundles(&req.left, &req.right).map_err(AppError::BadRequest)?;
+    Ok(Json(diff).into_response())
 }
 
 /// GET /v1/passport/export?scope=project — selective portable memory passport bundle.

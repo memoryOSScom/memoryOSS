@@ -6913,6 +6913,160 @@ async fn test_passport_api_export_import_roundtrip_with_dry_run_preview() {
 }
 
 #[tokio::test]
+async fn test_memory_bundle_api_export_preview_validate_and_diff() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_content = test_config_http(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("bundle-api.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    for payload in [
+        serde_json::json!({
+            "content": "Project decision: keep MCP-first auth as the default path.",
+            "tags": ["project", "decision"]
+        }),
+        serde_json::json!({
+            "content": "Team policy: security review is mandatory before merge.",
+            "tags": ["team", "policy"]
+        }),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    let first_bundle_resp = client
+        .get(format!(
+            "{base}/v1/bundles/export?kind=passport&scope=project"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_bundle_resp.status(), 200);
+    let first_bundle: serde_json::Value = first_bundle_resp.json().await.unwrap();
+    assert_eq!(
+        first_bundle["bundle_version"].as_str(),
+        Some("memoryoss.bundle.v1alpha1")
+    );
+    assert_eq!(first_bundle["kind"].as_str(), Some("passport"));
+    assert!(
+        first_bundle["reference"]["uri"]
+            .as_str()
+            .unwrap_or("")
+            .starts_with("memoryoss://bundle/"),
+        "bundle export should surface a memoryoss:// URI"
+    );
+    assert!(
+        first_bundle["reference"]["attachment_name"]
+            .as_str()
+            .unwrap_or("")
+            .ends_with(".membundle.json")
+    );
+
+    let preview_resp = client
+        .post(format!("{base}/v1/bundles/preview"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": first_bundle.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(preview_resp.status(), 200);
+    let preview_body: serde_json::Value = preview_resp.json().await.unwrap();
+    assert_eq!(preview_body["kind"].as_str(), Some("passport"));
+    assert_eq!(preview_body["memory_count"].as_u64(), Some(1));
+    assert_eq!(preview_body["scope"].as_str(), Some("project"));
+
+    let mut forward_compatible_bundle = first_bundle.clone();
+    forward_compatible_bundle["future_field"] =
+        serde_json::Value::String("reader should ignore me".to_string());
+    let validate_resp = client
+        .post(format!("{base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": forward_compatible_bundle }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(validate_resp.status(), 200);
+    let validate_body: serde_json::Value = validate_resp.json().await.unwrap();
+    assert_eq!(validate_body["valid"].as_bool(), Some(true));
+    assert_eq!(
+        validate_body["preview"]["nested_integrity_valid"].as_bool(),
+        Some(true)
+    );
+
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Project rollback checklist: verify metrics before promotion.",
+            "tags": ["project", "checklist"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    let second_bundle_resp = client
+        .get(format!(
+            "{base}/v1/bundles/export?kind=passport&scope=project"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_bundle_resp.status(), 200);
+    let second_bundle: serde_json::Value = second_bundle_resp.json().await.unwrap();
+
+    let diff_resp = client
+        .post(format!("{base}/v1/bundles/diff"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "left": first_bundle,
+            "right": second_bundle
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(diff_resp.status(), 200);
+    let diff_body: serde_json::Value = diff_resp.json().await.unwrap();
+    assert_eq!(diff_body["same_kind"].as_bool(), Some(true));
+    assert!(
+        diff_body["changed_fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|field| field.as_str() == Some("memory_count"))
+    );
+    assert!(
+        diff_body["added_preview"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|item| {
+                item.as_str()
+                    .unwrap_or("")
+                    .contains("Project rollback checklist")
+            }),
+        "bundle diff should expose newly added memory previews"
+    );
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+}
+
+#[tokio::test]
 async fn test_cli_passport_export_and_import_roundtrip() {
     let source_port = free_port();
     let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
@@ -7041,6 +7195,162 @@ async fn test_cli_passport_export_and_import_roundtrip() {
 
     target_child.kill().await.ok();
     target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_cli_memory_bundle_export_preview_validate_and_diff_without_runtime() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_content = test_config_http(port, data_dir.to_str().unwrap());
+    let config_path = tmp_dir.path().join("bundle-cli.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    for payload in [
+        serde_json::json!({
+            "content": "Project decision: keep MCP-first auth as the default path.",
+            "tags": ["project", "decision"]
+        }),
+        serde_json::json!({
+            "content": "Team policy: security review is mandatory before merge.",
+            "tags": ["team", "policy"]
+        }),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+
+    let project_bundle = tmp_dir.path().join("project.membundle.json");
+    let all_bundle = tmp_dir.path().join("all.membundle.json");
+    let export_project = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "bundle",
+            "export",
+            "--kind",
+            "passport",
+            "--namespace",
+            "test",
+            "--scope",
+            "project",
+            "--output",
+            project_bundle.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run bundle export");
+    assert!(
+        export_project.status.success(),
+        "bundle export failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&export_project.stdout),
+        String::from_utf8_lossy(&export_project.stderr)
+    );
+    let export_all = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "bundle",
+            "export",
+            "--kind",
+            "passport",
+            "--namespace",
+            "test",
+            "--scope",
+            "all",
+            "--output",
+            all_bundle.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run second bundle export");
+    assert!(
+        export_all.status.success(),
+        "second bundle export failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&export_all.stdout),
+        String::from_utf8_lossy(&export_all.stderr)
+    );
+
+    let missing_config = tmp_dir.path().join("missing.toml");
+
+    let preview = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "bundle",
+            "preview",
+            project_bundle.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run bundle preview");
+    assert!(
+        preview.status.success(),
+        "bundle preview failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&preview.stdout),
+        String::from_utf8_lossy(&preview.stderr)
+    );
+    let preview_stdout = String::from_utf8_lossy(&preview.stdout);
+    assert!(preview_stdout.contains("Memory bundle"));
+    assert!(preview_stdout.contains("URI:"));
+    assert!(preview_stdout.contains("Project decision: keep MCP-first auth"));
+
+    let validate = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "bundle",
+            "validate",
+            project_bundle.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run bundle validate");
+    assert!(
+        validate.status.success(),
+        "bundle validate failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&validate.stdout),
+        String::from_utf8_lossy(&validate.stderr)
+    );
+    let validate_stdout = String::from_utf8_lossy(&validate.stdout);
+    assert!(validate_stdout.contains("Validation: true"));
+
+    let diff = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            missing_config.to_str().unwrap(),
+            "bundle",
+            "diff",
+            project_bundle.to_str().unwrap(),
+            all_bundle.to_str().unwrap(),
+        ])
+        .output()
+        .await
+        .expect("failed to run bundle diff");
+    assert!(
+        diff.status.success(),
+        "bundle diff failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&diff.stdout),
+        String::from_utf8_lossy(&diff.stderr)
+    );
+    let diff_stdout = String::from_utf8_lossy(&diff.stdout);
+    assert!(diff_stdout.contains("Memory bundle diff"));
+    assert!(diff_stdout.contains("Added"));
+    assert!(diff_stdout.contains("Team policy: security review is mandatory before merge."));
 }
 
 #[tokio::test]

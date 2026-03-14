@@ -406,6 +406,25 @@ Compatibility policy:
 - once a successor line ships, memoryOSS keeps reader compatibility for the previous published line for at least two minor releases
 - the conformance harness is the authoritative pass/fail gate for published lines
 
+### Memory Bundle Envelope
+
+memoryOSS now wraps portable artifacts in `memoryoss.bundle.v1alpha1`, a stable envelope around existing passport and history payloads.
+
+The envelope adds:
+- a top-level `bundle_version`
+- a portable `memoryoss://bundle/...` URI and attachment-style filename
+- separate outer-envelope integrity on top of the nested passport/history integrity line
+- a signable signature stub so future signed writers can keep the same outer wire shape
+
+Reference commands:
+
+```bash
+memoryoss bundle export --kind passport --namespace test --scope project -o project.membundle.json
+memoryoss bundle preview project.membundle.json
+memoryoss bundle validate project.membundle.json
+memoryoss bundle diff old.membundle.json new.membundle.json
+```
+
 ### Cross-App Adapter Bridges
 
 memoryOSS can now normalize dominant local client artifacts into the same runtime contract instead of treating them as opaque files.
@@ -455,6 +474,10 @@ memoryoss adapter import --kind git_history . --namespace test --dry-run
 | `/v1/history/replay` | POST | Replay a history bundle into an empty target namespace |
 | `/v1/adapters/export` | GET | Export runtime memories into a foreign client artifact |
 | `/v1/adapters/import` | POST | Dry-run or apply a normalized foreign client artifact |
+| `/v1/bundles/export` | GET | Export a versioned memory bundle envelope around passport or history artifacts |
+| `/v1/bundles/preview` | POST | Preview bundle metadata, URI, and sampled contents without importing |
+| `/v1/bundles/validate` | POST | Validate bundle envelope integrity plus nested artifact integrity |
+| `/v1/bundles/diff` | POST | Diff two bundle envelopes without importing either one |
 | `/v1/passport/export` | GET | Selective portable memory passport bundle export |
 | `/v1/passport/import` | POST | Dry-run or apply a portable memory passport bundle |
 | `/v1/runtime/contract` | GET | Versioned portable memory runtime contract |
@@ -588,6 +611,10 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss doctor` | Diagnose config, auth, database, and index issues (non-zero on error) |
 | `memoryoss recent` | Show recent injections, extractions, feedbacks, and consolidations |
 | `memoryoss hud --namespace test --limit 5` | Terminal HUD for quick search/why/recent/review/import/export loops |
+| `memoryoss bundle export --kind passport --namespace test --scope project -o project.membundle.json` | Export a portable memory bundle envelope |
+| `memoryoss bundle preview project.membundle.json` | Preview bundle metadata, URI, and sampled contents without import |
+| `memoryoss bundle validate project.membundle.json` | Validate envelope and nested artifact integrity |
+| `memoryoss bundle diff old.membundle.json new.membundle.json` | Diff two bundle envelopes offline |
 | `memoryoss review queue --namespace test` | List the current review inbox without raw UUIDs |
 | `memoryoss review confirm --namespace test --item 1` | Confirm a queue item by inbox position |
 | `memoryoss review reject --namespace test --item 2` | Reject a queue item by inbox position |

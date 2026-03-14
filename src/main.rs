@@ -127,6 +127,11 @@ enum Commands {
         #[command(subcommand)]
         command: HistoryCommands,
     },
+    /// Export, preview, diff, or validate portable memory bundle envelopes
+    Bundle {
+        #[command(subcommand)]
+        command: BundleCommands,
+    },
     /// Inspect a memory by ID
     Inspect {
         /// Memory UUID
@@ -326,6 +331,45 @@ enum HistoryCommands {
         /// Preview replay safety without applying it
         #[arg(long)]
         dry_run: bool,
+    },
+}
+
+#[derive(Subcommand)]
+enum BundleCommands {
+    /// Export a portable memory bundle envelope to disk
+    Export {
+        /// Bundle kind: passport or history
+        #[arg(long, default_value = "passport")]
+        kind: String,
+        /// Namespace to export
+        #[arg(long)]
+        namespace: Option<String>,
+        /// Passport scope when exporting passport bundles
+        #[arg(long, default_value = "project")]
+        scope: String,
+        /// Root memory UUID when exporting a history bundle
+        #[arg(long)]
+        id: Option<String>,
+        /// Output path for bundle JSON
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+    /// Preview a portable memory bundle without importing it
+    Preview {
+        /// Path to bundle JSON
+        path: PathBuf,
+    },
+    /// Validate a portable memory bundle envelope and nested payload
+    Validate {
+        /// Path to bundle JSON
+        path: PathBuf,
+    },
+    /// Diff two portable memory bundle envelopes without importing either one
+    Diff {
+        /// Left-hand bundle JSON
+        left: PathBuf,
+        /// Right-hand bundle JSON
+        right: PathBuf,
     },
 }
 
@@ -1510,6 +1554,191 @@ fn run_history_branch(
     Ok(())
 }
 
+fn read_memory_bundle(path: &Path) -> anyhow::Result<crate::server::routes::MemoryBundleEnvelope> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
+fn render_memory_bundle_preview(preview: &crate::server::routes::MemoryBundlePreview) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Memory bundle");
+    let _ = writeln!(output, "ID:         {}", preview.bundle_id);
+    let _ = writeln!(output, "Version:    {}", preview.bundle_version);
+    let _ = writeln!(output, "Kind:       {}", preview.kind);
+    let _ = writeln!(output, "Namespace:  {}", preview.namespace);
+    if let Some(scope) = &preview.scope {
+        let _ = writeln!(output, "Scope:      {}", scope);
+    }
+    let _ = writeln!(output, "Contract:   {}", preview.runtime_contract_id);
+    let _ = writeln!(output, "URI:        {}", preview.uri);
+    let _ = writeln!(output, "Attachment: {}", preview.attachment_name);
+    let _ = writeln!(output, "Memories:   {}", preview.memory_count);
+    let _ = writeln!(output, "Visible:    {}", preview.visible_count);
+    if let Some(root_id) = preview.root_id {
+        let _ = writeln!(output, "Root:       {}", root_id);
+    }
+    let _ = writeln!(
+        output,
+        "Integrity:  envelope={} nested={}",
+        preview.integrity_valid, preview.nested_integrity_valid
+    );
+
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Preview");
+    if preview.preview.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for item in &preview.preview {
+            let _ = writeln!(output, "- {}", item);
+        }
+    }
+
+    output
+}
+
+fn render_memory_bundle_validation(
+    validation: &crate::server::routes::MemoryBundleValidation,
+) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = render_memory_bundle_preview(&validation.preview);
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Validation: {}", validation.valid);
+    if validation.errors.is_empty() {
+        let _ = writeln!(output, "- no errors");
+    } else {
+        for error in &validation.errors {
+            let _ = writeln!(output, "- {}", error);
+        }
+    }
+    output
+}
+
+fn render_memory_bundle_diff(diff: &crate::server::routes::MemoryBundleDiff) -> String {
+    use std::fmt::Write as _;
+
+    let mut output = String::new();
+    let _ = writeln!(output, "Memory bundle diff");
+    let _ = writeln!(output, "Kinds match: {}", diff.same_kind);
+    let _ = writeln!(output, "Shared entries: {}", diff.shared_preview_count);
+    if diff.changed_fields.is_empty() {
+        let _ = writeln!(output, "Changed fields: none");
+    } else {
+        let _ = writeln!(output, "Changed fields: {}", diff.changed_fields.join(", "));
+    }
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Left");
+    let _ = writeln!(output, "  {} {}", diff.left.kind, diff.left.uri);
+    let _ = writeln!(
+        output,
+        "  memories={} visible={}",
+        diff.left.memory_count, diff.left.visible_count
+    );
+    let _ = writeln!(output, "Right");
+    let _ = writeln!(output, "  {} {}", diff.right.kind, diff.right.uri);
+    let _ = writeln!(
+        output,
+        "  memories={} visible={}",
+        diff.right.memory_count, diff.right.visible_count
+    );
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Added");
+    if diff.added_preview.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for item in &diff.added_preview {
+            let _ = writeln!(output, "- {}", item);
+        }
+    }
+    let _ = writeln!(output);
+    let _ = writeln!(output, "Removed");
+    if diff.removed_preview.is_empty() {
+        let _ = writeln!(output, "- none");
+    } else {
+        for item in &diff.removed_preview {
+            let _ = writeln!(output, "- {}", item);
+        }
+    }
+    output
+}
+
+fn run_bundle_export(
+    config: &config::Config,
+    kind: crate::server::routes::MemoryBundleKind,
+    namespace_override: Option<&str>,
+    scope: &str,
+    history_id: Option<&str>,
+    output: Option<PathBuf>,
+) -> anyhow::Result<()> {
+    let doc_engine = open_operator_doc_engine(config)?;
+    let namespace =
+        resolve_operator_namespace(config, &doc_engine, namespace_override, "bundle export")?;
+    let memories = doc_engine.list_all_including_archived(&namespace)?;
+    let bundle = match kind {
+        crate::server::routes::MemoryBundleKind::Passport => {
+            let scope = scope
+                .parse::<crate::memory::PassportScope>()
+                .map_err(anyhow::Error::msg)?;
+            crate::server::routes::build_memory_bundle_from_passport(
+                crate::memory::build_memory_passport_bundle(&namespace, scope, &memories),
+            )
+        }
+        crate::server::routes::MemoryBundleKind::History => {
+            let id =
+                history_id.ok_or_else(|| anyhow::anyhow!("history bundle export requires --id"))?;
+            let id: uuid::Uuid = id
+                .parse()
+                .map_err(|_| anyhow::anyhow!("invalid UUID: {id}"))?;
+            let bundle = crate::memory::build_memory_history_bundle(&namespace, id, &memories)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("history root not found in namespace {namespace}")
+                })?;
+            crate::server::routes::build_memory_bundle_from_history(bundle)
+        }
+    };
+    let output_path =
+        output.unwrap_or_else(|| PathBuf::from(bundle.reference.attachment_name.clone()));
+    let preview =
+        crate::server::routes::preview_memory_bundle(&bundle).map_err(anyhow::Error::msg)?;
+    std::fs::write(&output_path, serde_json::to_vec_pretty(&bundle)?)?;
+    println!(
+        "Exported memory bundle {} [{} memories={} uri={}]",
+        output_path.display(),
+        kind,
+        preview.memory_count,
+        preview.uri
+    );
+    Ok(())
+}
+
+fn run_bundle_preview(path: &Path) -> anyhow::Result<()> {
+    let bundle = read_memory_bundle(path)?;
+    let preview =
+        crate::server::routes::preview_memory_bundle(&bundle).map_err(anyhow::Error::msg)?;
+    print!("{}", render_memory_bundle_preview(&preview));
+    Ok(())
+}
+
+fn run_bundle_validate(path: &Path) -> anyhow::Result<()> {
+    let bundle = read_memory_bundle(path)?;
+    let validation = crate::server::routes::validate_memory_bundle(&bundle);
+    print!("{}", render_memory_bundle_validation(&validation));
+    if !validation.valid {
+        anyhow::bail!("memory bundle validation failed");
+    }
+    Ok(())
+}
+
+fn run_bundle_diff(left: &Path, right: &Path) -> anyhow::Result<()> {
+    let left_bundle = read_memory_bundle(left)?;
+    let right_bundle = read_memory_bundle(right)?;
+    let diff = crate::server::routes::diff_memory_bundles(&left_bundle, &right_bundle)
+        .map_err(anyhow::Error::msg)?;
+    print!("{}", render_memory_bundle_diff(&diff));
+    Ok(())
+}
+
 fn run_conformance_normalize(
     kind: ConformanceArtifactKind,
     input: &Path,
@@ -2554,6 +2783,24 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
+    if let Commands::Bundle { command } = &command {
+        match command {
+            BundleCommands::Preview { path } => {
+                run_bundle_preview(path)?;
+                return Ok(());
+            }
+            BundleCommands::Validate { path } => {
+                run_bundle_validate(path)?;
+                return Ok(());
+            }
+            BundleCommands::Diff { left, right } => {
+                run_bundle_diff(left, right)?;
+                return Ok(());
+            }
+            BundleCommands::Export { .. } => {}
+        }
+    }
+
     let operator_command = matches!(
         &command,
         Commands::Status { .. }
@@ -2563,6 +2810,9 @@ async fn main() -> anyhow::Result<()> {
             | Commands::Passport { .. }
             | Commands::Adapter { .. }
             | Commands::History { .. }
+            | Commands::Bundle {
+                command: BundleCommands::Export { .. }
+            }
     );
 
     if operator_command && !cli.config.exists() {
@@ -2781,6 +3031,32 @@ async fn main() -> anyhow::Result<()> {
                     .parse()
                     .map_err(|_| anyhow::anyhow!("invalid UUID: {id}"))?;
                 run_history_branch(&config, &namespace, &target_namespace, uuid, dry_run)?;
+            }
+        },
+        Commands::Bundle { command } => match command {
+            BundleCommands::Export {
+                kind,
+                namespace,
+                scope,
+                id,
+                output,
+            } => {
+                let kind = kind
+                    .parse::<crate::server::routes::MemoryBundleKind>()
+                    .map_err(anyhow::Error::msg)?;
+                run_bundle_export(
+                    &config,
+                    kind,
+                    namespace.as_deref(),
+                    &scope,
+                    id.as_deref(),
+                    output,
+                )?;
+            }
+            BundleCommands::Preview { .. }
+            | BundleCommands::Validate { .. }
+            | BundleCommands::Diff { .. } => {
+                unreachable!("bundle preview/validate/diff are handled before config loading")
             }
         },
         Commands::Inspect { id } => {
