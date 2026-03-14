@@ -3139,6 +3139,152 @@ namespace = "test"
 }
 
 #[tokio::test]
+async fn test_local_memory_coprocessor_extracts_without_remote_extraction_and_fails_closed() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+anthropic_upstream_url = "http://127.0.0.1:{upstream_port}/v1/messages"
+anthropic_api_key = "anthropic-upstream-key"
+default_memory_mode = "full"
+extraction_enabled = true
+memory_coprocessor = "local_heuristic"
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-local-coprocessor.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let first_proxy = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{
+                "role": "user",
+                "content": "Remember that staging approval is required before production deploys."
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_proxy.status(), 200);
+
+    let stats = wait_for_proxy_facts_extracted(&client, &base, "test-key-proxy", 1).await;
+    assert_eq!(
+        stats["memory_coprocessor"].as_str(),
+        Some("local_heuristic")
+    );
+    assert_eq!(stats["metrics"]["facts_extracted"].as_u64(), Some(1));
+
+    let second_proxy = client
+        .post(format!("{base}/proxy/anthropic/v1/messages"))
+        .header("x-api-key", "test-key-proxy")
+        .header("anthropic-version", "2023-06-01")
+        .header("x-memory-mode", "full")
+        .json(&serde_json::json!({
+            "model": "claude-3-5-haiku-latest",
+            "max_tokens": 16,
+            "messages": [{
+                "role": "user",
+                "content": "Thanks, that was enough."
+            }]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(second_proxy.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(2)).await;
+    let stable_stats = client
+        .get(format!("{base}/proxy/v1/debug/stats"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stable_stats.status(), 200);
+    let stable_body: serde_json::Value = stable_stats.json().await.unwrap();
+    assert_eq!(stable_body["metrics"]["facts_extracted"].as_u64(), Some(1));
+
+    let export_resp = client
+        .get(format!("{base}/v1/export"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(export_resp.status(), 200);
+    let export_body: serde_json::Value = export_resp.json().await.unwrap();
+    let memories = export_body["memories"]
+        .as_array()
+        .expect("memories missing");
+    let extracted = memories
+        .iter()
+        .find(|memory| {
+            memory["content"].as_str()
+                == Some("For this project, staging approval is required before production deploys.")
+        })
+        .expect("proxy-coprocessor memory missing");
+    assert_eq!(
+        extracted["source_key_id"].as_str(),
+        Some("proxy-coprocessor")
+    );
+    assert!(extracted["tags"].as_array().is_some_and(|tags| {
+        tags.iter()
+            .any(|tag| tag.as_str() == Some("proxy-coprocessed"))
+    }));
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| request["path"].as_str() == Some("/v1/messages"))
+            .count(),
+        2,
+        "local coprocessor should avoid an extra extraction-model call"
+    );
+    assert!(
+        requests.iter().all(|request| {
+            request["body"]["model"].as_str() != Some("claude-test-extract")
+                && request["body"]["model"].as_str() != Some("claude-test-promote")
+        }),
+        "local coprocessor should not invoke a remote extraction model"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn test_repeated_unused_injection_drives_memory_stale() {
     let (upstream_port, _upstream_state, upstream_handle) = start_dummy_upstream().await;
 

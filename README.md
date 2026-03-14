@@ -270,6 +270,7 @@ min_recall_score = 0.40                    # Minimum relevance score for injecti
 min_channel_score = 0.15                   # Precision gate: min score in any channel (default: 0.15)
 diversity_factor = 0.3                     # MMR diversity penalty (default: 0.3)
 identifier_first_routing = true            # Route path/endpoint/env-var style queries through lexical-first reranking
+memory_coprocessor = "off"                 # Or "local_heuristic" for deterministic local extraction
 
 [[proxy.key_mapping]]
 proxy_key = "ek_..."                       # Client-facing key
@@ -356,6 +357,8 @@ For recognized task classes (`deploy`, `bugfix`, `review`, `style`), memoryOSS n
 The admin explain surface exposes the same compiled task state plus the input memories and condensation decisions that produced it.
 
 Query explain now also returns a `policy_firewall` section. For risky action prompts (`deploy`, `delete`, `exfiltrate`, `override`) the same policy evaluation used by the proxy reports whether the request would `warn`, `block`, or `require_confirmation`, plus the exact policy memories that caused that intervention.
+
+For privacy-sensitive flows, the proxy can switch to a local memory coprocessor instead of a remote extraction model. Set `memory_coprocessor = "local_heuristic"` to keep a bounded rule set fully local and deterministic for high-signal decisions such as deploy policies, branch habits, and proxy env exports. The proxy debug stats expose the active coprocessor mode so operators can verify when the local path is in effect.
 
 The operator HUD at `/v1/admin/hud` folds that together with lifecycle, recent activity, review inbox, and import/export launcher actions. Use JSON for scripting or `?format=html` for a browser-ready desktop dashboard.
 

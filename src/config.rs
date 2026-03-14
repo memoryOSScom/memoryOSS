@@ -189,6 +189,23 @@ fn default_memory_mode() -> String {
     "readonly".to_string()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum MemoryCoprocessorMode {
+    #[default]
+    Off,
+    LocalHeuristic,
+}
+
+impl std::fmt::Display for MemoryCoprocessorMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Off => write!(f, "off"),
+            Self::LocalHeuristic => write!(f, "local_heuristic"),
+        }
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct AuthConfig {
     #[serde(default)]
@@ -544,6 +561,9 @@ pub struct ProxyConfig {
     /// Enable the experimental primitive algebra lane for recall/explain reranking.
     #[serde(default)]
     pub primitive_algebra: bool,
+    /// Optional local coprocessor for deterministic memory decisions.
+    #[serde(default)]
+    pub memory_coprocessor: MemoryCoprocessorMode,
     /// Default memory mode: "full", "off", or "after" (default: "full").
     /// Overridden by X-Memory-Mode header if allow_client_memory_control is true.
     #[serde(default = "default_memory_mode")]
@@ -589,6 +609,7 @@ impl Default for ProxyConfig {
             confidence_gate: true,
             identifier_first_routing: true,
             primitive_algebra: false,
+            memory_coprocessor: MemoryCoprocessorMode::Off,
             default_memory_mode: default_memory_mode(),
             memory_after_date: None,
         }
@@ -623,6 +644,7 @@ impl std::fmt::Debug for ProxyConfig {
             .field("confidence_gate", &self.confidence_gate)
             .field("identifier_first_routing", &self.identifier_first_routing)
             .field("primitive_algebra", &self.primitive_algebra)
+            .field("memory_coprocessor", &self.memory_coprocessor)
             .field("default_memory_mode", &self.default_memory_mode)
             .field("memory_after_date", &self.memory_after_date)
             .finish()

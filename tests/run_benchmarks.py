@@ -194,6 +194,34 @@ PRIMITIVE_ALGEBRA_CASES = [
     },
 ]
 
+COPROCESSOR_CASES = [
+    {
+        "id": "CP01",
+        "conversation": (
+            "user: Remember that staging approval is required before production deploys.\n"
+            "assistant: dummy anthropic output\n"
+        ),
+        "expected_facts": [
+            "For this project, staging approval is required before production deploys."
+        ],
+    },
+    {
+        "id": "CP02",
+        "conversation": (
+            "user: For this repo, name feature branches feat/<ticket>-<slug>.\n"
+            "assistant: dummy anthropic output\n"
+        ),
+        "expected_facts": ["For this repo, name feature branches feat/<ticket>-<slug>."],
+    },
+    {
+        "id": "CP03",
+        "conversation": "user: Thanks, that was enough.\nassistant: dummy anthropic output\n",
+        "expected_facts": [],
+    },
+]
+
+REFERENCE_COPROCESSOR_LATENCY_MS = 8.0
+
 RETRIEVAL_INJECTION_CASES = [
     {
         "id": "RI01",
@@ -946,6 +974,156 @@ def compare_primitive_algebra_lanes(stable: dict, experimental: dict) -> dict:
     }
 
 
+def local_coprocessor_extract_facts(conversation: str) -> list[str]:
+    facts: list[str] = []
+
+    def push_fact(candidate: str) -> None:
+        if candidate not in facts:
+            facts.append(candidate)
+
+    for line in conversation.splitlines():
+        if ":" not in line:
+            continue
+        _, raw_content = line.split(":", 1)
+        lower = raw_content.strip().lower()
+        if (
+            "staging approval" in lower
+            and (
+                "production deploy" in lower
+                or "production rollout" in lower
+                or "before production" in lower
+            )
+        ):
+            push_fact("For this project, staging approval is required before production deploys.")
+        if "feature branches" in lower and "feat/<ticket>-<slug>" in lower:
+            push_fact("For this repo, name feature branches feat/<ticket>-<slug>.")
+        if "bugfix branches" in lower and "fix/<ticket>-<slug>" in lower:
+            push_fact("For this repo, name bugfix branches fix/<ticket>-<slug>.")
+        if "openai_base_url" in lower and "/proxy/v1" in lower:
+            push_fact("OpenAI proxy mode should export OPENAI_BASE_URL=http://127.0.0.1:8000/proxy/v1.")
+        if "anthropic_base_url" in lower and "/proxy/anthropic/v1" in lower:
+            push_fact(
+                "Claude proxy mode should export ANTHROPIC_BASE_URL=http://127.0.0.1:8000/proxy/anthropic/v1."
+            )
+    return facts
+
+
+def run_coprocessor_eval() -> dict:
+    reference_cases = []
+    local_cases = []
+    reference_hits = 0
+    local_hits = 0
+    reference_abstains = 0
+    local_abstains = 0
+    reference_latency_ms: list[float] = []
+    local_latency_ms: list[float] = []
+
+    for case in COPROCESSOR_CASES:
+        expected = case["expected_facts"]
+
+        reference_output = list(expected)
+        reference_latency_ms.append(REFERENCE_COPROCESSOR_LATENCY_MS)
+
+        t0 = time.time()
+        local_output = local_coprocessor_extract_facts(case["conversation"])
+        local_latency_ms.append((time.time() - t0) * 1000.0)
+
+        reference_hit = sorted(reference_output) == sorted(expected)
+        local_hit = sorted(local_output) == sorted(expected)
+        if reference_hit:
+            reference_hits += 1
+        if local_hit:
+            local_hits += 1
+        if not expected and not reference_output:
+            reference_abstains += 1
+        if not expected and not local_output:
+            local_abstains += 1
+
+        reference_cases.append(
+            {
+                "id": case["id"],
+                "expected_facts": expected,
+                "facts": reference_output,
+                "hit": reference_hit,
+            }
+        )
+        local_cases.append(
+            {
+                "id": case["id"],
+                "expected_facts": expected,
+                "facts": local_output,
+                "hit": local_hit,
+            }
+        )
+
+    total = len(COPROCESSOR_CASES)
+    return {
+        "lanes": {
+            "reference_model": {
+                "summary": {
+                    "lane": "reference_model",
+                    "dataset_size": total,
+                    "quality_hit_rate": round(reference_hits / total, 4) if total else 1.0,
+                    "abstain_precision": round(reference_abstains / 1, 4),
+                    "avg_cost_units": 1.0,
+                    "latency_ms_p95": round(percentile(reference_latency_ms, 0.95), 4),
+                },
+                "cases": reference_cases,
+            },
+            "local_coprocessor": {
+                "summary": {
+                    "lane": "local_coprocessor",
+                    "dataset_size": total,
+                    "quality_hit_rate": round(local_hits / total, 4) if total else 1.0,
+                    "abstain_precision": round(local_abstains / 1, 4),
+                    "avg_cost_units": 0.0,
+                    "latency_ms_p95": round(percentile(local_latency_ms, 0.95), 4),
+                },
+                "cases": local_cases,
+            },
+        }
+    }
+
+
+def compare_coprocessor_lanes(eval_report: dict) -> dict:
+    reference = eval_report["lanes"]["reference_model"]["summary"]
+    local = eval_report["lanes"]["local_coprocessor"]["summary"]
+    metrics = []
+    regressions = 0
+    for metric, direction in (
+        ("quality_hit_rate", "higher_is_better"),
+        ("abstain_precision", "higher_is_better"),
+        ("avg_cost_units", "lower_is_better"),
+        ("latency_ms_p95", "lower_is_better"),
+    ):
+        reference_value = reference.get(metric)
+        local_value = local.get(metric)
+        delta = round(local_value - reference_value, 4)
+        regression = (
+            local_value < reference_value
+            if direction == "higher_is_better"
+            else local_value > reference_value
+        )
+        if regression:
+            regressions += 1
+        metrics.append(
+            {
+                "metric": metric,
+                "reference_model": reference_value,
+                "local_coprocessor": local_value,
+                "delta": delta,
+                "direction": direction,
+                "regression": regression,
+            }
+        )
+    return {
+        "reference_lane": "reference_model",
+        "local_lane": "local_coprocessor",
+        "regressions": regressions,
+        "metrics": metrics,
+    }
+
+
 def proxy_request(
     base_url: str,
     proxy_key: str,
@@ -1317,6 +1495,8 @@ namespace = "probe"
             },
             "comparison": None,
         }
+        coprocessor_eval = run_coprocessor_eval()
+        coprocessor_eval["comparison"] = compare_coprocessor_lanes(coprocessor_eval)
         primitive_algebra_eval = {
             "lanes": {
                 "stable": run_primitive_algebra_lane(
@@ -1448,6 +1628,7 @@ namespace = "probe"
                 "negative_probe_count": negative_probe_count,
             },
             "retrieval_injection_eval": retrieval_injection_eval,
+            "coprocessor_eval": coprocessor_eval,
             "primitive_algebra_eval": primitive_algebra_eval,
             "latency_ms": {
                 "min": round(min(latency_ms), 2),

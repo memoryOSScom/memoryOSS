@@ -18,7 +18,7 @@ use axum::http::request::Parts;
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 
-use crate::config::{ProxyConfig, ProxyKeyMapping};
+use crate::config::{MemoryCoprocessorMode, ProxyConfig, ProxyKeyMapping};
 use crate::memory::MemoryStatus;
 use crate::memory::{Memory, ScoredMemory};
 use crate::security::trust::{
@@ -2094,6 +2094,118 @@ fn redact_sensitive(text: &str) -> String {
     result
 }
 
+#[derive(Debug, Clone)]
+struct LocalCoprocessorResult {
+    facts: Vec<serde_json::Value>,
+    matched_rules: Vec<String>,
+    decision: &'static str,
+}
+
+fn push_coprocessor_fact(facts: &mut Vec<serde_json::Value>, content: &str, tags: &[&str]) {
+    let duplicate = facts.iter().any(|existing| {
+        existing
+            .get("content")
+            .and_then(|value| value.as_str())
+            .map(|value| crate::fusion::are_structural_duplicates(value, content))
+            .unwrap_or(false)
+    });
+    if !duplicate {
+        facts.push(serde_json::json!({
+            "content": content,
+            "tags": tags,
+        }));
+    }
+}
+
+fn local_coprocessor_extract_facts(conversation_text: &str) -> LocalCoprocessorResult {
+    let mut facts = Vec::new();
+    let mut matched_rules = Vec::new();
+
+    for line in conversation_text.lines() {
+        let Some((role, raw_content)) = line.split_once(':') else {
+            continue;
+        };
+        let role = role.trim().to_ascii_lowercase();
+        if !matches!(role.as_str(), "system" | "user" | "assistant") {
+            continue;
+        }
+
+        let content = raw_content.trim();
+        let lower = content.to_ascii_lowercase();
+
+        if lower.contains("staging approval")
+            && (lower.contains("production deploy")
+                || lower.contains("production rollout")
+                || lower.contains("before production"))
+        {
+            push_coprocessor_fact(
+                &mut facts,
+                "For this project, staging approval is required before production deploys.",
+                &["policy", "deploy", "approval"],
+            );
+            matched_rules.push("deploy_policy".to_string());
+        }
+
+        if lower.contains("feature branches") && lower.contains("feat/<ticket>-<slug>") {
+            push_coprocessor_fact(
+                &mut facts,
+                "For this repo, name feature branches feat/<ticket>-<slug>.",
+                &["git", "feature-branches", "habit"],
+            );
+            matched_rules.push("feature_branch_habit".to_string());
+        }
+
+        if lower.contains("bugfix branches") && lower.contains("fix/<ticket>-<slug>") {
+            push_coprocessor_fact(
+                &mut facts,
+                "For this repo, name bugfix branches fix/<ticket>-<slug>.",
+                &["git", "bugfix-branches", "habit"],
+            );
+            matched_rules.push("bugfix_branch_habit".to_string());
+        }
+
+        if lower.contains("openai_base_url") && lower.contains("/proxy/v1") {
+            push_coprocessor_fact(
+                &mut facts,
+                "OpenAI proxy mode should export OPENAI_BASE_URL=http://127.0.0.1:8000/proxy/v1.",
+                &["openai", "env", "proxy"],
+            );
+            matched_rules.push("openai_proxy_env".to_string());
+        }
+
+        if lower.contains("anthropic_base_url") && lower.contains("/proxy/anthropic/v1") {
+            push_coprocessor_fact(
+                &mut facts,
+                "Claude proxy mode should export ANTHROPIC_BASE_URL=http://127.0.0.1:8000/proxy/anthropic/v1.",
+                &["claude", "env", "proxy"],
+            );
+            matched_rules.push("anthropic_proxy_env".to_string());
+        }
+
+        if lower.contains("roll back within 15 minutes") && lower.contains("ops-red") {
+            push_coprocessor_fact(
+                &mut facts,
+                "If production deploy metrics regress, roll back within 15 minutes and notify ops-red immediately.",
+                &["deploy", "rollback", "ops"],
+            );
+            matched_rules.push("rollback_runbook".to_string());
+        }
+    }
+
+    matched_rules.sort_unstable();
+    matched_rules.dedup();
+
+    LocalCoprocessorResult {
+        decision: if facts.is_empty() {
+            "abstain"
+        } else {
+            "extract"
+        },
+        facts,
+        matched_rules,
+    }
+}
+
 /// Extract facts from a completed response and store as quarantined memories.
 /// This is fire-and-forget: failures are logged but don't affect the user.
 async fn extract_and_store_facts(
@@ -2104,13 +2216,15 @@ async fn extract_and_store_facts(
     extraction_override: Option<&ExtractionOverride>,
 ) -> anyhow::Result<()> {
     let proxy_config = &state.config.proxy;
+    let use_local_coprocessor =
+        proxy_config.memory_coprocessor == MemoryCoprocessorMode::LocalHeuristic;
 
     // Check if extraction is enabled
     if !proxy_config.extraction_enabled {
         return Ok(());
     }
 
-    if !extraction_ready(proxy_config, extraction_override) {
+    if !use_local_coprocessor && !extraction_ready(proxy_config, extraction_override) {
         static WARN_ONCE: std::sync::Once = std::sync::Once::new();
         WARN_ONCE.call_once(|| {
             tracing::warn!(
@@ -2212,33 +2326,60 @@ async fn extract_and_store_facts(
     let conversation_text = redact_sensitive(&conversation_text);
     let trimmed = &conversation_text;
 
-    let prompt = format!("{EXTRACTION_PROMPT}{trimmed}");
+    let (facts, extraction_source, extraction_tag, extraction_confidence) = if use_local_coprocessor
+    {
+        let result = local_coprocessor_extract_facts(trimmed);
+        tracing::debug!(
+            namespace,
+            decision = result.decision,
+            matched_rules = ?result.matched_rules,
+            fact_count = result.facts.len(),
+            "local memory coprocessor evaluated extraction"
+        );
+        (
+            merge_extracted_facts(result.facts, fallback_preference_facts(trimmed)),
+            "proxy-coprocessor",
+            "proxy-coprocessed",
+            0.35,
+        )
+    } else {
+        let prompt = format!("{EXTRACTION_PROMPT}{trimmed}");
 
-    // Call extraction LLM
-    let extraction = build_extraction_request(proxy_config, extraction_override)
-        .ok_or_else(|| anyhow::anyhow!("missing extraction credentials"))?;
+        // Call extraction LLM
+        let extraction = build_extraction_request(proxy_config, extraction_override)
+            .ok_or_else(|| anyhow::anyhow!("missing extraction credentials"))?;
 
-    let response = crate::llm_client::call_llm(&crate::llm_client::LlmRequest {
-        provider: &extraction.provider,
-        model: &extraction.model,
-        api_key: Some(&extraction.api_key),
-        endpoint: extraction.endpoint.as_deref(),
-        auth_scheme: extraction.auth_scheme.as_deref(),
-        prompt: &prompt,
-        max_tokens: 2048,
-        timeout_secs: 30,
-    })
-    .await?;
+        let response = crate::llm_client::call_llm(&crate::llm_client::LlmRequest {
+            provider: &extraction.provider,
+            model: &extraction.model,
+            api_key: Some(&extraction.api_key),
+            endpoint: extraction.endpoint.as_deref(),
+            auth_scheme: extraction.auth_scheme.as_deref(),
+            prompt: &prompt,
+            max_tokens: 2048,
+            timeout_secs: 30,
+        })
+        .await?;
 
-    // Parse extracted facts
-    let json_str = crate::llm_client::extract_json_array(&response.text)
-        .ok_or_else(|| anyhow::anyhow!("no JSON array in extraction response"))?;
+        // Parse extracted facts
+        let json_str = crate::llm_client::extract_json_array(&response.text)
+            .ok_or_else(|| anyhow::anyhow!("no JSON array in extraction response"))?;
 
-    let llm_facts: Vec<serde_json::Value> = serde_json::from_str(json_str)?;
-    let facts = merge_extracted_facts(llm_facts, fallback_preference_facts(trimmed));
+        let llm_facts: Vec<serde_json::Value> = serde_json::from_str(json_str)?;
+        (
+            merge_extracted_facts(llm_facts, fallback_preference_facts(trimmed)),
+            "proxy-extraction",
+            "proxy-extracted",
+            0.2,
+        )
+    };
 
     if facts.is_empty() {
-        tracing::debug!(namespace, "no facts extracted from proxy response");
+        tracing::debug!(
+            namespace,
+            memory_coprocessor = %proxy_config.memory_coprocessor,
+            "no facts extracted from proxy response"
+        );
         return Ok(());
     }
 
@@ -2327,11 +2468,11 @@ async fn extract_and_store_facts(
         // Create memory with low confidence (quarantine — promoted on repetition)
         let mut memory = Memory::new(content.to_string());
         memory.tags = tags;
-        memory.tags.push("proxy-extracted".to_string());
+        memory.tags.push(extraction_tag.to_string());
         memory.namespace = Some(namespace.to_string());
-        memory.source_key = Some("proxy-extraction".to_string());
+        memory.source_key = Some(extraction_source.to_string());
         memory.status = MemoryStatus::Candidate;
-        memory.confidence = Some(0.2);
+        memory.confidence = Some(extraction_confidence);
         memory.evidence_count = 0;
         memory.last_verified_at = None;
         memory.embedding = Some(embedding);
@@ -2340,7 +2481,7 @@ async fn extract_and_store_facts(
             state,
             namespace,
             &mut memory,
-            "proxy-extraction",
+            extraction_source,
             &[],
         )?;
         if contradiction_updates > 0 {
@@ -2354,7 +2495,7 @@ async fn extract_and_store_facts(
         // Store via group committer
         match state
             .group_committer
-            .store(memory, "proxy-extraction".to_string())
+            .store(memory, extraction_source.to_string())
             .await
         {
             Ok(_) => stored_count += 1,
@@ -2697,6 +2838,33 @@ mod tests {
         assert!(content.contains("raw MemoryOSS entries"));
         assert!(content.contains("short summaries or counts"));
         assert!(should_store_extracted_fact(content));
+    }
+
+    #[test]
+    fn local_coprocessor_extracts_deploy_policy_without_remote_model() {
+        let result = local_coprocessor_extract_facts(
+            "user: Remember that staging approval is required before production deploys.\nassistant: Understood.\n",
+        );
+        assert_eq!(result.decision, "extract");
+        assert!(
+            result
+                .matched_rules
+                .iter()
+                .any(|rule| rule == "deploy_policy")
+        );
+        assert!(result.facts.iter().any(|fact| {
+            fact["content"].as_str()
+                == Some("For this project, staging approval is required before production deploys.")
+        }));
+    }
+
+    #[test]
+    fn local_coprocessor_fails_closed_on_generic_chatter() {
+        let result = local_coprocessor_extract_facts(
+            "user: Thanks, that was enough.\nassistant: Glad that helped.\n",
+        );
+        assert_eq!(result.decision, "abstain");
+        assert!(result.facts.is_empty());
     }
 }
 
@@ -4813,6 +4981,7 @@ pub async fn proxy_debug_stats(State(state): State<AppState>, headers: HeaderMap
         "min_recall_score": state.config.proxy.min_recall_score,
         "confidence_gate": state.config.proxy.confidence_gate,
         "identifier_first_routing": state.config.proxy.identifier_first_routing,
+        "memory_coprocessor": state.config.proxy.memory_coprocessor,
         "log_privacy_mode": state.config.proxy.privacy_mode,
         "key_mappings": state.config.proxy.key_mapping.len(),
         "review_queue_summary": review_queue_summary,
