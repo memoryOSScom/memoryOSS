@@ -96,6 +96,38 @@ level = "warn"
     )
 }
 
+fn test_config_http_with_sections(
+    port: u16,
+    data_dir: &str,
+    auth_entries: &str,
+    extra_sections: &str,
+) -> String {
+    format!(
+        r#"
+[server]
+host = "127.0.0.1"
+port = {port}
+
+[tls]
+enabled = false
+auto_generate = false
+
+[storage]
+data_dir = "{data_dir}"
+
+[auth]
+jwt_secret = "test-secret-that-is-at-least-32-characters-long"
+
+{auth_entries}
+
+[logging]
+level = "warn"
+
+{extra_sections}
+"#
+    )
+}
+
 fn multi_namespace_test_config(port: u16, data_dir: &str) -> String {
     test_config_with_sections(
         port,
@@ -113,6 +145,12 @@ namespace = "beta"
 "#,
         "",
     )
+}
+
+fn test_key_id(raw_key: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(raw_key.as_bytes());
+    hex::encode(&hash[..8])
 }
 
 fn writer_only_test_config(port: u16, data_dir: &str) -> String {
@@ -6493,6 +6531,386 @@ async fn test_review_queue_supersede_uses_review_keys_and_records_audit_trail() 
 
     let queue_after = review_queue(&client, &base, "test-key-integration", "test", 10).await;
     assert_eq!(queue_after["summary"]["pending"].as_u64(), Some(0));
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_team_governance_propose_review_merge_and_history_replay_preserves_metadata() {
+    let owner_key = "owner-admin-key";
+    let reviewer_key = "reviewer-admin-key";
+    let owner_key_id = test_key_id(owner_key);
+
+    let source_port = free_port();
+    let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
+    let source_data_dir = source_tmp.path().join("data");
+    std::fs::create_dir_all(&source_data_dir).unwrap();
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "owner-admin-key"
+role = "admin"
+namespace = "alpha"
+
+[[auth.api_keys]]
+key = "reviewer-admin-key"
+role = "admin"
+namespace = "alpha"
+"#;
+    let source_config = test_config_http_with_sections(
+        source_port,
+        source_data_dir.to_str().unwrap(),
+        auth_entries,
+        "",
+    );
+    let source_config_path = source_tmp.path().join("team-governance-source.toml");
+    std::fs::write(&source_config_path, &source_config).unwrap();
+
+    let mut source_child = start_server(source_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let source_base = format!("http://127.0.0.1:{source_port}");
+
+    let propose_resp = client
+        .post(format!("{source_base}/v1/admin/team/governance/propose"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "content": "Production deploys require release captain approval before rollout.",
+            "tags": ["team", "deploy", "policy"],
+            "branch": "release-playbook",
+            "scope": "production",
+            "review_required": true,
+            "owners": [owner_key_id.clone()],
+            "watchlist": ["ops-red", "release-captain"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(propose_resp.status(), 200);
+    let propose_body: serde_json::Value = propose_resp.json().await.unwrap();
+    let memory_id = propose_body["id"].as_str().unwrap().to_string();
+    let review_key = propose_body["review_key"].as_str().unwrap().to_string();
+    assert_eq!(propose_body["status"].as_str(), Some("candidate"));
+    assert_eq!(
+        propose_body["team_governance"]["branch"].as_str(),
+        Some("release-playbook")
+    );
+
+    let governance_resp = client
+        .get(format!(
+            "{source_base}/v1/admin/team/governance?namespace=alpha&limit=10"
+        ))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(governance_resp.status(), 200);
+    let governance_body: serde_json::Value = governance_resp.json().await.unwrap();
+    assert_eq!(
+        governance_body["summary"]["governed_memories"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        governance_body["summary"]["active_branches"].as_u64(),
+        Some(1)
+    );
+    assert_eq!(
+        governance_body["summary"]["pending_review"].as_u64(),
+        Some(1)
+    );
+    assert!(
+        governance_body["branches"][0]["owners"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry.as_str() == Some(owner_key_id.as_str()))
+    );
+
+    let queue_body = review_queue(&client, &source_base, owner_key, "alpha", 10).await;
+    let queue_item = queue_body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|entry| entry["review_key"].as_str() == Some(review_key.as_str()))
+        .cloned()
+        .expect("expected governed review queue item");
+    assert_eq!(
+        queue_item["team_governance"]["scope"].as_str(),
+        Some("production")
+    );
+    assert_eq!(queue_item["duplicate_content_count"].as_u64(), Some(0));
+    assert_eq!(queue_item["stale_governance"].as_bool(), Some(false));
+
+    let blocked_resp = client
+        .post(format!("{source_base}/v1/admin/review/action"))
+        .header("Authorization", format!("Bearer {reviewer_key}"))
+        .json(&serde_json::json!({
+            "namespace": "alpha",
+            "review_key": review_key,
+            "action": "confirm"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), 403);
+
+    let confirm_resp = client
+        .post(format!("{source_base}/v1/admin/review/action"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "namespace": "alpha",
+            "review_key": review_key,
+            "action": "confirm"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(confirm_resp.status(), 200);
+    let confirm_body: serde_json::Value = confirm_resp.json().await.unwrap();
+    assert_eq!(confirm_body["memory"]["status"].as_str(), Some("active"));
+    assert_eq!(
+        confirm_body["memory"]["team_governance"]["merged_by"].as_str(),
+        Some("alpha")
+    );
+
+    let inspected = inspect_memory(&client, &source_base, owner_key, &memory_id).await;
+    assert_eq!(inspected["status"].as_str(), Some("active"));
+    assert_eq!(
+        inspected["team_governance"]["branch"].as_str(),
+        Some("release-playbook")
+    );
+    assert_eq!(
+        inspected["team_governance"]["merged_by"].as_str(),
+        Some("alpha")
+    );
+
+    let bundle_resp = client
+        .get(format!("{source_base}/v1/history/{memory_id}/bundle"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_resp.status(), 200);
+    let bundle: serde_json::Value = bundle_resp.json().await.unwrap();
+    assert_eq!(bundle["memories"].as_array().unwrap().len(), 1);
+
+    source_child.kill().await.ok();
+    source_child.wait().await.ok();
+
+    let target_port = free_port();
+    let target_tmp = tempfile::tempdir().expect("failed to create target temp dir");
+    let target_data_dir = target_tmp.path().join("data");
+    std::fs::create_dir_all(&target_data_dir).unwrap();
+    let target_config = test_config_http_with_sections(
+        target_port,
+        target_data_dir.to_str().unwrap(),
+        auth_entries,
+        "",
+    );
+    let target_config_path = target_tmp.path().join("team-governance-target.toml");
+    std::fs::write(&target_config_path, &target_config).unwrap();
+
+    let mut target_child = start_server(target_config_path.to_str().unwrap()).await;
+    let target_base = format!("http://127.0.0.1:{target_port}");
+
+    let dry_run_resp = client
+        .post(format!("{target_base}/v1/history/replay"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "dry_run": true,
+            "bundle": bundle.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(dry_run_resp.status(), 200);
+    let dry_run_body: serde_json::Value = dry_run_resp.json().await.unwrap();
+    assert_eq!(dry_run_body["preview"]["can_replay"].as_bool(), Some(true));
+    assert_eq!(dry_run_body["preview"]["create_count"].as_u64(), Some(1));
+
+    let replay_resp = client
+        .post(format!("{target_base}/v1/history/replay"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "bundle": bundle
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(replay_resp.status(), 200);
+    let replay_body: serde_json::Value = replay_resp.json().await.unwrap();
+    assert_eq!(replay_body["imported"].as_u64(), Some(1));
+
+    let replayed = inspect_memory(&client, &target_base, owner_key, &memory_id).await;
+    assert_eq!(
+        replayed["team_governance"]["branch"].as_str(),
+        Some("release-playbook")
+    );
+    assert_eq!(
+        replayed["team_governance"]["merged_by"].as_str(),
+        Some("alpha")
+    );
+    assert_eq!(
+        replayed["review_events"][0]["action"].as_str(),
+        Some("confirm")
+    );
+
+    target_child.kill().await.ok();
+    target_child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_team_governance_review_flow_surfaces_duplicate_stale_policy_and_conflicts() {
+    let owner_key = "owner-admin-key";
+    let owner_key_id = test_key_id(owner_key);
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "owner-admin-key"
+role = "admin"
+namespace = "alpha"
+"#;
+    let config = test_config_http_with_sections(port, data_dir.to_str().unwrap(), auth_entries, "");
+    let config_path = tmp_dir.path().join("team-governance-visibility.toml");
+    std::fs::write(&config_path, &config).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    let first_resp = client
+        .post(format!("{base}/v1/admin/team/governance/propose"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "content": "Production deploys require release captain approval before rollout.",
+            "tags": ["team", "deploy", "policy"],
+            "branch": "release-playbook",
+            "scope": "production",
+            "review_required": true,
+            "owners": [owner_key_id.clone()]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first_resp.status(), 200);
+    let first_body: serde_json::Value = first_resp.json().await.unwrap();
+    let first_review_key = first_body["review_key"].as_str().unwrap().to_string();
+
+    let confirm_resp = client
+        .post(format!("{base}/v1/admin/review/action"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "namespace": "alpha",
+            "review_key": first_review_key,
+            "action": "confirm"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(confirm_resp.status(), 200);
+
+    let duplicate_resp = client
+        .post(format!("{base}/v1/admin/team/governance/propose"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "content": "Production deploys require release captain approval before rollout.",
+            "tags": ["team", "deploy", "policy", "duplicate"],
+            "branch": "release-playbook",
+            "scope": "production",
+            "review_required": true,
+            "owners": [owner_key_id.clone()]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(duplicate_resp.status(), 200);
+    let duplicate_body: serde_json::Value = duplicate_resp.json().await.unwrap();
+    assert_eq!(duplicate_body["duplicate_content_count"].as_u64(), Some(1));
+
+    let conflict_resp = client
+        .post(format!("{base}/v1/admin/team/governance/propose"))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .json(&serde_json::json!({
+            "content": "Production deploys do not require release captain approval before rollout.",
+            "tags": ["team", "deploy", "policy", "conflict"],
+            "branch": "release-playbook",
+            "scope": "production",
+            "review_required": true,
+            "owners": [owner_key_id]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(conflict_resp.status(), 200);
+
+    let queue_body = review_queue(&client, &base, owner_key, "alpha", 20).await;
+    assert!(
+        queue_body["summary"]["pending"].as_u64().unwrap_or(0) >= 2,
+        "review queue should expose the governed failure modes"
+    );
+    let items = queue_body["items"].as_array().unwrap();
+    assert!(items.iter().any(|entry| {
+        entry["team_governance"]["branch"].as_str() == Some("release-playbook")
+            && entry["duplicate_content_count"].as_u64().unwrap_or(0) >= 1
+    }));
+    assert!(items.iter().any(|entry| {
+        entry["team_governance"]["branch"].as_str() == Some("release-playbook")
+            && entry["stale_governance"].as_bool() == Some(true)
+    }));
+    assert!(items.iter().any(|entry| {
+        entry["team_governance"]["branch"].as_str() == Some("release-playbook")
+            && entry["queue_kind"].as_str() == Some("contested")
+            && entry["contradiction_count"].as_u64().unwrap_or(0) >= 1
+    }));
+
+    let governance_resp = client
+        .get(format!(
+            "{base}/v1/admin/team/governance?namespace=alpha&limit=10"
+        ))
+        .header("Authorization", format!("Bearer {owner_key}"))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(governance_resp.status(), 200);
+    let governance_body: serde_json::Value = governance_resp.json().await.unwrap();
+    assert!(
+        governance_body["summary"]["duplicate_memories"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        governance_body["summary"]["stale_policies"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        governance_body["summary"]["conflicting_decisions"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        governance_body["branches"][0]["duplicate_memories"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        governance_body["branches"][0]["stale_policies"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
+    assert!(
+        governance_body["branches"][0]["conflicting_decisions"]
+            .as_u64()
+            .unwrap_or(0)
+            >= 1
+    );
 
     child.kill().await.ok();
 }

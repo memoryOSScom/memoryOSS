@@ -333,6 +333,8 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/hud` | GET | Unified operator HUD as JSON or `?format=html` desktop view |
 | `/v1/admin/lifecycle` | GET | Lifecycle state summary and latest memories |
 | `/v1/admin/recent` | GET | Recent injections, extractions, feedbacks, and consolidations |
+| `/v1/admin/team/governance` | GET | Branch/scope governance overview for governed team memory |
+| `/v1/admin/team/governance/propose` | POST | Propose a governed team-memory write without dedup rejection |
 | `/v1/admin/review-queue` | GET | Candidate / contested / rejected review inbox with suggested actions |
 | `/v1/admin/review/action` | POST | Confirm, reject, or supersede via review keys |
 | `/v1/admin/intent-cache/stats` | GET | Intent cache statistics |
@@ -361,6 +363,8 @@ Query explain now also returns a `policy_firewall` section. For risky action pro
 For privacy-sensitive flows, the proxy can switch to a local memory coprocessor instead of a remote extraction model. Set `memory_coprocessor = "local_heuristic"` to keep a bounded rule set fully local and deterministic for high-signal decisions such as deploy policies, branch habits, and proxy env exports. The proxy debug stats expose the active coprocessor mode so operators can verify when the local path is in effect.
 
 The operator HUD at `/v1/admin/hud` folds that together with lifecycle, recent activity, review inbox, and import/export launcher actions. Use JSON for scripting or `?format=html` for a browser-ready desktop dashboard.
+
+Governed team memory now rides on the same review and history primitives. `POST /v1/admin/team/governance/propose` records branch, scope, owners, watchlists, and whether the scope is review-required; `GET /v1/admin/team/governance` summarizes duplicate writes, stale merged policy, and conflicting decisions per branch. When a governed memory requires review, `/v1/admin/review/action` only allows `confirm` or `supersede` from a listed owner, and the merge provenance survives `history/replay` and passport export/import.
 
 Proxy responses surface the same preflight via headers:
 - `x-memory-policy-decision`

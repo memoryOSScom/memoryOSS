@@ -30,13 +30,14 @@ use crate::memory::{
     BatchRecallRequest, BatchRecallResponse, BatchStoreRequest, BatchStoreResponse,
     ConsolidateRequest, ConsolidateResponse, ConsolidationGroup, FeedbackRequest, FeedbackResponse,
     ForgetRequest, ForgetResponse, LifecycleSummary, Memory, MemoryFeedbackAction,
-    MemoryHistoryBundle, MemoryHistoryReplayPlan, MemoryPassportBundle, MemoryStatus,
+    MemoryHistoryBundle, MemoryHistoryReplayPlan, MemoryPassportBundle, MemoryStatus, MemoryType,
     PassportImportPlan, PassportScope, RecallRequest, RecallResponse, ReviewQueueKind,
-    ScoreChannels, ScoreExplainEntry, ScoredMemory, StoreRequest, StoreResponse, UpdateRequest,
-    build_memory_history_bundle, build_memory_history_view, build_memory_passport_bundle,
-    contradiction_signature, contradiction_signatures_conflict, memories_contradict,
-    plan_memory_history_replay, plan_memory_passport_import, runtime_contract_document,
-    runtime_contract_export_metadata, verify_memory_history_bundle, verify_memory_passport_bundle,
+    ScoreChannels, ScoreExplainEntry, ScoredMemory, StoreRequest, StoreResponse,
+    TeamMemoryGovernance, UpdateRequest, build_memory_history_bundle, build_memory_history_view,
+    build_memory_passport_bundle, contradiction_signature, contradiction_signatures_conflict,
+    memories_contradict, plan_memory_history_replay, plan_memory_passport_import,
+    runtime_contract_document, runtime_contract_export_metadata, verify_memory_history_bundle,
+    verify_memory_passport_bundle,
 };
 use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
@@ -947,6 +948,11 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/admin/lifecycle", get(lifecycle_view))
         .route("/v1/admin/hud", get(hud_view))
         .route("/v1/admin/recent", get(recent_activity_view))
+        .route("/v1/admin/team/governance", get(team_governance_view))
+        .route(
+            "/v1/admin/team/governance/propose",
+            post(team_governance_propose),
+        )
         .route("/v1/admin/review-queue", get(review_queue_view))
         .route("/v1/admin/review/action", post(review_queue_action))
         .route("/v1/admin/intent-cache/stats", get(intent_cache_stats))
@@ -1217,9 +1223,13 @@ pub(crate) struct ReviewQueueItem {
     pub(crate) agent: Option<String>,
     pub(crate) session: Option<String>,
     pub(crate) contradiction_count: usize,
+    pub(crate) duplicate_content_count: usize,
     pub(crate) review_event_count: usize,
     pub(crate) last_review_at: Option<chrono::DateTime<chrono::Utc>>,
     pub(crate) last_review_action: Option<MemoryFeedbackAction>,
+    pub(crate) stale_governance: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) team_governance: Option<TeamMemoryGovernance>,
     pub(crate) replacement_options: Vec<ReviewQueueReplacementOption>,
 }
 
@@ -1239,6 +1249,44 @@ pub(crate) struct ReviewQueueSummary {
 pub(crate) struct ReviewQueueView {
     pub(crate) summary: ReviewQueueSummary,
     pub(crate) items: Vec<ReviewQueueItem>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct TeamGovernanceSummary {
+    pub(crate) governed_memories: usize,
+    pub(crate) active_branches: usize,
+    pub(crate) review_required_scopes: usize,
+    pub(crate) pending_review: usize,
+    pub(crate) duplicate_memories: usize,
+    pub(crate) stale_policies: usize,
+    pub(crate) conflicting_decisions: usize,
+    pub(crate) watchlist_entries: usize,
+    pub(crate) owner_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct TeamGovernanceBranchView {
+    pub(crate) branch: String,
+    pub(crate) scope: String,
+    pub(crate) review_required: bool,
+    pub(crate) owners: Vec<String>,
+    pub(crate) watchlist: Vec<String>,
+    pub(crate) memory_count: usize,
+    pub(crate) pending_review: usize,
+    pub(crate) duplicate_memories: usize,
+    pub(crate) stale_policies: usize,
+    pub(crate) conflicting_decisions: usize,
+    pub(crate) last_proposed_at: chrono::DateTime<chrono::Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_merged_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) previews: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct TeamGovernanceView {
+    pub(crate) summary: TeamGovernanceSummary,
+    pub(crate) branches: Vec<TeamGovernanceBranchView>,
 }
 
 pub(crate) fn encode_review_key(id: uuid::Uuid) -> String {
@@ -1276,6 +1324,68 @@ fn review_source_label(memory: &Memory) -> String {
         .clone()
         .or_else(|| memory.agent.clone())
         .unwrap_or_else(|| "manual".to_string())
+}
+
+fn duplicate_content_counts(memories: &[Memory]) -> std::collections::HashMap<uuid::Uuid, usize> {
+    let mut groups: std::collections::HashMap<String, Vec<uuid::Uuid>> =
+        std::collections::HashMap::new();
+    for memory in memories.iter().filter(|memory| !memory.archived) {
+        let key = memory
+            .content_hash
+            .clone()
+            .unwrap_or_else(|| memory.content.trim().to_ascii_lowercase());
+        groups.entry(key).or_default().push(memory.id);
+    }
+
+    let mut counts = std::collections::HashMap::new();
+    for ids in groups.into_values().filter(|ids| ids.len() > 1) {
+        let count = ids.len().saturating_sub(1);
+        for id in ids {
+            counts.insert(id, count);
+        }
+    }
+    counts
+}
+
+fn governance_anchor(governance: &TeamMemoryGovernance) -> chrono::DateTime<chrono::Utc> {
+    governance.merged_at.unwrap_or(governance.proposed_at)
+}
+
+fn stale_governance(memory: &Memory) -> bool {
+    memory
+        .team_governance
+        .as_ref()
+        .is_some_and(|governance| memory.updated_at > governance_anchor(governance))
+}
+
+fn normalize_team_governance_identities(values: &[String]) -> Vec<String> {
+    let mut normalized = std::collections::BTreeSet::new();
+    for value in values {
+        let trimmed = value.trim();
+        if !trimmed.is_empty() {
+            normalized.insert(trimmed.to_string());
+        }
+    }
+    normalized.into_iter().collect()
+}
+
+fn governance_owner_can_merge(governance: &TeamMemoryGovernance, claims: &Claims) -> bool {
+    governance.owner_can_merge(&claims.sub) || governance.owner_can_merge(&claims.namespace)
+}
+
+fn require_governance_merge_owner(
+    governance: Option<&TeamMemoryGovernance>,
+    claims: &Claims,
+) -> Result<(), AppError> {
+    if let Some(governance) = governance
+        && governance.review_required
+        && !governance_owner_can_merge(governance, claims)
+    {
+        return Err(AppError::Forbidden(
+            "team governance owner approval required for merge",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) fn build_review_queue_summary(memories: &[Memory]) -> ReviewQueueSummary {
@@ -1408,6 +1518,7 @@ pub(crate) fn build_review_queue(
     let summary = build_review_queue_summary(memories);
     let lookup: std::collections::HashMap<uuid::Uuid, &Memory> =
         memories.iter().map(|memory| (memory.id, memory)).collect();
+    let duplicate_counts = duplicate_content_counts(memories);
 
     let mut items: Vec<(u8, chrono::DateTime<chrono::Utc>, ReviewQueueItem)> = memories
         .iter()
@@ -1449,9 +1560,12 @@ pub(crate) fn build_review_queue(
                     agent: memory.agent.clone(),
                     session: memory.session.clone(),
                     contradiction_count: memory.contradicts_with.len(),
+                    duplicate_content_count: duplicate_counts.get(&memory.id).copied().unwrap_or(0),
                     review_event_count: memory.review_events.len(),
                     last_review_at: last_review.map(|event| event.at),
                     last_review_action: last_review.map(|event| event.action),
+                    stale_governance: stale_governance(memory),
+                    team_governance: memory.team_governance.clone(),
                     replacement_options,
                 },
             ))
@@ -1466,6 +1580,149 @@ pub(crate) fn build_review_queue(
         .collect();
 
     ReviewQueueView { summary, items }
+}
+
+pub(crate) fn build_team_governance_view(memories: &[Memory], limit: usize) -> TeamGovernanceView {
+    #[derive(Default)]
+    struct BranchAccumulator {
+        branch: String,
+        scope: String,
+        review_required: bool,
+        owners: std::collections::BTreeSet<String>,
+        watchlist: std::collections::BTreeSet<String>,
+        memory_count: usize,
+        pending_review: usize,
+        duplicate_memories: usize,
+        stale_policies: usize,
+        conflicting_decisions: usize,
+        last_proposed_at: Option<chrono::DateTime<chrono::Utc>>,
+        last_merged_at: Option<chrono::DateTime<chrono::Utc>>,
+        previews: Vec<(chrono::DateTime<chrono::Utc>, String)>,
+    }
+
+    let duplicate_counts = duplicate_content_counts(memories);
+    let mut branches: std::collections::BTreeMap<(String, String), BranchAccumulator> =
+        std::collections::BTreeMap::new();
+    let mut review_required_scopes = std::collections::BTreeSet::new();
+    let mut owners = std::collections::BTreeSet::new();
+    let mut watchlist_entries = 0usize;
+    let mut pending_review = 0usize;
+    let mut duplicate_memories = 0usize;
+    let mut stale_policies = 0usize;
+    let mut conflicting_decisions = 0usize;
+    let mut governed_memories = 0usize;
+
+    for memory in memories.iter().filter(|memory| !memory.archived) {
+        let Some(governance) = memory.team_governance.as_ref() else {
+            continue;
+        };
+        governed_memories += 1;
+
+        let is_pending_review = memory.review_queue_kind().is_some();
+        let duplicate_count = duplicate_counts.get(&memory.id).copied().unwrap_or(0);
+        let is_stale = stale_governance(memory);
+        let has_conflict = !memory.contradicts_with.is_empty();
+
+        pending_review += usize::from(is_pending_review);
+        duplicate_memories += usize::from(duplicate_count > 0);
+        stale_policies += usize::from(is_stale);
+        conflicting_decisions += usize::from(has_conflict);
+        watchlist_entries += governance.watchlist.len();
+        for owner in &governance.owners {
+            owners.insert(owner.clone());
+        }
+        if governance.review_required {
+            review_required_scopes.insert(governance.scope.clone());
+        }
+
+        let entry = branches
+            .entry((governance.branch.clone(), governance.scope.clone()))
+            .or_insert_with(|| BranchAccumulator {
+                branch: governance.branch.clone(),
+                scope: governance.scope.clone(),
+                review_required: governance.review_required,
+                ..BranchAccumulator::default()
+            });
+        entry.review_required |= governance.review_required;
+        entry.memory_count += 1;
+        entry.pending_review += usize::from(is_pending_review);
+        entry.duplicate_memories += usize::from(duplicate_count > 0);
+        entry.stale_policies += usize::from(is_stale);
+        entry.conflicting_decisions += usize::from(has_conflict);
+        entry.last_proposed_at = Some(
+            entry
+                .last_proposed_at
+                .map(|at| at.max(governance.proposed_at))
+                .unwrap_or(governance.proposed_at),
+        );
+        entry.last_merged_at = match (entry.last_merged_at, governance.merged_at) {
+            (Some(current), Some(next)) => Some(current.max(next)),
+            (None, Some(next)) => Some(next),
+            (current, None) => current,
+        };
+        entry
+            .owners
+            .extend(normalize_team_governance_identities(&governance.owners));
+        entry
+            .watchlist
+            .extend(normalize_team_governance_identities(&governance.watchlist));
+        entry
+            .previews
+            .push((memory.updated_at, preview_text(&memory.content, 80)));
+    }
+
+    let mut branches: Vec<_> = branches
+        .into_values()
+        .map(|mut branch| {
+            branch.previews.sort_by(|a, b| b.0.cmp(&a.0));
+            TeamGovernanceBranchView {
+                branch: branch.branch,
+                scope: branch.scope,
+                review_required: branch.review_required,
+                owners: branch.owners.into_iter().collect(),
+                watchlist: branch.watchlist.into_iter().collect(),
+                memory_count: branch.memory_count,
+                pending_review: branch.pending_review,
+                duplicate_memories: branch.duplicate_memories,
+                stale_policies: branch.stale_policies,
+                conflicting_decisions: branch.conflicting_decisions,
+                last_proposed_at: branch.last_proposed_at.unwrap_or_else(chrono::Utc::now),
+                last_merged_at: branch.last_merged_at,
+                previews: branch
+                    .previews
+                    .into_iter()
+                    .take(3)
+                    .map(|(_, preview)| preview)
+                    .collect(),
+            }
+        })
+        .collect();
+
+    branches.sort_by(|left, right| {
+        right
+            .pending_review
+            .cmp(&left.pending_review)
+            .then_with(|| right.stale_policies.cmp(&left.stale_policies))
+            .then_with(|| right.last_proposed_at.cmp(&left.last_proposed_at))
+            .then_with(|| left.branch.cmp(&right.branch))
+    });
+    let active_branches = branches.len();
+    branches.truncate(limit.max(1));
+
+    TeamGovernanceView {
+        summary: TeamGovernanceSummary {
+            governed_memories,
+            active_branches,
+            review_required_scopes: review_required_scopes.len(),
+            pending_review,
+            duplicate_memories,
+            stale_policies,
+            conflicting_decisions,
+            watchlist_entries,
+            owner_count: owners.len(),
+        },
+        branches,
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3981,6 +4238,8 @@ async fn inspect_memory(
                 "review_queue_kind": mem.review_queue_kind(),
                 "suggested_review_action": mem.suggested_review_action(),
                 "review_events": mem.review_events,
+                "team_governance": mem.team_governance,
+                "stale_governance": stale_governance(&mem),
             }))
             .into_response())
         }
@@ -4072,6 +4331,7 @@ async fn gdpr_export(
                 "last_verified_at": m.last_verified_at,
                 "superseded_by": m.superseded_by,
                 "derived_from": m.derived_from,
+                "team_governance": m.team_governance,
             })
         })
         .collect();
@@ -5406,6 +5666,37 @@ struct HudParams {
 }
 
 #[derive(Debug, Deserialize)]
+struct TeamGovernanceParams {
+    #[serde(default)]
+    namespace: Option<String>,
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TeamGovernanceProposeRequest {
+    #[serde(default)]
+    namespace: Option<String>,
+    content: String,
+    #[serde(default)]
+    tags: Vec<String>,
+    #[serde(default)]
+    agent: Option<String>,
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    memory_type: MemoryType,
+    branch: String,
+    scope: String,
+    #[serde(default)]
+    review_required: bool,
+    #[serde(default)]
+    owners: Vec<String>,
+    #[serde(default)]
+    watchlist: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
 struct ReviewQueueParams {
     #[serde(default)]
     namespace: Option<String>,
@@ -5494,6 +5785,7 @@ async fn lifecycle_view(
                 "trust_signals": trust.signals,
                 "low_trust": trust.low_trust,
                 "eligible_for_injection": memory.eligible_for_injection(),
+                "team_governance": memory.team_governance,
             })
         })
         .collect();
@@ -5577,6 +5869,165 @@ async fn hud_view(
     }
 }
 
+/// GET /v1/admin/team/governance — team-memory branch/scope governance overview.
+async fn team_governance_view(
+    State(state): State<AppState>,
+    parts: Parts,
+    axum::extract::Query(params): axum::extract::Query<TeamGovernanceParams>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for team governance"));
+    }
+
+    let namespace = enforce_namespace(&claims, params.namespace.as_deref())?;
+    let limit = params.limit.unwrap_or(25).clamp(1, 100);
+    let memories = state.doc_engine.list_all_including_archived(namespace)?;
+    let governance = build_team_governance_view(&memories, limit);
+
+    Ok(Json(json!({
+        "namespace": namespace,
+        "limit": limit,
+        "summary": governance.summary,
+        "branches": governance.branches,
+    }))
+    .into_response())
+}
+
+/// POST /v1/admin/team/governance/propose — stage a governed team memory without dedup rejection.
+async fn team_governance_propose(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TeamGovernanceProposeRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for team governance"));
+    }
+    if let Err(retry_ms) = state.rate_limiter.check(&claims.sub) {
+        return Err(AppError::RateLimited(retry_ms));
+    }
+    if state.indexer_state.lag() > BACKPRESSURE_THRESHOLD {
+        return Err(AppError::RateLimited(1000));
+    }
+
+    let limits = &state.config.limits;
+    validation::validate_content(&req.content, limits)
+        .map_err(|err| AppError::BadRequest(err.to_string()))?;
+    validation::validate_tags(&req.tags, limits)
+        .map_err(|err| AppError::BadRequest(err.to_string()))?;
+    let namespace = enforce_namespace(&claims, req.namespace.as_deref())?.to_string();
+    validation::validate_namespace(&namespace, limits)
+        .map_err(|err| AppError::BadRequest(err.to_string()))?;
+    check_ip_allowlist(&state, &parts, &namespace)?;
+
+    let branch = req.branch.trim();
+    if branch.is_empty() {
+        return Err(AppError::BadRequest(
+            "team governance branch must not be empty".to_string(),
+        ));
+    }
+    let scope = req.scope.trim();
+    if scope.is_empty() {
+        return Err(AppError::BadRequest(
+            "team governance scope must not be empty".to_string(),
+        ));
+    }
+
+    let mut memory = Memory::new(req.content);
+    memory.tags = req.tags;
+    memory.agent = req.agent;
+    memory.session = req.session;
+    memory.namespace = Some(namespace.clone());
+    memory.memory_type = req.memory_type;
+    memory.source_key = Some(claims.sub.clone());
+    memory.status = if req.review_required {
+        MemoryStatus::Candidate
+    } else {
+        MemoryStatus::Active
+    };
+
+    let mut governance = TeamMemoryGovernance {
+        branch: branch.to_string(),
+        scope: scope.to_string(),
+        review_required: req.review_required,
+        owners: normalize_team_governance_identities(&req.owners),
+        watchlist: normalize_team_governance_identities(&req.watchlist),
+        proposed_by: claims.namespace.clone(),
+        proposed_at: chrono::Utc::now(),
+        merged_by: None,
+        merged_at: None,
+    };
+    if governance.owners.is_empty() {
+        governance.owners = vec![claims.namespace.clone()];
+    }
+    if !governance.review_required {
+        governance.record_merge(&claims.namespace);
+    }
+    memory.team_governance = Some(governance.clone());
+
+    let embedding = state.embedding.embed_one(&memory.content).await?;
+    memory.embedding = Some(embedding);
+    let contradiction_updates =
+        apply_contradiction_detection(&state, &namespace, &mut memory, &claims.sub, &[])?;
+    if contradiction_updates > 0 {
+        state.indexer_state.write_seq.fetch_add(
+            contradiction_updates as u64,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        state.indexer_state.wake();
+    }
+
+    if let Some(embedding) = memory.embedding.as_ref() {
+        state.trust_scorer.update_centroid(embedding, &namespace);
+        state
+            .trust_scorer
+            .record_access(memory.id, memory.source_key.as_deref());
+    }
+
+    let duplicate_content_count = state
+        .doc_engine
+        .list_all_including_archived(&namespace)?
+        .into_iter()
+        .filter(|existing| {
+            !existing.archived
+                && existing.id != memory.id
+                && existing.content_hash == memory.content_hash
+                && existing.team_governance.is_some()
+        })
+        .count();
+
+    state
+        .group_committer
+        .store(memory.clone(), claims.sub.clone())
+        .await?;
+    refresh_review_queue_summary(&state, &namespace)?;
+    state.intent_cache.invalidate_namespace(&namespace).await;
+    state
+        .metrics
+        .stores
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    if let Ok(shared_nss) = state.sharing_store.accessible_namespaces(&namespace) {
+        for shared_ns in &shared_nss {
+            state.sharing_store.fire_webhook(shared_ns, memory.id);
+        }
+    }
+
+    Ok(Json(json!({
+        "id": memory.id,
+        "version": memory.version,
+        "namespace": namespace,
+        "status": memory.status,
+        "review_key": encode_review_key(memory.id),
+        "review_queue_kind": memory.review_queue_kind(),
+        "contradiction_count": memory.contradicts_with.len(),
+        "duplicate_content_count": duplicate_content_count,
+        "team_governance": governance,
+    }))
+    .into_response())
+}
+
 /// GET /v1/admin/review-queue — candidate/contested/rejected memories with suggested actions.
 async fn review_queue_view(
     State(state): State<AppState>,
@@ -5653,6 +6104,16 @@ async fn review_queue_action(
     };
     let queue_kind_before = memory.review_queue_kind();
 
+    if matches!(
+        req.action,
+        MemoryFeedbackAction::Confirm | MemoryFeedbackAction::Supersede
+    ) {
+        require_governance_merge_owner(memory.team_governance.as_ref(), &claims)?;
+        if let Some(target) = replacement.as_ref() {
+            require_governance_merge_owner(target.team_governance.as_ref(), &claims)?;
+        }
+    }
+
     apply_feedback_to_memory(
         &mut memory,
         req.action,
@@ -5660,6 +6121,11 @@ async fn review_queue_action(
         &claims.sub,
         "review_inbox",
     );
+    if matches!(req.action, MemoryFeedbackAction::Confirm)
+        && let Some(governance) = memory.team_governance.as_mut()
+    {
+        governance.record_merge(&claims.namespace);
+    }
     state.doc_engine.replace(&memory, &claims.sub)?;
     state.trust_scorer.record_feedback(
         memory.source_key.as_deref(),
@@ -5677,6 +6143,9 @@ async fn review_queue_action(
             &claims.sub,
             "review_inbox_supersede_target",
         );
+        if let Some(governance) = target.team_governance.as_mut() {
+            governance.record_merge(&claims.namespace);
+        }
         state.doc_engine.replace(target, &claims.sub)?;
         state
             .trust_scorer
@@ -5709,12 +6178,14 @@ async fn review_queue_action(
             "supersede_count": memory.supersede_count,
             "review_event_count": memory.review_events.len(),
             "last_review": memory.review_events.last(),
+            "team_governance": memory.team_governance,
         },
         "replacement": replacement.as_ref().map(|target| json!({
             "review_key": encode_review_key(target.id),
             "status": target.status,
             "review_event_count": replacement_review_event_count.unwrap_or(target.review_events.len()),
             "last_review": target.review_events.last(),
+            "team_governance": target.team_governance,
         })),
     }))
     .into_response())

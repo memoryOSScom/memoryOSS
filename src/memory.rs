@@ -281,12 +281,17 @@ pub fn runtime_contract_document() -> RuntimeContractDocument {
                     "Shared runtime state spanning multiple namespaces or operators."
                         .to_string(),
                 current_mapping: vec![
+                    "Memory.team_governance".to_string(),
                     "sharing_store shared namespaces".to_string(),
+                    "/v1/admin/team/governance".to_string(),
+                    "/v1/admin/team/governance/propose".to_string(),
+                    "/v1/admin/review/*".to_string(),
+                    "/v1/history/replay".to_string(),
                     "/v1/admin/sharing/*".to_string(),
                     "/v1/sharing/accessible".to_string(),
                 ],
                 known_gaps: vec![
-                    "No first-class team object with merge policy, ownership, and replay surfaces yet."
+                    "Team governance exists on team-scoped memories, but not yet as a standalone team object separate from Memory rows."
                         .to_string(),
                 ],
             },
@@ -639,6 +644,8 @@ pub struct MemoryPassportEntry {
     pub contradicts_with: Vec<Uuid>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_events: Vec<MemoryReviewEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_governance: Option<TeamMemoryGovernance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -870,6 +877,41 @@ pub struct MemoryReviewEvent {
     pub superseded_by: Option<Uuid>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TeamMemoryGovernance {
+    pub branch: String,
+    pub scope: String,
+    #[serde(default)]
+    pub review_required: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub owners: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub watchlist: Vec<String>,
+    pub proposed_by: String,
+    pub proposed_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_by: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub merged_at: Option<DateTime<Utc>>,
+}
+
+impl TeamMemoryGovernance {
+    pub fn owner_can_merge(&self, actor: &str) -> bool {
+        let actor = actor.trim();
+        !actor.is_empty() && self.owners.iter().any(|owner| owner == actor)
+    }
+
+    pub fn record_merge(&mut self, actor: &str) {
+        let actor = actor.trim();
+        self.merged_by = Some(if actor.is_empty() {
+            "unknown".to_string()
+        } else {
+            actor.to_string()
+        });
+        self.merged_at = Some(Utc::now());
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Memory {
     pub id: Uuid,
@@ -933,6 +975,8 @@ pub struct Memory {
     pub last_outcome_at: Option<DateTime<Utc>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub review_events: Vec<MemoryReviewEvent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_governance: Option<TeamMemoryGovernance>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -976,6 +1020,7 @@ impl Memory {
             last_reused_at: None,
             last_outcome_at: None,
             review_events: Vec::new(),
+            team_governance: None,
         }
     }
 
@@ -1383,6 +1428,7 @@ impl MemoryPassportEntry {
             derived_from: memory.derived_from.clone(),
             contradicts_with: memory.contradicts_with.clone(),
             review_events: memory.review_events.clone(),
+            team_governance: memory.team_governance.clone(),
         }
     }
 
@@ -1422,6 +1468,7 @@ impl MemoryPassportEntry {
             last_reused_at: None,
             last_outcome_at: None,
             review_events: self.review_events.clone(),
+            team_governance: self.team_governance.clone(),
         }
     }
 }
