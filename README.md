@@ -326,6 +326,12 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/cache/flush` | POST | Flush recall cache |
 | `/v1/admin/cache/stats` | GET | Cache statistics |
 | `/v1/admin/trust-stats` | GET | Memory trust scores |
+| `/v1/admin/trust/fabric` | GET | Portable trust identities, revocations, and replacement links |
+| `/v1/admin/trust/register` | POST | Register an author, device, or sync-peer identity for artifact signing |
+| `/v1/admin/trust/revoke` | POST | Revoke a portable trust identity and attach an optional replacement |
+| `/v1/admin/trust/restore` | POST | Re-trust a previously revoked identity without silent data loss |
+| `/v1/admin/trust/sign` | POST | Sign a portable bundle, passport, history artifact, or sync-peer descriptor |
+| `/v1/admin/trust/verify` | POST | Verify a signed portable artifact against the current trust fabric |
 | `/v1/admin/index-health` | GET | Index status |
 | `/v1/admin/idf-stats` | GET | IDF index statistics |
 | `/v1/admin/space-stats` | GET | Space index statistics |
@@ -446,7 +452,8 @@ The envelope adds:
 - a top-level `bundle_version`
 - a portable `memoryoss://bundle/...` URI and attachment-style filename
 - separate outer-envelope integrity on top of the nested passport/history integrity line
-- a signable signature stub so future signed writers can keep the same outer wire shape
+- a runtime signature from `device:local-runtime` when `auth.audit_hmac_secret` is stable
+- an embedded signature chain that can later be checked against revocations or replacement identities
 
 Reference commands:
 
@@ -460,6 +467,8 @@ memoryoss reader diff old.membundle.json new.membundle.json --format html
 ```
 
 `memoryoss reader` is the offline read-only path on top of those artifacts. It can open an exported envelope or a raw published passport/history artifact, print summary/provenance/signature data, and diff two artifacts without needing a running daemon or even a valid local config file.
+
+When a valid `--config` is available, the reader also verifies signed bundle envelopes against the local trust fabric and shows `trusted`, `revoked`, or `invalid_signature` plus any replacement identity. The admin trust endpoints provide the write path around that same fabric so passports and sync-peer descriptors can use sidecar signatures without mutating the raw artifact.
 
 ### Cross-App Adapter Bridges
 
@@ -545,7 +554,7 @@ memoryoss connector ingest --kind terminal --namespace test --summary "Terminal 
 | `/v1/connectors/ingest` | POST | Preview or store an opt-in ambient connector signal as a candidate memory |
 | `/v1/bundles/export` | GET | Export a versioned memory bundle envelope around passport or history artifacts |
 | `/v1/bundles/preview` | POST | Preview bundle metadata, URI, and sampled contents without importing |
-| `/v1/bundles/validate` | POST | Validate bundle envelope integrity plus nested artifact integrity |
+| `/v1/bundles/validate` | POST | Validate bundle envelope integrity, nested artifact integrity, and current trust state |
 | `/v1/bundles/diff` | POST | Diff two bundle envelopes without importing either one |
 | `/v1/passport/export` | GET | Selective portable memory passport bundle export |
 | `/v1/passport/import` | POST | Dry-run or apply a portable memory passport bundle |
@@ -680,11 +689,11 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss doctor` | Diagnose config, auth, database, and index issues (non-zero on error) |
 | `memoryoss recent` | Show recent injections, extractions, feedbacks, and consolidations |
 | `memoryoss hud --namespace test --limit 5` | Terminal HUD for quick search/why/recent/review/import/export loops |
-| `memoryoss bundle export --kind passport --namespace test --scope project -o project.membundle.json` | Export a portable memory bundle envelope |
+| `memoryoss bundle export --kind passport --namespace test --scope project -o project.membundle.json` | Export a portable memory bundle envelope and sign it with the local runtime identity |
 | `memoryoss bundle preview project.membundle.json` | Preview bundle metadata, URI, and sampled contents without import |
-| `memoryoss bundle validate project.membundle.json` | Validate envelope and nested artifact integrity |
+| `memoryoss bundle validate project.membundle.json` | Validate envelope, nested artifact integrity, and trust state when config is available |
 | `memoryoss bundle diff old.membundle.json new.membundle.json` | Diff two bundle envelopes offline |
-| `memoryoss reader open project.membundle.json` | Open a bundle or raw published artifact in the offline universal reader |
+| `memoryoss reader open project.membundle.json` | Open a bundle or raw published artifact in the offline universal reader, with trust verification when config is present |
 | `memoryoss reader diff old.membundle.json new.membundle.json --format html` | Diff two offline artifacts in text, JSON, or HTML without a running runtime |
 | `memoryoss review queue --namespace test` | List the current review inbox without raw UUIDs |
 | `memoryoss review confirm --namespace test --item 1` | Confirm a queue item by inbox position |

@@ -15,13 +15,403 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::path::{Path, PathBuf};
 use std::sync::RwLock;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::memory::{Memory, MemoryStatus, ScoreExplainEntry, ScoredMemory};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 pub const POLICY_CONFIRMATION_HEADER: &str = "x-memory-policy-confirm";
+
+const PORTABLE_TRUST_STATE_FILE: &str = "trust-fabric.json";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortableIdentityKind {
+    Author,
+    Device,
+    SyncPeer,
+}
+
+impl std::fmt::Display for PortableIdentityKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Author => write!(f, "author"),
+            Self::Device => write!(f, "device"),
+            Self::SyncPeer => write!(f, "sync_peer"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableIdentity {
+    pub id: String,
+    pub kind: PortableIdentityKind,
+    pub label: String,
+    pub registered_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rotated_to: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableRevocationRecord {
+    pub id: String,
+    pub kind: PortableIdentityKind,
+    pub reason: String,
+    pub revoked_at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_identity: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableSignatureChainLink {
+    pub identity: String,
+    pub kind: PortableIdentityKind,
+    pub action: String,
+    pub at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableArtifactSignature {
+    pub scheme: String,
+    pub identity: String,
+    pub kind: PortableIdentityKind,
+    pub signed_at: DateTime<Utc>,
+    pub value: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub chain: Vec<PortableSignatureChainLink>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortableTrustStatus {
+    Trusted,
+    Unsigned,
+    InvalidSignature,
+    Revoked,
+    UnknownIdentity,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableTrustDecision {
+    pub status: PortableTrustStatus,
+    pub verified: bool,
+    pub reason: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replacement_identity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signature: Option<PortableArtifactSignature>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SyncPeerDescriptor {
+    pub peer_id: String,
+    pub namespace: String,
+    pub endpoint: String,
+    pub device_label: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PortableTrustState {
+    #[serde(default)]
+    pub identities: Vec<PortableIdentity>,
+    #[serde(default)]
+    pub revocations: Vec<PortableRevocationRecord>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PortableTrustSnapshot {
+    pub identities: Vec<PortableIdentity>,
+    pub revocations: Vec<PortableRevocationRecord>,
+}
+
+pub struct PortableTrustRegistry {
+    path: PathBuf,
+    state: RwLock<PortableTrustState>,
+}
+
+impl PortableTrustRegistry {
+    pub fn open(data_dir: &Path) -> anyhow::Result<Self> {
+        std::fs::create_dir_all(data_dir)?;
+        let path = data_dir.join(PORTABLE_TRUST_STATE_FILE);
+        let state = if path.exists() {
+            serde_json::from_slice::<PortableTrustState>(&std::fs::read(&path)?)?
+        } else {
+            PortableTrustState::default()
+        };
+        let registry = Self {
+            path,
+            state: RwLock::new(state),
+        };
+        registry.ensure_identity(
+            "device:local-runtime",
+            PortableIdentityKind::Device,
+            "Local runtime",
+        )?;
+        Ok(registry)
+    }
+
+    fn save_state(&self, state: &PortableTrustState) -> anyhow::Result<()> {
+        std::fs::write(&self.path, serde_json::to_vec_pretty(state)?)?;
+        Ok(())
+    }
+
+    pub fn ensure_identity(
+        &self,
+        id: &str,
+        kind: PortableIdentityKind,
+        label: &str,
+    ) -> anyhow::Result<PortableIdentity> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+        if let Some(existing) = state.identities.iter().find(|identity| identity.id == id) {
+            return Ok(existing.clone());
+        }
+        let identity = PortableIdentity {
+            id: id.to_string(),
+            kind,
+            label: label.to_string(),
+            registered_at: Utc::now(),
+            rotated_to: None,
+        };
+        state.identities.push(identity.clone());
+        state
+            .identities
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        self.save_state(&state)?;
+        Ok(identity)
+    }
+
+    pub fn revoke_identity(
+        &self,
+        id: &str,
+        reason: &str,
+        replacement_identity: Option<&str>,
+    ) -> anyhow::Result<PortableRevocationRecord> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+        let identity = state
+            .identities
+            .iter_mut()
+            .find(|identity| identity.id == id)
+            .ok_or_else(|| anyhow::anyhow!("unknown portable trust identity: {id}"))?;
+        identity.rotated_to = replacement_identity.map(|value| value.to_string());
+        let record = PortableRevocationRecord {
+            id: identity.id.clone(),
+            kind: identity.kind,
+            reason: reason.trim().to_string(),
+            revoked_at: Utc::now(),
+            replacement_identity: replacement_identity.map(|value| value.to_string()),
+        };
+        state.revocations.retain(|existing| existing.id != id);
+        state.revocations.push(record.clone());
+        state
+            .revocations
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        self.save_state(&state)?;
+        Ok(record)
+    }
+
+    pub fn restore_identity(&self, id: &str) -> anyhow::Result<Option<PortableIdentity>> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+        let before = state.revocations.len();
+        state.revocations.retain(|record| record.id != id);
+        let restored = state
+            .identities
+            .iter_mut()
+            .find(|identity| identity.id == id)
+            .map(|identity| {
+                identity.rotated_to = None;
+                identity.clone()
+            });
+        if state.revocations.len() != before || restored.is_some() {
+            self.save_state(&state)?;
+        }
+        Ok(restored)
+    }
+
+    pub fn snapshot(&self) -> PortableTrustSnapshot {
+        self.state
+            .read()
+            .map(|state| PortableTrustSnapshot {
+                identities: state.identities.clone(),
+                revocations: state.revocations.clone(),
+            })
+            .unwrap_or(PortableTrustSnapshot {
+                identities: Vec::new(),
+                revocations: Vec::new(),
+            })
+    }
+
+    pub fn identity(&self, id: &str) -> Option<PortableIdentity> {
+        self.state.read().ok().and_then(|state| {
+            state
+                .identities
+                .iter()
+                .find(|identity| identity.id == id)
+                .cloned()
+        })
+    }
+
+    pub fn revocation(&self, id: &str) -> Option<PortableRevocationRecord> {
+        self.state.read().ok().and_then(|state| {
+            state
+                .revocations
+                .iter()
+                .find(|record| record.id == id)
+                .cloned()
+        })
+    }
+}
+
+fn portable_signature_message(subject: &str, signature: &PortableArtifactSignature) -> String {
+    format!(
+        "{}\n{}\n{}\n{}",
+        signature.identity,
+        signature.kind,
+        signature.signed_at.to_rfc3339(),
+        subject
+    )
+}
+
+pub fn sign_portable_subject_at(
+    secret: &[u8],
+    identity: &PortableIdentity,
+    subject: &str,
+    signed_at: DateTime<Utc>,
+    chain: Vec<PortableSignatureChainLink>,
+) -> anyhow::Result<PortableArtifactSignature> {
+    use hmac::{Hmac, Mac};
+    type HmacSha256 = Hmac<sha2::Sha256>;
+
+    let mut signature = PortableArtifactSignature {
+        scheme: "memoryoss.hmac-sha256.v1".to_string(),
+        identity: identity.id.clone(),
+        kind: identity.kind,
+        signed_at,
+        value: String::new(),
+        chain,
+    };
+    let mut mac = HmacSha256::new_from_slice(secret)
+        .map_err(|err| anyhow::anyhow!("trust hmac init failed: {err}"))?;
+    mac.update(portable_signature_message(subject, &signature).as_bytes());
+    signature.value = hex::encode(mac.finalize().into_bytes());
+    Ok(signature)
+}
+
+pub fn sign_portable_subject(
+    secret: &[u8],
+    identity: &PortableIdentity,
+    subject: &str,
+) -> anyhow::Result<PortableArtifactSignature> {
+    let signed_at = Utc::now();
+    sign_portable_subject_at(
+        secret,
+        identity,
+        subject,
+        signed_at,
+        vec![PortableSignatureChainLink {
+            identity: identity.id.clone(),
+            kind: identity.kind,
+            action: "sign".to_string(),
+            at: signed_at,
+        }],
+    )
+}
+
+pub fn verify_portable_subject(
+    secret: &[u8],
+    registry: &PortableTrustRegistry,
+    subject: &str,
+    signature: Option<&PortableArtifactSignature>,
+) -> PortableTrustDecision {
+    use hmac::{Hmac, Mac};
+    type HmacSha256 = Hmac<sha2::Sha256>;
+
+    let Some(signature) = signature.cloned() else {
+        return PortableTrustDecision {
+            status: PortableTrustStatus::Unsigned,
+            verified: false,
+            reason: "artifact is unsigned".to_string(),
+            replacement_identity: None,
+            signature: None,
+        };
+    };
+
+    let Some(identity) = registry.identity(&signature.identity) else {
+        return PortableTrustDecision {
+            status: PortableTrustStatus::UnknownIdentity,
+            verified: false,
+            reason: format!("unknown trust identity: {}", signature.identity),
+            replacement_identity: None,
+            signature: Some(signature),
+        };
+    };
+
+    if identity.kind != signature.kind {
+        return PortableTrustDecision {
+            status: PortableTrustStatus::InvalidSignature,
+            verified: false,
+            reason: format!(
+                "signature kind mismatch for {}: expected {} got {}",
+                signature.identity, identity.kind, signature.kind
+            ),
+            replacement_identity: None,
+            signature: Some(signature),
+        };
+    }
+
+    if let Some(revocation) = registry.revocation(&signature.identity) {
+        return PortableTrustDecision {
+            status: PortableTrustStatus::Revoked,
+            verified: false,
+            reason: revocation.reason,
+            replacement_identity: revocation.replacement_identity,
+            signature: Some(signature),
+        };
+    }
+
+    let mut mac = match HmacSha256::new_from_slice(secret) {
+        Ok(mac) => mac,
+        Err(err) => {
+            return PortableTrustDecision {
+                status: PortableTrustStatus::InvalidSignature,
+                verified: false,
+                reason: format!("trust hmac init failed: {err}"),
+                replacement_identity: None,
+                signature: Some(signature),
+            };
+        }
+    };
+    mac.update(portable_signature_message(subject, &signature).as_bytes());
+    let expected = hex::encode(mac.finalize().into_bytes());
+    if expected != signature.value {
+        return PortableTrustDecision {
+            status: PortableTrustStatus::InvalidSignature,
+            verified: false,
+            reason: format!("signature mismatch for {}", signature.identity),
+            replacement_identity: None,
+            signature: Some(signature),
+        };
+    }
+
+    PortableTrustDecision {
+        status: PortableTrustStatus::Trusted,
+        verified: true,
+        reason: format!("trusted {} identity {}", identity.kind, identity.id),
+        replacement_identity: None,
+        signature: Some(signature),
+    }
+}
 
 // ── Bayesian Trust Scorer ──────────────────────────────────────────────
 

@@ -1,6 +1,6 @@
 {
   "runner": "tests/run_universal_memory_loop.py",
-  "generated_at": "2026-03-14T18:15:06Z",
+  "generated_at": "2026-03-14T18:58:24Z",
   "duration_seconds": 6,
   "summary": {
     "demo_clients": [
@@ -48,7 +48,7 @@
     }
   ],
   "details": {
-    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-xmir4i56/portable-loop-passport.json (scope=all memories=5)",
+    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-cteut1nr/portable-loop-passport.json (scope=all memories=5)",
     "portability_cases": [
       {
         "label": "review style",
@@ -108,12 +108,12 @@
       "conflict_node_present": true
     },
     "source_history": {
-      "root_id": "019ced8f-1d6f-7d72-9d25-336c5f7b2f91",
+      "root_id": "019cedb6-c11b-77c0-a0a5-7d24f08035f6",
       "node_count": 3,
       "timeline_count": 7
     },
     "target_history": {
-      "root_id": "019ced8f-1d6f-7d72-9d25-336c5f7b2f91",
+      "root_id": "019cedb6-c11b-77c0-a0a5-7d24f08035f6",
       "node_count": 3,
       "timeline_count": 7
     }

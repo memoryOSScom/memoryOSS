@@ -117,7 +117,7 @@ pub fn build_shared_state(
     indexer_state: Arc<IndexerState>,
     idf_index: Arc<IdfIndex>,
     space_index: Arc<SpaceIndex>,
-) -> Arc<SharedState> {
+) -> anyhow::Result<Arc<SharedState>> {
     let rate_limiter = rate_limit::RateLimiter::new(config.limits.rate_limit_per_sec);
     let group_committer = GroupCommitter::spawn(
         doc_engine.clone(),
@@ -128,6 +128,9 @@ pub fn build_shared_state(
 
     let trust_scorer = Arc::new(TrustScorer::new(config.trust.threshold));
     trust_scorer.load_from_redb(doc_engine.db());
+    let portable_trust = Arc::new(crate::security::trust::PortableTrustRegistry::open(
+        &config.storage.data_dir,
+    )?);
     let sharing_store = Arc::new(SharingStore::new(config.sharing.clone()));
     let intent_cache = Arc::new(IntentCache::new(
         config.limits.intent_cache_ttl_secs,
@@ -156,7 +159,7 @@ pub fn build_shared_state(
         }
     }
 
-    Arc::new(SharedState {
+    Ok(Arc::new(SharedState {
         config: config.clone(),
         config_path,
         doc_engine,
@@ -169,13 +172,14 @@ pub fn build_shared_state(
         idf_index,
         space_index,
         trust_scorer,
+        portable_trust,
         sharing_store,
         intent_cache,
         prefetcher: Arc::new(crate::prefetch::SessionPrefetcher::new()),
         metrics: Arc::new(routes::MetricsCounters::new()),
         review_queue_summaries: std::sync::RwLock::new(review_queue_summaries),
         last_messages_hash: std::sync::RwLock::new(std::collections::HashMap::new()),
-    })
+    }))
 }
 
 pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Result<()> {
@@ -233,7 +237,7 @@ pub async fn run(config: Config, config_path: std::path::PathBuf) -> anyhow::Res
         indexer_state,
         idf_index,
         space_index,
-    );
+    )?;
     let trust_for_shutdown = state.trust_scorer.clone();
 
     if config.decay.enabled {
@@ -499,7 +503,7 @@ pub async fn run_dev(config: Config, config_path: std::path::PathBuf) -> anyhow:
         indexer_state,
         idf_index,
         space_index,
-    );
+    )?;
     let trust_for_shutdown = state.trust_scorer.clone();
 
     let bind_addr = config.bind_addr();

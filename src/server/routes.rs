@@ -43,7 +43,11 @@ use crate::merger::IdfIndex;
 use crate::prefetch::SessionPrefetcher;
 use crate::security::auth::{Claims, create_jwt, extract_bearer_token, find_api_key, validate_jwt};
 use crate::security::rbac;
-use crate::security::trust::TrustScorer;
+use crate::security::trust::{
+    PortableArtifactSignature, PortableIdentityKind, PortableSignatureChainLink,
+    PortableTrustDecision, PortableTrustRegistry, SyncPeerDescriptor, TrustScorer,
+    sign_portable_subject, sign_portable_subject_at, verify_portable_subject,
+};
 use crate::server::middleware::apply_security_headers;
 use crate::server::rate_limit::RateLimiter;
 use crate::sharing::SharingStore;
@@ -106,6 +110,14 @@ pub(crate) struct MemoryBundleSignature {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) signer: Option<String>,
     pub(crate) signable: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) identity_kind: Option<PortableIdentityKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) signed_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) value: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) chain: Vec<PortableSignatureChainLink>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -151,6 +163,8 @@ pub(crate) struct MemoryBundleValidation {
     pub(crate) preview: MemoryBundlePreview,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) errors: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) trust: Option<PortableTrustDecision>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -465,6 +479,7 @@ pub struct SharedState {
     pub idf_index: Arc<IdfIndex>,
     pub space_index: Arc<SpaceIndex>,
     pub trust_scorer: Arc<TrustScorer>,
+    pub portable_trust: Arc<PortableTrustRegistry>,
     pub sharing_store: Arc<SharingStore>,
     pub intent_cache: Arc<IntentCache>,
     pub prefetcher: Arc<SessionPrefetcher>,
@@ -945,6 +960,12 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/admin/keys/{id}", delete(revoke_key))
         .route("/v1/admin/keys", get(list_keys))
         .route("/v1/admin/trust-stats", get(trust_stats))
+        .route("/v1/admin/trust/fabric", get(trust_fabric_view))
+        .route("/v1/admin/trust/register", post(trust_register))
+        .route("/v1/admin/trust/revoke", post(trust_revoke))
+        .route("/v1/admin/trust/restore", post(trust_restore))
+        .route("/v1/admin/trust/sign", post(trust_sign))
+        .route("/v1/admin/trust/verify", post(trust_verify))
         .route("/v1/admin/lifecycle", get(lifecycle_view))
         .route("/v1/admin/hud", get(hud_view))
         .route("/v1/admin/recent", get(recent_activity_view))
@@ -2203,6 +2224,16 @@ fn build_memory_bundle_reference(
     }
 }
 
+fn memory_bundle_signature_hash_view(signature: &MemoryBundleSignature) -> serde_json::Value {
+    json!({
+        "scheme": signature.scheme,
+        "signer": signature.signer,
+        "signable": signature.signable,
+        "identity_kind": signature.identity_kind,
+        "signed_at": signature.signed_at,
+    })
+}
+
 fn memory_bundle_payload_sha256(bundle: &MemoryBundleEnvelope) -> String {
     use sha2::Digest as _;
 
@@ -2215,11 +2246,84 @@ fn memory_bundle_payload_sha256(bundle: &MemoryBundleEnvelope) -> String {
         "runtime_contract_id": bundle.runtime_contract_id,
         "exported_at": bundle.exported_at,
         "reference": bundle.reference,
-        "signature": bundle.signature,
+        "signature": memory_bundle_signature_hash_view(&bundle.signature),
         "payload": bundle.payload,
     });
     let bytes = serde_json::to_vec(&payload).expect("memory bundle payload should serialize");
     hex::encode(sha2::Sha256::digest(bytes))
+}
+
+pub(crate) fn memory_bundle_portable_signature(
+    bundle: &MemoryBundleEnvelope,
+) -> Option<PortableArtifactSignature> {
+    Some(PortableArtifactSignature {
+        scheme: bundle.signature.scheme.clone(),
+        identity: bundle.signature.signer.clone()?,
+        kind: bundle.signature.identity_kind?,
+        signed_at: bundle.signature.signed_at?,
+        value: bundle.signature.value.clone()?,
+        chain: bundle.signature.chain.clone(),
+    })
+}
+
+pub(crate) fn apply_portable_signature_to_memory_bundle(
+    bundle: &mut MemoryBundleEnvelope,
+    signature: &PortableArtifactSignature,
+) {
+    bundle.signature.scheme = signature.scheme.clone();
+    bundle.signature.signer = Some(signature.identity.clone());
+    bundle.signature.signable = true;
+    bundle.signature.identity_kind = Some(signature.kind);
+    bundle.signature.signed_at = Some(signature.signed_at);
+    bundle.signature.value = Some(signature.value.clone());
+    bundle.signature.chain = signature.chain.clone();
+}
+
+pub(crate) fn sign_memory_bundle(
+    bundle: &mut MemoryBundleEnvelope,
+    registry: &PortableTrustRegistry,
+    secret: &[u8],
+    identity_id: &str,
+) -> anyhow::Result<()> {
+    let identity = registry
+        .identity(identity_id)
+        .ok_or_else(|| anyhow::anyhow!("unknown trust identity: {identity_id}"))?;
+    if registry.revocation(identity_id).is_some() {
+        anyhow::bail!("trust identity is revoked: {identity_id}");
+    }
+
+    let signed_at = chrono::Utc::now();
+    let mut chain = bundle.signature.chain.clone();
+    chain.push(PortableSignatureChainLink {
+        identity: identity.id.clone(),
+        kind: identity.kind,
+        action: "sign".to_string(),
+        at: signed_at,
+    });
+
+    bundle.signature.scheme = "memoryoss.hmac-sha256.v1".to_string();
+    bundle.signature.signer = Some(identity.id.clone());
+    bundle.signature.signable = true;
+    bundle.signature.identity_kind = Some(identity.kind);
+    bundle.signature.signed_at = Some(signed_at);
+    bundle.signature.value = None;
+    bundle.signature.chain = chain.clone();
+
+    let subject = memory_bundle_payload_sha256(bundle);
+    let signature = sign_portable_subject_at(secret, &identity, &subject, signed_at, chain)?;
+    apply_portable_signature_to_memory_bundle(bundle, &signature);
+    bundle.integrity.payload_sha256 = memory_bundle_payload_sha256(bundle);
+    Ok(())
+}
+
+pub(crate) fn verify_memory_bundle_signature(
+    bundle: &MemoryBundleEnvelope,
+    registry: &PortableTrustRegistry,
+    secret: &[u8],
+) -> PortableTrustDecision {
+    let subject = memory_bundle_payload_sha256(bundle);
+    let signature = memory_bundle_portable_signature(bundle);
+    verify_portable_subject(secret, registry, &subject, signature.as_ref())
 }
 
 pub(crate) fn build_memory_bundle_from_passport(
@@ -2250,6 +2354,10 @@ pub(crate) fn build_memory_bundle_from_passport(
             scheme: "unsigned".to_string(),
             signer: None,
             signable: true,
+            identity_kind: None,
+            signed_at: None,
+            value: None,
+            chain: Vec::new(),
         },
         payload: serde_json::to_value(bundle).expect("passport bundle should serialize"),
     };
@@ -2284,11 +2392,69 @@ pub(crate) fn build_memory_bundle_from_history(
             scheme: "unsigned".to_string(),
             signer: None,
             signable: true,
+            identity_kind: None,
+            signed_at: None,
+            value: None,
+            chain: Vec::new(),
         },
         payload: serde_json::to_value(bundle).expect("history bundle should serialize"),
     };
     envelope.integrity.payload_sha256 = memory_bundle_payload_sha256(&envelope);
     envelope
+}
+
+fn stable_portable_subject<T: serde::Serialize>(
+    kind: PortableTrustSubjectKind,
+    value: &T,
+) -> Result<String, String> {
+    use sha2::Digest as _;
+
+    let bytes = serde_json::to_vec(value).map_err(|err| err.to_string())?;
+    Ok(format!(
+        "{kind}:{}",
+        hex::encode(sha2::Sha256::digest(bytes))
+    ))
+}
+
+fn canonical_portable_subject(
+    kind: PortableTrustSubjectKind,
+    artifact: &serde_json::Value,
+) -> Result<String, String> {
+    match kind {
+        PortableTrustSubjectKind::Bundle => {
+            let bundle: MemoryBundleEnvelope = serde_json::from_value(artifact.clone())
+                .map_err(|err| format!("invalid bundle artifact: {err}"))?;
+            let validation = validate_memory_bundle(&bundle);
+            if !validation.valid {
+                return Err(format!(
+                    "invalid bundle artifact: {}",
+                    validation.errors.join("; ")
+                ));
+            }
+            Ok(format!("bundle:{}", memory_bundle_payload_sha256(&bundle)))
+        }
+        PortableTrustSubjectKind::Passport => {
+            let passport: MemoryPassportBundle = serde_json::from_value(artifact.clone())
+                .map_err(|err| format!("invalid passport artifact: {err}"))?;
+            if !verify_memory_passport_bundle(&passport) {
+                return Err("invalid passport artifact integrity".to_string());
+            }
+            stable_portable_subject(kind, &passport)
+        }
+        PortableTrustSubjectKind::History => {
+            let history: MemoryHistoryBundle = serde_json::from_value(artifact.clone())
+                .map_err(|err| format!("invalid history artifact: {err}"))?;
+            if !verify_memory_history_bundle(&history) {
+                return Err("invalid history artifact integrity".to_string());
+            }
+            stable_portable_subject(kind, &history)
+        }
+        PortableTrustSubjectKind::SyncPeer => {
+            let descriptor: SyncPeerDescriptor = serde_json::from_value(artifact.clone())
+                .map_err(|err| format!("invalid sync peer descriptor: {err}"))?;
+            stable_portable_subject(kind, &descriptor)
+        }
+    }
 }
 
 fn invalid_memory_bundle_preview(bundle: &MemoryBundleEnvelope) -> MemoryBundlePreview {
@@ -2424,6 +2590,7 @@ pub(crate) fn validate_memory_bundle(bundle: &MemoryBundleEnvelope) -> MemoryBun
         valid: errors.is_empty(),
         preview,
         errors,
+        trust: None,
     }
 }
 
@@ -4413,6 +4580,75 @@ struct BundleDiffRequest {
     right: MemoryBundleEnvelope,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum PortableTrustSubjectKind {
+    Bundle,
+    Passport,
+    History,
+    SyncPeer,
+}
+
+impl std::fmt::Display for PortableTrustSubjectKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Bundle => write!(f, "bundle"),
+            Self::Passport => write!(f, "passport"),
+            Self::History => write!(f, "history"),
+            Self::SyncPeer => write!(f, "sync_peer"),
+        }
+    }
+}
+
+impl std::str::FromStr for PortableTrustSubjectKind {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "bundle" => Ok(Self::Bundle),
+            "passport" => Ok(Self::Passport),
+            "history" => Ok(Self::History),
+            "sync_peer" => Ok(Self::SyncPeer),
+            other => Err(format!("unsupported trust subject kind: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustRegisterRequest {
+    id: String,
+    kind: PortableIdentityKind,
+    label: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustRevokeRequest {
+    id: String,
+    reason: String,
+    #[serde(default)]
+    replacement_identity: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustRestoreRequest {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustSignRequest {
+    kind: String,
+    identity: String,
+    artifact: serde_json::Value,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustVerifyRequest {
+    kind: String,
+    artifact: serde_json::Value,
+    #[serde(default)]
+    signature: Option<PortableArtifactSignature>,
+}
+
 #[derive(Deserialize)]
 struct PassportImportRequest {
     #[serde(default)]
@@ -4659,7 +4895,7 @@ async fn bundle_export(
         .parse::<MemoryBundleKind>()
         .map_err(AppError::BadRequest)?;
     let memories = state.doc_engine.list_all_including_archived(namespace)?;
-    let bundle = match kind {
+    let mut bundle = match kind {
         MemoryBundleKind::Passport => {
             let scope = params
                 .scope
@@ -4685,6 +4921,15 @@ async fn bundle_export(
             build_memory_bundle_from_history(history)
         }
     };
+    if bundle.signature.signable {
+        sign_memory_bundle(
+            &mut bundle,
+            &state.portable_trust,
+            state.config.auth.audit_hmac_secret.as_bytes(),
+            "device:local-runtime",
+        )
+        .map_err(AppError::Internal)?;
+    }
 
     Ok(Json(bundle).into_response())
 }
@@ -4717,7 +4962,14 @@ async fn bundle_validate(
         return Err(AppError::Forbidden("insufficient permissions"));
     }
 
-    Ok(Json(validate_memory_bundle(&req.bundle)).into_response())
+    let mut validation = validate_memory_bundle(&req.bundle);
+    validation.trust = Some(verify_memory_bundle_signature(
+        &req.bundle,
+        &state.portable_trust,
+        state.config.auth.audit_hmac_secret.as_bytes(),
+    ));
+
+    Ok(Json(validation).into_response())
 }
 
 /// POST /v1/bundles/diff — compare two bundles without importing either one.
@@ -5633,6 +5885,242 @@ async fn trust_stats(State(state): State<AppState>, parts: Parts) -> Result<Resp
         "source_reputations": sources,
     }))
     .into_response())
+}
+
+/// GET /v1/admin/trust/fabric — portable trust identities and revocations.
+async fn trust_fabric_view(
+    State(state): State<AppState>,
+    parts: Parts,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust fabric"));
+    }
+
+    let snapshot = state.portable_trust.snapshot();
+    let mut authors = 0usize;
+    let mut devices = 0usize;
+    let mut sync_peers = 0usize;
+    for identity in &snapshot.identities {
+        match identity.kind {
+            PortableIdentityKind::Author => authors += 1,
+            PortableIdentityKind::Device => devices += 1,
+            PortableIdentityKind::SyncPeer => sync_peers += 1,
+        }
+    }
+
+    Ok(Json(json!({
+        "summary": {
+            "identities": snapshot.identities.len(),
+            "active": snapshot.identities.len().saturating_sub(snapshot.revocations.len()),
+            "revoked": snapshot.revocations.len(),
+            "authors": authors,
+            "devices": devices,
+            "sync_peers": sync_peers,
+        },
+        "identities": snapshot.identities,
+        "revocations": snapshot.revocations,
+    }))
+    .into_response())
+}
+
+/// POST /v1/admin/trust/register — register a portable trust identity.
+async fn trust_register(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustRegisterRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust register"));
+    }
+
+    let id = req.id.trim();
+    let label = req.label.trim();
+    if id.is_empty() || label.is_empty() {
+        return Err(AppError::BadRequest(
+            "trust id and label must not be empty".to_string(),
+        ));
+    }
+    let identity = state
+        .portable_trust
+        .ensure_identity(id, req.kind, label)
+        .map_err(AppError::Internal)?;
+    Ok(Json(json!({ "identity": identity })).into_response())
+}
+
+/// POST /v1/admin/trust/revoke — revoke a portable trust identity and attach replacement metadata.
+async fn trust_revoke(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustRevokeRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust revoke"));
+    }
+
+    let record = state
+        .portable_trust
+        .revoke_identity(
+            req.id.trim(),
+            req.reason.trim(),
+            req.replacement_identity.as_deref().map(str::trim),
+        )
+        .map_err(|err| AppError::BadRequest(err.to_string()))?;
+    Ok(Json(json!({ "revocation": record })).into_response())
+}
+
+/// POST /v1/admin/trust/restore — restore a revoked portable trust identity.
+async fn trust_restore(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustRestoreRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust restore"));
+    }
+
+    let identity = state
+        .portable_trust
+        .restore_identity(req.id.trim())
+        .map_err(AppError::Internal)?
+        .ok_or_else(|| AppError::NotFound("trust identity not found".to_string()))?;
+    Ok(Json(json!({ "identity": identity })).into_response())
+}
+
+/// POST /v1/admin/trust/sign — sign a portable bundle, passport, history, or sync-peer descriptor.
+async fn trust_sign(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustSignRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust sign"));
+    }
+
+    let kind = req
+        .kind
+        .parse::<PortableTrustSubjectKind>()
+        .map_err(AppError::BadRequest)?;
+    let identity = state
+        .portable_trust
+        .identity(req.identity.trim())
+        .ok_or_else(|| AppError::BadRequest("unknown trust identity".to_string()))?;
+    if state.portable_trust.revocation(&identity.id).is_some() {
+        return Err(AppError::BadRequest(
+            "cannot sign with revoked trust identity".to_string(),
+        ));
+    }
+
+    match kind {
+        PortableTrustSubjectKind::Bundle => {
+            let mut bundle: MemoryBundleEnvelope = serde_json::from_value(req.artifact)
+                .map_err(|err| AppError::BadRequest(format!("invalid bundle artifact: {err}")))?;
+            let validation = validate_memory_bundle(&bundle);
+            if !validation.valid {
+                return Err(AppError::BadRequest(format!(
+                    "invalid bundle artifact: {}",
+                    validation.errors.join("; ")
+                )));
+            }
+            sign_memory_bundle(
+                &mut bundle,
+                &state.portable_trust,
+                state.config.auth.audit_hmac_secret.as_bytes(),
+                &identity.id,
+            )
+            .map_err(|err| AppError::BadRequest(err.to_string()))?;
+            let trust = verify_memory_bundle_signature(
+                &bundle,
+                &state.portable_trust,
+                state.config.auth.audit_hmac_secret.as_bytes(),
+            );
+            Ok(Json(json!({
+                "kind": kind,
+                "artifact": bundle,
+                "trust": trust,
+            }))
+            .into_response())
+        }
+        _ => {
+            let subject =
+                canonical_portable_subject(kind, &req.artifact).map_err(AppError::BadRequest)?;
+            let signature = sign_portable_subject(
+                state.config.auth.audit_hmac_secret.as_bytes(),
+                &identity,
+                &subject,
+            )
+            .map_err(AppError::Internal)?;
+            let trust = verify_portable_subject(
+                state.config.auth.audit_hmac_secret.as_bytes(),
+                &state.portable_trust,
+                &subject,
+                Some(&signature),
+            );
+            Ok(Json(json!({
+                "kind": kind,
+                "subject": subject,
+                "signature": signature,
+                "trust": trust,
+            }))
+            .into_response())
+        }
+    }
+}
+
+/// POST /v1/admin/trust/verify — verify trust state for a signed portable artifact.
+async fn trust_verify(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustVerifyRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust verify"));
+    }
+
+    let kind = req
+        .kind
+        .parse::<PortableTrustSubjectKind>()
+        .map_err(AppError::BadRequest)?;
+    match kind {
+        PortableTrustSubjectKind::Bundle => {
+            let bundle: MemoryBundleEnvelope = serde_json::from_value(req.artifact)
+                .map_err(|err| AppError::BadRequest(format!("invalid bundle artifact: {err}")))?;
+            let mut validation = validate_memory_bundle(&bundle);
+            let trust = verify_memory_bundle_signature(
+                &bundle,
+                &state.portable_trust,
+                state.config.auth.audit_hmac_secret.as_bytes(),
+            );
+            validation.trust = Some(trust.clone());
+            Ok(Json(json!({
+                "kind": kind,
+                "validation": validation,
+                "trust": trust,
+            }))
+            .into_response())
+        }
+        _ => {
+            let subject =
+                canonical_portable_subject(kind, &req.artifact).map_err(AppError::BadRequest)?;
+            let trust = verify_portable_subject(
+                state.config.auth.audit_hmac_secret.as_bytes(),
+                &state.portable_trust,
+                &subject,
+                req.signature.as_ref(),
+            );
+            Ok(Json(json!({
+                "kind": kind,
+                "subject": subject,
+                "trust": trust,
+            }))
+            .into_response())
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]

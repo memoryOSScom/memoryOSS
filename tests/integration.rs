@@ -42,6 +42,7 @@ data_dir = "{data_dir}"
 
 [auth]
 jwt_secret = "test-secret-that-is-at-least-32-characters-long"
+audit_hmac_secret = "test-audit-secret-that-is-at-least-32-characters-long"
 
 {auth_entries}
 
@@ -84,6 +85,7 @@ data_dir = "{data_dir}"
 
 [auth]
 jwt_secret = "test-secret-that-is-at-least-32-characters-long"
+audit_hmac_secret = "test-audit-secret-that-is-at-least-32-characters-long"
 
 [[auth.api_keys]]
 key = "test-key-integration"
@@ -8149,7 +8151,14 @@ async fn test_cli_reader_open_and_diff_work_without_runtime_and_surface_signatur
     );
     assert_eq!(open_body["kind"].as_str(), Some("passport"));
     assert_eq!(open_body["scope"].as_str(), Some("project"));
-    assert_eq!(open_body["signature"]["scheme"].as_str(), Some("unsigned"));
+    assert_eq!(
+        open_body["signature"]["scheme"].as_str(),
+        Some("memoryoss.hmac-sha256.v1")
+    );
+    assert_eq!(
+        open_body["trust"]["status"].as_str(),
+        Some("verification_unavailable")
+    );
     assert_eq!(
         open_body["provenance"]["exported_from_namespace"].as_str(),
         Some("test")
@@ -8164,6 +8173,129 @@ async fn test_cli_reader_open_and_diff_work_without_runtime_and_surface_signatur
                 .unwrap_or("")
                 .contains("Project decision: keep MCP-first auth"))
     );
+
+    let verified = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "reader",
+            "open",
+            project_bundle.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader open with trust context");
+    assert!(
+        verified.status.success(),
+        "reader open with trust context failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&verified.stdout),
+        String::from_utf8_lossy(&verified.stderr)
+    );
+    let verified_body: serde_json::Value = serde_json::from_slice(&verified.stdout).unwrap();
+    assert_eq!(verified_body["trust"]["status"].as_str(), Some("trusted"));
+    assert_eq!(verified_body["trust"]["verified"].as_bool(), Some(true));
+    assert!(
+        verified_body["signature"]["chain"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry
+                .as_str()
+                .unwrap_or("")
+                .contains("device:local-runtime"))
+    );
+
+    let mut revoke_child = start_server(config_path.to_str().unwrap()).await;
+    let revoke_resp = client
+        .post(format!("{base}/v1/admin/trust/register"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": "device:recovery-runtime",
+            "kind": "device",
+            "label": "Recovery runtime"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_resp.status(), 200);
+    let revoke_local = client
+        .post(format!("{base}/v1/admin/trust/revoke"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": "device:local-runtime",
+            "reason": "compromised during smoke test",
+            "replacement_identity": "device:recovery-runtime"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_local.status(), 200);
+    revoke_child.kill().await.ok();
+    revoke_child.wait().await.ok();
+
+    let revoked = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "reader",
+            "open",
+            project_bundle.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader open after revoke");
+    assert!(
+        revoked.status.success(),
+        "reader open after revoke failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&revoked.stdout),
+        String::from_utf8_lossy(&revoked.stderr)
+    );
+    let revoked_body: serde_json::Value = serde_json::from_slice(&revoked.stdout).unwrap();
+    assert_eq!(revoked_body["trust"]["status"].as_str(), Some("revoked"));
+    assert_eq!(
+        revoked_body["trust"]["replacement_identity"].as_str(),
+        Some("device:recovery-runtime")
+    );
+
+    let mut restore_child = start_server(config_path.to_str().unwrap()).await;
+    let restore_resp = client
+        .post(format!("{base}/v1/admin/trust/restore"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": "device:local-runtime"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restore_resp.status(), 200);
+    restore_child.kill().await.ok();
+    restore_child.wait().await.ok();
+
+    let restored = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "reader",
+            "open",
+            project_bundle.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader open after restore");
+    assert!(
+        restored.status.success(),
+        "reader open after restore failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&restored.stdout),
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let restored_body: serde_json::Value = serde_json::from_slice(&restored.stdout).unwrap();
+    assert_eq!(restored_body["trust"]["status"].as_str(), Some("trusted"));
 
     let diff = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args([
@@ -8187,6 +8319,295 @@ async fn test_cli_reader_open_and_diff_work_without_runtime_and_surface_signatur
     assert!(diff_stdout.contains("Universal memory reader diff"));
     assert!(diff_stdout.contains("Added"));
     assert!(diff_stdout.contains("Team policy: security review is mandatory before merge."));
+}
+
+#[tokio::test]
+async fn test_trust_fabric_sign_verify_revoke_restore_for_bundle_passport_and_sync_peer() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp_dir.path().join("trust-fabric.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(port, data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    let store = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Release decision: preserve rollback fixtures for every update lane.",
+            "tags": ["release", "rollback"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store.status(), 200);
+
+    for identity in [
+        serde_json::json!({"id": "author:alice", "kind": "author", "label": "Alice"}),
+        serde_json::json!({"id": "author:bob", "kind": "author", "label": "Bob"}),
+        serde_json::json!({"id": "device:backup-runtime", "kind": "device", "label": "Backup runtime"}),
+        serde_json::json!({"id": "sync:peer-1", "kind": "sync_peer", "label": "Peer one"}),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/admin/trust/register"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&identity)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    let bundle_resp = client
+        .get(format!(
+            "{base}/v1/bundles/export?kind=passport&namespace=test&scope=project"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_resp.status(), 200);
+    let bundle: serde_json::Value = bundle_resp.json().await.unwrap();
+    assert_eq!(
+        bundle["signature"]["scheme"].as_str(),
+        Some("memoryoss.hmac-sha256.v1")
+    );
+    assert_eq!(
+        bundle["signature"]["signer"].as_str(),
+        Some("device:local-runtime")
+    );
+    assert!(bundle["signature"]["value"].as_str().is_some());
+
+    let bundle_validate = client
+        .post(format!("{base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": bundle.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_validate.status(), 200);
+    let bundle_validate_body: serde_json::Value = bundle_validate.json().await.unwrap();
+    assert_eq!(
+        bundle_validate_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    let revoke_runtime = client
+        .post(format!("{base}/v1/admin/trust/revoke"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": "device:local-runtime",
+            "reason": "runtime compromise",
+            "replacement_identity": "device:backup-runtime"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_runtime.status(), 200);
+
+    let bundle_verify_revoked = client
+        .post(format!("{base}/v1/admin/trust/verify"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "bundle",
+            "artifact": bundle.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_verify_revoked.status(), 200);
+    let bundle_verify_revoked_body: serde_json::Value = bundle_verify_revoked.json().await.unwrap();
+    assert_eq!(
+        bundle_verify_revoked_body["trust"]["status"].as_str(),
+        Some("revoked")
+    );
+    assert_eq!(
+        bundle_verify_revoked_body["trust"]["replacement_identity"].as_str(),
+        Some("device:backup-runtime")
+    );
+
+    let restore_runtime = client
+        .post(format!("{base}/v1/admin/trust/restore"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "id": "device:local-runtime" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restore_runtime.status(), 200);
+
+    let passport_resp = client
+        .get(format!(
+            "{base}/v1/passport/export?namespace=test&scope=project"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passport_resp.status(), 200);
+    let passport: serde_json::Value = passport_resp.json().await.unwrap();
+
+    let passport_sign = client
+        .post(format!("{base}/v1/admin/trust/sign"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "passport",
+            "identity": "author:alice",
+            "artifact": passport.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passport_sign.status(), 200);
+    let passport_sign_body: serde_json::Value = passport_sign.json().await.unwrap();
+    let passport_signature = passport_sign_body["signature"].clone();
+    assert_eq!(
+        passport_sign_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    let passport_verify = client
+        .post(format!("{base}/v1/admin/trust/verify"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "passport",
+            "artifact": passport.clone(),
+            "signature": passport_signature.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passport_verify.status(), 200);
+    let passport_verify_body: serde_json::Value = passport_verify.json().await.unwrap();
+    assert_eq!(
+        passport_verify_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    let sync_descriptor = serde_json::json!({
+        "peer_id": "peer-1",
+        "namespace": "test",
+        "endpoint": "https://peer.example/sync",
+        "device_label": "Alice laptop"
+    });
+    let sync_sign = client
+        .post(format!("{base}/v1/admin/trust/sign"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "sync_peer",
+            "identity": "sync:peer-1",
+            "artifact": sync_descriptor.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sync_sign.status(), 200);
+    let sync_sign_body: serde_json::Value = sync_sign.json().await.unwrap();
+    let sync_verify = client
+        .post(format!("{base}/v1/admin/trust/verify"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "sync_peer",
+            "artifact": sync_descriptor,
+            "signature": sync_sign_body["signature"].clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(sync_verify.status(), 200);
+    let sync_verify_body: serde_json::Value = sync_verify.json().await.unwrap();
+    assert_eq!(
+        sync_verify_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    let revoke_author = client
+        .post(format!("{base}/v1/admin/trust/revoke"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": "author:alice",
+            "reason": "author key leaked",
+            "replacement_identity": "author:bob"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_author.status(), 200);
+
+    let fabric_revoked = client
+        .get(format!("{base}/v1/admin/trust/fabric"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fabric_revoked.status(), 200);
+    let fabric_revoked_body: serde_json::Value = fabric_revoked.json().await.unwrap();
+    assert!(
+        fabric_revoked_body["revocations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|entry| entry["id"].as_str() == Some("author:alice"))
+    );
+
+    let passport_revoked = client
+        .post(format!("{base}/v1/admin/trust/verify"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "passport",
+            "artifact": passport.clone(),
+            "signature": passport_signature.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passport_revoked.status(), 200);
+    let passport_revoked_body: serde_json::Value = passport_revoked.json().await.unwrap();
+    assert_eq!(
+        passport_revoked_body["trust"]["status"].as_str(),
+        Some("revoked")
+    );
+    assert_eq!(
+        passport_revoked_body["trust"]["replacement_identity"].as_str(),
+        Some("author:bob")
+    );
+
+    let restore_author = client
+        .post(format!("{base}/v1/admin/trust/restore"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "id": "author:alice" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restore_author.status(), 200);
+
+    let passport_restored = client
+        .post(format!("{base}/v1/admin/trust/verify"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "passport",
+            "artifact": passport,
+            "signature": passport_signature
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(passport_restored.status(), 200);
+    let passport_restored_body: serde_json::Value = passport_restored.json().await.unwrap();
+    assert_eq!(
+        passport_restored_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    child.kill().await.ok();
+    child.wait().await.ok();
 }
 
 #[tokio::test]

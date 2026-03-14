@@ -1745,6 +1745,18 @@ struct ReaderSignatureView {
     scheme: String,
     signer: Option<String>,
     signable: bool,
+    identity_kind: Option<String>,
+    signed_at: Option<chrono::DateTime<chrono::Utc>>,
+    value_present: bool,
+    chain: Vec<String>,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct ReaderTrustView {
+    status: String,
+    verified: bool,
+    reason: String,
+    replacement_identity: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -1770,6 +1782,7 @@ struct ReaderOpenView {
     attachment_name: Option<String>,
     integrity: ReaderIntegrityView,
     signature: Option<ReaderSignatureView>,
+    trust: Option<ReaderTrustView>,
     provenance: Option<ReaderProvenanceView>,
     preview: Vec<String>,
 }
@@ -1783,6 +1796,11 @@ struct ReaderDiffView {
     added_preview: Vec<String>,
     removed_preview: Vec<String>,
     shared_preview_count: usize,
+}
+
+struct ReaderTrustContext {
+    registry: crate::security::trust::PortableTrustRegistry,
+    secret: Vec<u8>,
 }
 
 fn reader_preview_text(content: &str, max_chars: usize) -> String {
@@ -1828,6 +1846,19 @@ fn read_reader_artifact(path: &Path) -> anyhow::Result<ReaderArtifact> {
     )
 }
 
+fn load_reader_trust_context(config_path: &Path) -> Option<ReaderTrustContext> {
+    if !config_path.exists() {
+        return None;
+    }
+    let config = config::Config::load(config_path).ok()?;
+    let registry =
+        crate::security::trust::PortableTrustRegistry::open(&config.storage.data_dir).ok()?;
+    Some(ReaderTrustContext {
+        registry,
+        secret: config.auth.audit_hmac_secret.into_bytes(),
+    })
+}
+
 fn reader_entry_set(
     artifact: &ReaderArtifact,
 ) -> anyhow::Result<std::collections::BTreeSet<String>> {
@@ -1868,6 +1899,7 @@ fn reader_entry_set(
 fn build_reader_open_view(
     path: &Path,
     artifact: &ReaderArtifact,
+    trust_context: Option<&ReaderTrustContext>,
 ) -> anyhow::Result<ReaderOpenView> {
     let source_path = path.display().to_string();
     match artifact {
@@ -1897,6 +1929,35 @@ fn build_reader_open_view(
                 }
                 crate::server::routes::MemoryBundleKind::History => None,
             };
+            let trust = if bundle.signature.value.is_some() {
+                Some(match trust_context {
+                    Some(context) => {
+                        let decision = crate::server::routes::verify_memory_bundle_signature(
+                            bundle,
+                            &context.registry,
+                            &context.secret,
+                        );
+                        ReaderTrustView {
+                            status: serde_json::to_value(decision.status)?
+                                .as_str()
+                                .unwrap_or("unknown")
+                                .to_string(),
+                            verified: decision.verified,
+                            reason: decision.reason,
+                            replacement_identity: decision.replacement_identity,
+                        }
+                    }
+                    None => ReaderTrustView {
+                        status: "verification_unavailable".to_string(),
+                        verified: false,
+                        reason: "trust config unavailable; provide --config to verify signatures"
+                            .to_string(),
+                        replacement_identity: None,
+                    },
+                })
+            } else {
+                None
+            };
             Ok(ReaderOpenView {
                 source_path,
                 artifact_line: bundle.bundle_version.clone(),
@@ -1921,7 +1982,19 @@ fn build_reader_open_view(
                     scheme: bundle.signature.scheme.clone(),
                     signer: bundle.signature.signer.clone(),
                     signable: bundle.signature.signable,
+                    identity_kind: bundle.signature.identity_kind.map(|kind| kind.to_string()),
+                    signed_at: bundle.signature.signed_at,
+                    value_present: bundle.signature.value.is_some(),
+                    chain: bundle
+                        .signature
+                        .chain
+                        .iter()
+                        .map(|link| {
+                            format!("{} {} {}", link.at.to_rfc3339(), link.kind, link.identity)
+                        })
+                        .collect(),
                 }),
+                trust,
                 provenance,
                 preview: preview.preview,
             })
@@ -1954,7 +2027,12 @@ fn build_reader_open_view(
                 },
                 signer: None,
                 signable: false,
+                identity_kind: None,
+                signed_at: None,
+                value_present: false,
+                chain: Vec::new(),
             }),
+            trust: None,
             provenance: Some(ReaderProvenanceView {
                 exported_from_namespace: passport.provenance.exported_from_namespace.clone(),
                 source_key_ids: passport.provenance.source_key_ids.clone(),
@@ -1990,7 +2068,12 @@ fn build_reader_open_view(
                 scheme: "unsigned".to_string(),
                 signer: None,
                 signable: false,
+                identity_kind: None,
+                signed_at: None,
+                value_present: false,
+                chain: Vec::new(),
             }),
+            trust: None,
             provenance: None,
             preview: history
                 .memories
@@ -2007,9 +2090,10 @@ fn build_reader_diff_view(
     left: &ReaderArtifact,
     right_path: &Path,
     right: &ReaderArtifact,
+    trust_context: Option<&ReaderTrustContext>,
 ) -> anyhow::Result<ReaderDiffView> {
-    let left_view = build_reader_open_view(left_path, left)?;
-    let right_view = build_reader_open_view(right_path, right)?;
+    let left_view = build_reader_open_view(left_path, left, trust_context)?;
+    let right_view = build_reader_open_view(right_path, right, trust_context)?;
     let left_entries = reader_entry_set(left)?;
     let right_entries = reader_entry_set(right)?;
 
@@ -2038,16 +2122,29 @@ fn build_reader_diff_view(
     if left_view.root_id != right_view.root_id {
         changed_fields.push("root_id".to_string());
     }
-    if left_view
-        .signature
-        .as_ref()
-        .map(|sig| (&sig.scheme, &sig.signer, sig.signable))
-        != right_view
-            .signature
-            .as_ref()
-            .map(|sig| (&sig.scheme, &sig.signer, sig.signable))
-    {
+    if left_view.signature.as_ref().map(|sig| {
+        (
+            &sig.scheme,
+            &sig.signer,
+            sig.signable,
+            &sig.identity_kind,
+            sig.signed_at,
+        )
+    }) != right_view.signature.as_ref().map(|sig| {
+        (
+            &sig.scheme,
+            &sig.signer,
+            sig.signable,
+            &sig.identity_kind,
+            sig.signed_at,
+        )
+    }) {
         changed_fields.push("signature".to_string());
+    }
+    if left_view.trust.as_ref().map(|trust| &trust.status)
+        != right_view.trust.as_ref().map(|trust| &trust.status)
+    {
+        changed_fields.push("trust".to_string());
     }
 
     Ok(ReaderDiffView {
@@ -2103,11 +2200,35 @@ fn render_reader_open_text(view: &ReaderOpenView) -> String {
     if let Some(signature) = &view.signature {
         let _ = writeln!(
             output,
-            "Signature:  scheme={} signer={} signable={}",
+            "Signature:  scheme={} signer={} signable={} kind={} signed_at={} value_present={}",
             signature.scheme,
             signature.signer.as_deref().unwrap_or("none"),
-            signature.signable
+            signature.signable,
+            signature.identity_kind.as_deref().unwrap_or("none"),
+            signature
+                .signed_at
+                .map(|at| at.to_rfc3339())
+                .unwrap_or_else(|| "none".to_string()),
+            signature.value_present
         );
+        if signature.chain.is_empty() {
+            let _ = writeln!(output, "Chain:      - none");
+        } else {
+            let _ = writeln!(output, "Chain:      {}", signature.chain[0]);
+            for entry in signature.chain.iter().skip(1) {
+                let _ = writeln!(output, "            {}", entry);
+            }
+        }
+    }
+    if let Some(trust) = &view.trust {
+        let _ = writeln!(
+            output,
+            "Trust:      status={} verified={} reason={}",
+            trust.status, trust.verified, trust.reason
+        );
+        if let Some(replacement) = &trust.replacement_identity {
+            let _ = writeln!(output, "Replacement: {}", replacement);
+        }
     }
     if let Some(provenance) = &view.provenance {
         let _ = writeln!(
@@ -2173,10 +2294,39 @@ fn render_reader_open_html(view: &ReaderOpenView) -> String {
         .as_ref()
         .map(|signature| {
             format!(
-                "<tr><th>Signature</th><td>scheme={} signer={} signable={}</td></tr>",
+                "<tr><th>Signature</th><td>scheme={} signer={} signable={} kind={} signed_at={} value_present={}<br>{}</td></tr>",
                 escape_reader_html(&signature.scheme),
                 escape_reader_html(signature.signer.as_deref().unwrap_or("none")),
-                signature.signable
+                signature.signable,
+                escape_reader_html(signature.identity_kind.as_deref().unwrap_or("none")),
+                escape_reader_html(
+                    &signature
+                        .signed_at
+                        .map(|at| at.to_rfc3339())
+                        .unwrap_or_else(|| "none".to_string())
+                ),
+                signature.value_present,
+                if signature.chain.is_empty() {
+                    "chain=none".to_string()
+                } else {
+                    format!(
+                        "chain={}",
+                        escape_reader_html(&signature.chain.join(" | "))
+                    )
+                }
+            )
+        })
+        .unwrap_or_default();
+    let trust_row = view
+        .trust
+        .as_ref()
+        .map(|trust| {
+            format!(
+                "<tr><th>Trust</th><td>status={} verified={} reason={} replacement={}</td></tr>",
+                escape_reader_html(&trust.status),
+                trust.verified,
+                escape_reader_html(&trust.reason),
+                escape_reader_html(trust.replacement_identity.as_deref().unwrap_or("none"))
             )
         })
         .unwrap_or_default();
@@ -2219,7 +2369,7 @@ fn render_reader_open_html(view: &ReaderOpenView) -> String {
             "<tr><th>Visible</th><td>{visible_count}</td></tr>",
             "{root_row}{uri_row}{attachment_row}",
             "<tr><th>Integrity</th><td>envelope={envelope_valid} nested={nested_valid} algo={algo}</td></tr>",
-            "{signature_row}{provenance_row}",
+            "{signature_row}{trust_row}{provenance_row}",
             "</table><h2>Preview</h2><ul>{preview_items}</ul></body></html>"
         ),
         path = escape_reader_html(&view.source_path),
@@ -2239,6 +2389,7 @@ fn render_reader_open_html(view: &ReaderOpenView) -> String {
         nested_valid = view.integrity.nested_valid,
         algo = escape_reader_html(&view.integrity.algorithm),
         signature_row = signature_row,
+        trust_row = trust_row,
         provenance_row = provenance_row,
         preview_items = preview_items,
     )
@@ -2341,9 +2492,13 @@ fn render_reader_diff_html(diff: &ReaderDiffView) -> String {
     )
 }
 
-fn run_reader_open(path: &Path, format: ReaderFormat) -> anyhow::Result<()> {
+fn run_reader_open(
+    path: &Path,
+    format: ReaderFormat,
+    trust_context: Option<&ReaderTrustContext>,
+) -> anyhow::Result<()> {
     let artifact = read_reader_artifact(path)?;
-    let view = build_reader_open_view(path, &artifact)?;
+    let view = build_reader_open_view(path, &artifact, trust_context)?;
     match format {
         ReaderFormat::Text => print!("{}", render_reader_open_text(&view)),
         ReaderFormat::Json => println!("{}", serde_json::to_string_pretty(&view)?),
@@ -2352,10 +2507,15 @@ fn run_reader_open(path: &Path, format: ReaderFormat) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_reader_diff(left: &Path, right: &Path, format: ReaderFormat) -> anyhow::Result<()> {
+fn run_reader_diff(
+    left: &Path,
+    right: &Path,
+    format: ReaderFormat,
+    trust_context: Option<&ReaderTrustContext>,
+) -> anyhow::Result<()> {
     let left_artifact = read_reader_artifact(left)?;
     let right_artifact = read_reader_artifact(right)?;
-    let diff = build_reader_diff_view(left, &left_artifact, right, &right_artifact)?;
+    let diff = build_reader_diff_view(left, &left_artifact, right, &right_artifact, trust_context)?;
     match format {
         ReaderFormat::Text => print!("{}", render_reader_diff_text(&diff)),
         ReaderFormat::Json => println!("{}", serde_json::to_string_pretty(&diff)?),
@@ -2416,6 +2576,20 @@ fn render_memory_bundle_validation(
     } else {
         for error in &validation.errors {
             let _ = writeln!(output, "- {}", error);
+        }
+    }
+    if let Some(trust) = &validation.trust {
+        let status = serde_json::to_value(trust.status)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        let _ = writeln!(
+            output,
+            "Trust:      status={} verified={} reason={}",
+            status, trust.verified, trust.reason
+        );
+        if let Some(replacement) = &trust.replacement_identity {
+            let _ = writeln!(output, "Replacement: {}", replacement);
         }
     }
     output
@@ -2503,6 +2677,16 @@ fn run_bundle_export(
             crate::server::routes::build_memory_bundle_from_history(bundle)
         }
     };
+    let registry = crate::security::trust::PortableTrustRegistry::open(&config.storage.data_dir)?;
+    let mut bundle = bundle;
+    if bundle.signature.signable {
+        crate::server::routes::sign_memory_bundle(
+            &mut bundle,
+            &registry,
+            config.auth.audit_hmac_secret.as_bytes(),
+            "device:local-runtime",
+        )?;
+    }
     let output_path =
         output.unwrap_or_else(|| PathBuf::from(bundle.reference.attachment_name.clone()));
     let preview =
@@ -2526,9 +2710,16 @@ fn run_bundle_preview(path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn run_bundle_validate(path: &Path) -> anyhow::Result<()> {
+fn run_bundle_validate(path: &Path, config_path: &Path) -> anyhow::Result<()> {
     let bundle = read_memory_bundle(path)?;
-    let validation = crate::server::routes::validate_memory_bundle(&bundle);
+    let mut validation = crate::server::routes::validate_memory_bundle(&bundle);
+    if let Some(context) = load_reader_trust_context(config_path) {
+        validation.trust = Some(crate::server::routes::verify_memory_bundle_signature(
+            &bundle,
+            &context.registry,
+            &context.secret,
+        ));
+    }
     print!("{}", render_memory_bundle_validation(&validation));
     if !validation.valid {
         anyhow::bail!("memory bundle validation failed");
@@ -3596,7 +3787,7 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
             BundleCommands::Validate { path } => {
-                run_bundle_validate(path)?;
+                run_bundle_validate(path, &cli.config)?;
                 return Ok(());
             }
             BundleCommands::Diff { left, right } => {
@@ -3608,10 +3799,11 @@ async fn main() -> anyhow::Result<()> {
     }
 
     if let Commands::Reader { command } = &command {
+        let trust_context = load_reader_trust_context(&cli.config);
         match command {
             ReaderCommands::Open { path, format } => {
                 let format = format.parse::<ReaderFormat>().map_err(anyhow::Error::msg)?;
-                run_reader_open(path, format)?;
+                run_reader_open(path, format, trust_context.as_ref())?;
                 return Ok(());
             }
             ReaderCommands::Diff {
@@ -3620,7 +3812,7 @@ async fn main() -> anyhow::Result<()> {
                 format,
             } => {
                 let format = format.parse::<ReaderFormat>().map_err(anyhow::Error::msg)?;
-                run_reader_diff(left, right, format)?;
+                run_reader_diff(left, right, format, trust_context.as_ref())?;
                 return Ok(());
             }
         }
