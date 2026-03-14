@@ -788,6 +788,37 @@ def build_sections(
 
     universal_loop_step = step_by_slug.get("universal_memory_loop")
     if universal_loop_report:
+        utility_items = list(universal_loop_report.get("items", []))
+        for loop in universal_loop_report.get("loops", []):
+            utility_items.append(
+                item(
+                    loop["title"],
+                    loop.get("status", "pass"),
+                    (
+                        f"clients={', '.join(loop.get('clients', []))}; "
+                        f"devices={', '.join(loop.get('devices', []))}; {loop.get('note', '')}"
+                    ).strip(),
+                )
+            )
+        sections.append(
+            {
+                "title": "Everyday Utility Loop",
+                "count": len(utility_items),
+                "items": utility_items,
+            }
+        )
+        claim_items = []
+        for lane in ("stable", "experimental", "moonshot"):
+            for claim in universal_loop_report.get("claims", {}).get(lane, []):
+                claim_items.append(item(f"{lane.title()} claim", "pass", claim))
+        if claim_items:
+            sections.append(
+                {
+                    "title": "Claim Lanes",
+                    "count": len(claim_items),
+                    "items": claim_items,
+                }
+            )
         sections.append(
             {
                 "title": "Universal Memory Loop Proof",
@@ -926,6 +957,21 @@ def build_report(
                 if universal_loop_report
                 else 0
             ),
+            "repeated_context_elimination_rate": (
+                universal_loop_report["summary"].get("repeated_context_elimination_rate", 0)
+                if universal_loop_report
+                else 0
+            ),
+            "review_throughput_per_minute": (
+                universal_loop_report["summary"].get("review_throughput_per_minute", 0)
+                if universal_loop_report
+                else 0
+            ),
+            "blocked_bad_actions_rate": (
+                universal_loop_report["summary"].get("blocked_bad_actions_rate", 0)
+                if universal_loop_report
+                else 0
+            ),
             "universal_loop_task_state_quality": (
                 universal_loop_report["summary"]["task_state_quality"]
                 if universal_loop_report
@@ -940,6 +986,11 @@ def build_report(
             for step in steps
         ],
         "sections": sections,
+        "utility_loop": universal_loop_report,
+        "benchmark": benchmark_report,
+        "calibration": calibration_report,
+        "wizard": wizard_matrix,
+        "universal_memory_loop": universal_loop_report,
         "coverage_gaps": COVERAGE_GAPS,
     }
 

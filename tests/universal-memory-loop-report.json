@@ -1,30 +1,105 @@
 {
   "runner": "tests/run_universal_memory_loop.py",
-  "generated_at": "2026-03-14T18:58:24Z",
-  "duration_seconds": 6,
+  "generated_at": "2026-03-14T19:30:17Z",
+  "duration_seconds": 9,
   "summary": {
     "demo_clients": [
       "http_api_store",
       "cli_passport_export",
+      "cli_reader_open",
       "http_api_import",
       "http_query_explain",
+      "http_review_queue",
+      "http_review_action",
+      "http_proxy_guardrail",
       "http_history_replay"
     ],
+    "everyday_loops": 3,
     "bundle_entries": 5,
     "portability_queries": 4,
+    "repeated_context_elimination_rate": 0.79,
     "portability_success_rate": 1.0,
     "merge_count": 1,
     "conflict_count": 1,
     "merge_conflict_rate": 0.2,
+    "review_throughput_per_minute": 640.53,
+    "blocked_bad_actions_rate": 1.0,
+    "confirmation_gate_rate": 1.0,
     "replay_fidelity": 1.0,
     "task_state_cases": 2,
     "task_state_quality": 1.0
   },
+  "loops": [
+    {
+      "id": "portable_project_transfer",
+      "title": "Portable project transfer",
+      "clients": [
+        "http_api_store",
+        "cli_passport_export",
+        "cli_reader_open",
+        "http_api_import",
+        "http_query_explain"
+      ],
+      "devices": [
+        "source_runtime",
+        "target_runtime"
+      ],
+      "status": "pass",
+      "note": "Project context moves from one runtime to another without losing recall anchors."
+    },
+    {
+      "id": "team_review_triage",
+      "title": "Team review triage",
+      "clients": [
+        "http_team_governance_propose",
+        "http_review_queue",
+        "http_review_action"
+      ],
+      "devices": [
+        "target_runtime"
+      ],
+      "status": "pass",
+      "note": "Governed candidate memories are queued, reviewed, and confirmed in one measurable operator loop."
+    },
+    {
+      "id": "guarded_production_actions",
+      "title": "Guarded production actions",
+      "clients": [
+        "http_store",
+        "http_query_explain",
+        "http_proxy_guardrail"
+      ],
+      "devices": [
+        "target_runtime",
+        "dummy_upstream"
+      ],
+      "status": "pass",
+      "note": "Risky delete actions block and deploy actions require confirmation before upstream execution."
+    }
+  ],
+  "claims": {
+    "stable": [
+      "Repeated-context elimination in daily loops is measured locally and reproducibly.",
+      "Portable transfer, replay fidelity, review throughput, and blocked bad actions are exercised on every full run."
+    ],
+    "experimental": [
+      "Retrieval shadow lanes, identifier-first routing, and extraction-quality deltas remain tunable rather than default guarantees.",
+      "Provider-specific token and latency artifacts are evidence, not universal promises."
+    ],
+    "moonshot": [
+      "Always-on ambient utility across every client and every workday remains a directional product claim, not a current CI guarantee."
+    ]
+  },
   "items": [
     {
-      "name": "Public demo path",
+      "name": "Public everyday loops",
       "status": "pass",
-      "note": "HTTP API store -> CLI passport export -> HTTP import dry-run/apply -> HTTP query-explain -> HTTP history replay"
+      "note": "3 reproducible loops across HTTP API, CLI, reader, proxy, and two local runtimes"
+    },
+    {
+      "name": "Repeated-context elimination",
+      "status": "pass",
+      "note": "79.0% average context reduction versus replaying the full portable notebook"
     },
     {
       "name": "Portability success rate",
@@ -35,6 +110,16 @@
       "name": "Passport merge/conflict rate",
       "status": "pass",
       "note": "5 bundle entries; create=3, merge=1, conflict=1 (20.0% conflicts)"
+    },
+    {
+      "name": "Review throughput",
+      "status": "pass",
+      "note": "3 governed reviews confirmed at 640.5/min"
+    },
+    {
+      "name": "Blocked bad actions",
+      "status": "pass",
+      "note": "delete blocks held at 100.0% and deploy confirmation gates at 100.0%"
     },
     {
       "name": "Replay fidelity",
@@ -48,31 +133,40 @@
     }
   ],
   "details": {
-    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-cteut1nr/portable-loop-passport.json (scope=all memories=5)",
+    "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-mxoplu80/portable-loop-passport.json (scope=all memories=5)",
+    "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-mxoplu80/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-14T19:30:12.015373341Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"fef8d147534c75e1e9d3cb11e4e507930a9bd363ba256c1445b81f7e14757160\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
     "portability_cases": [
       {
         "label": "review style",
         "success": true,
         "expected_anchor": "findings first",
-        "top_result": "For review responses, keep findings first and summary brief."
+        "top_result": "For review responses, keep findings first and summary brief.",
+        "recalled_chars": 60,
+        "context_elimination_rate": 0.8425
       },
       {
         "label": "deploy rollback",
         "success": true,
         "expected_anchor": "roll back within 15 minutes",
-        "top_result": "Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes."
+        "top_result": "Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.",
+        "recalled_chars": 97,
+        "context_elimination_rate": 0.7454
       },
       {
         "label": "deploy checklist",
         "success": true,
         "expected_anchor": "staging approval",
-        "top_result": "Deployment checklist: require staging approval before production release."
+        "top_result": "Deployment checklist: require staging approval before production release.",
+        "recalled_chars": 73,
+        "context_elimination_rate": 0.8084
       },
       {
         "label": "review checklist",
         "success": true,
         "expected_anchor": "security review",
-        "top_result": "Auth review checklist: require tests and security review before merging sensitive changes."
+        "top_result": "Auth review checklist: require tests and security review before merging sensitive changes.",
+        "recalled_chars": 90,
+        "context_elimination_rate": 0.7638
       }
     ],
     "task_state_cases": [
@@ -97,6 +191,19 @@
         ]
       }
     ],
+    "review_loop": {
+      "confirmed_count": 3,
+      "duration_seconds": 0.281,
+      "throughput_per_minute": 640.53
+    },
+    "guardrail_loop": {
+      "delete_explain_decision": "block",
+      "delete_proxy_status": 403,
+      "deploy_proxy_status": 428,
+      "deploy_confirm_status": 200,
+      "blocked_bad_actions_rate": 1.0,
+      "confirmation_gate_rate": 1.0
+    },
     "replay_checks": {
       "root_id": true,
       "branch_safe": true,
@@ -108,12 +215,12 @@
       "conflict_node_present": true
     },
     "source_history": {
-      "root_id": "019cedb6-c11b-77c0-a0a5-7d24f08035f6",
+      "root_id": "019cedd3-f54c-7732-8bcb-385785595eca",
       "node_count": 3,
       "timeline_count": 7
     },
     "target_history": {
-      "root_id": "019cedb6-c11b-77c0-a0a5-7d24f08035f6",
+      "root_id": "019cedd3-f54c-7732-8bcb-385785595eca",
       "node_count": 3,
       "timeline_count": 7
     }

@@ -11,6 +11,9 @@ function createSummary(report) {
     { num: report.summary.wizard_scenarios || "-", label: "Wizard Scenarios" },
     { num: report.summary.benchmark_memories ? report.summary.benchmark_memories.toLocaleString() : "-", label: "Benchmark Memories" },
     { num: report.summary.calibration_queries ? report.summary.calibration_queries.toLocaleString() : "-", label: "Calibration Queries" },
+    { num: report.summary.repeated_context_elimination_rate ? `${(report.summary.repeated_context_elimination_rate * 100).toFixed(1)}%` : "-", label: "Context Elim" },
+    { num: report.summary.review_throughput_per_minute ? `${report.summary.review_throughput_per_minute.toFixed(1)}/m` : "-", label: "Review Throughput" },
+    { num: report.summary.blocked_bad_actions_rate ? `${(report.summary.blocked_bad_actions_rate * 100).toFixed(1)}%` : "-", label: "Guardrail Rate" },
     { num: report.duration_seconds + "s", label: "Duration" },
   ];
 

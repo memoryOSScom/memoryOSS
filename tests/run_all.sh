@@ -270,7 +270,7 @@ run_step "extraction quality evaluation" extraction_eval run_extraction_eval_ste
 run_step "coverage gaps" coverage_gaps env COVERAGE_GAPS_OUTPUT_JSON="$COVERAGE_GAPS_JSON" bash "$ROOT_DIR/tests/run_coverage_gaps.sh"
 run_step "TypeScript SDK build/test" typescript_sdk typescript_sdk_checks
 run_step "runtime conformance kit" conformance_kit env CONFORMANCE_OUTPUT_JSON="$ROOT_DIR/tests/conformance-report.json" python3 "$ROOT_DIR/tests/run_conformance_kit.py"
-run_step "universal memory loop" universal_memory_loop env UNIVERSAL_LOOP_OUTPUT_JSON="$UNIVERSAL_LOOP_JSON" python3 "$ROOT_DIR/tests/run_universal_memory_loop.py"
+run_step "everyday utility loop" universal_memory_loop env UNIVERSAL_LOOP_OUTPUT_JSON="$UNIVERSAL_LOOP_JSON" python3 "$ROOT_DIR/tests/run_universal_memory_loop.py"
 run_step "cargo audit (offline if available)" cargo_audit dependency_audit
 
 RUN_END_TS="$(date +%s)"

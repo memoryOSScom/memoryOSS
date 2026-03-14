@@ -427,22 +427,30 @@ The public portability claim is now backed by a reproducible proof runner:
 python3 tests/run_universal_memory_loop.py
 ```
 
-That runner executes one stable end-to-end loop on local runtimes:
+That runner now executes three stable end-to-end loops on local runtimes:
 - store durable memories through the HTTP API
 - export a passport through the CLI
+- verify the exported artifact through the offline reader
 - import that passport into a second runtime with dry-run merge/conflict preview
 - verify portability through `query-explain`
+- queue and confirm governed review items to measure operator throughput
+- block risky delete requests and require confirmation for deploy requests through the proxy
 - replay a history bundle into a clean namespace and compare lineage fidelity
 
-The published report tracks four hard metrics from that loop:
+The published report tracks hard daily-utility metrics from those loops:
+- repeated-context elimination versus replaying the full portable notebook
 - portability success rate
 - passport merge/conflict rate
+- review throughput
+- blocked-bad-actions rate
+- confirmation-gate success rate
 - replay fidelity
 - task-state quality
 
-Stable claims and experimental claims stay separate:
-- stable: passport portability, history replay, task-state portability proof
-- experimental: retrieval tuning, confidence gating, identifier-first routing, extraction quality deltas
+Claim lanes stay explicit:
+- stable: repeated-context elimination, passport portability, review throughput, blocked bad actions, history replay, task-state portability proof
+- experimental: retrieval tuning, confidence gating, identifier-first routing, extraction quality deltas, provider-specific token/cost evidence
+- moonshot: ambient everyday utility across every client and every workday
 
 ### Memory Bundle Envelope
 

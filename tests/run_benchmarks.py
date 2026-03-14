@@ -1627,6 +1627,19 @@ namespace = "probe"
                 "positive_probe_count": positive_probe_count,
                 "negative_probe_count": negative_probe_count,
             },
+            "claim_lanes": {
+                "stable": [
+                    "20k retention under load remains inside the default validation path.",
+                    "Noise rejection and positive injection hit rate are published from the stable lane.",
+                ],
+                "experimental": [
+                    "Retrieval shadow lanes quantify confidence-gate and identifier-routing changes before promotion.",
+                    "Primitive algebra comparisons stay experimental until they outperform the stable lane without regressions.",
+                ],
+                "moonshot": [
+                    "Local coprocessor parity and zero-cost extraction remain an aspirational lane, not a blanket guarantee.",
+                ],
+            },
             "retrieval_injection_eval": retrieval_injection_eval,
             "coprocessor_eval": coprocessor_eval,
             "primitive_algebra_eval": primitive_algebra_eval,

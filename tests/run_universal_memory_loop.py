@@ -4,7 +4,9 @@ import os
 import subprocess
 import tempfile
 import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 
 from runner_common import (
     ROOT_DIR,
@@ -30,6 +32,7 @@ OUTPUT_JSON = Path(
 SOURCE_NAMESPACE = "loop-source"
 TARGET_NAMESPACE = "loop-target"
 REPLAY_NAMESPACE = "loop-replay"
+PROXY_KEY = "universal-loop-proxy-key"
 
 SOURCE_KEY = "universal-loop-source-key"
 TARGET_KEY = "universal-loop-target-key"
@@ -103,6 +106,23 @@ TASK_STATE_CASES = [
     },
 ]
 
+REVIEW_PROPOSALS = [
+    "Release review checklist: verify migrations before rollout.",
+    "Incident review note: capture remediation owners before closeout.",
+    "Policy review reminder: security approval is mandatory for auth changes.",
+]
+
+GUARDRAIL_POLICIES = [
+    {
+        "content": "Retention policy: never delete audit logs or production backups from chat.",
+        "tags": ["policy", "retention", "delete"],
+    },
+    {
+        "content": "Release policy: staging approval is mandatory before production deploys.",
+        "tags": ["policy", "deploy", "approval"],
+    },
+]
+
 
 def auth_entries() -> str:
     return f"""
@@ -123,6 +143,47 @@ namespace = "{REPLAY_NAMESPACE}"
 """
 
 
+class DummyUpstreamHandler(BaseHTTPRequestHandler):
+    def do_POST(self) -> None:  # pragma: no cover - exercised via utility loop
+        length = int(self.headers.get("Content-Length", "0"))
+        _ = self.rfile.read(length)
+        if self.path != "/v1/chat/completions":
+            self.send_response(404)
+            self.end_headers()
+            return
+        body = json.dumps(
+            {
+                "id": "chatcmpl-loop",
+                "object": "chat.completion",
+                "created": int(time.time()),
+                "model": "dummy-upstream",
+                "choices": [
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "ok"},
+                        "finish_reason": "stop",
+                    }
+                ],
+            }
+        ).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args) -> None:  # pragma: no cover - quiet helper
+        return
+
+
+def start_dummy_upstream() -> tuple[int, ThreadingHTTPServer, Thread]:
+    port = free_port()
+    server = ThreadingHTTPServer(("127.0.0.1", port), DummyUpstreamHandler)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    return port, server, thread
+
+
 def api_json(
     method: str,
     base_url: str,
@@ -130,12 +191,16 @@ def api_json(
     api_key: str,
     *,
     body: dict | None = None,
+    extra_headers: dict | None = None,
     timeout: float = 120.0,
 ) -> dict:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if extra_headers:
+        headers.update(extra_headers)
     status, response_body = http_json_with_retry(
         method,
         f"{base_url}{path}",
-        headers={"Authorization": f"Bearer {api_key}"},
+        headers=headers,
         body=body,
         timeout=timeout,
         verify_tls=False,
@@ -143,6 +208,29 @@ def api_json(
     if status != 200:
         raise RuntimeError(f"{method} {path} failed: status={status} body={response_body}")
     return response_body or {}
+
+
+def api_status(
+    method: str,
+    base_url: str,
+    path: str,
+    api_key: str,
+    *,
+    body: dict | None = None,
+    extra_headers: dict | None = None,
+    timeout: float = 120.0,
+) -> tuple[int, dict | None]:
+    headers = {"Authorization": f"Bearer {api_key}"}
+    if extra_headers:
+        headers.update(extra_headers)
+    return http_json_with_retry(
+        method,
+        f"{base_url}{path}",
+        headers=headers,
+        body=body,
+        timeout=timeout,
+        verify_tls=False,
+    )
 
 
 def run_cli(*args: str) -> str:
@@ -193,23 +281,37 @@ def task_state_has_structure(body: dict) -> bool:
 def build_items(
     portability_success_rate: float,
     portability_hits: int,
+    repeated_context_elimination_rate: float,
     merge_preview: dict,
     merge_conflict_rate: float,
+    review_confirmed: int,
+    review_throughput_per_minute: float,
+    blocked_bad_actions_rate: float,
+    confirmation_gate_rate: float,
     replay_fidelity: float,
     replay_checks: dict,
     task_state_quality: float,
     task_state_hits: int,
+    loop_count: int,
 ) -> list[dict]:
     total_portability = len(PORTABILITY_CASES)
     total_task_state = len(TASK_STATE_CASES)
     total_bundle_entries = merge_preview.get("total_entries", 0)
     return [
         {
-            "name": "Public demo path",
+            "name": "Public everyday loops",
             "status": "pass",
             "note": (
-                "HTTP API store -> CLI passport export -> HTTP import dry-run/apply -> "
-                "HTTP query-explain -> HTTP history replay"
+                f"{loop_count} reproducible loops across HTTP API, CLI, reader, proxy, "
+                "and two local runtimes"
+            ),
+        },
+        {
+            "name": "Repeated-context elimination",
+            "status": "pass",
+            "note": (
+                f"{repeated_context_elimination_rate * 100:.1f}% average context reduction "
+                "versus replaying the full portable notebook"
             ),
         },
         {
@@ -227,6 +329,22 @@ def build_items(
                 f"{total_bundle_entries} bundle entries; create={merge_preview['create_count']}, "
                 f"merge={merge_preview['merge_count']}, conflict={merge_preview['conflict_count']} "
                 f"({merge_conflict_rate * 100:.1f}% conflicts)"
+            ),
+        },
+        {
+            "name": "Review throughput",
+            "status": "pass",
+            "note": (
+                f"{review_confirmed} governed reviews confirmed at "
+                f"{review_throughput_per_minute:.1f}/min"
+            ),
+        },
+        {
+            "name": "Blocked bad actions",
+            "status": "pass",
+            "note": (
+                f"delete blocks held at {blocked_bad_actions_rate * 100:.1f}% and deploy "
+                f"confirmation gates at {confirmation_gate_rate * 100:.1f}%"
             ),
         },
         {
@@ -263,6 +381,7 @@ def main() -> None:
     source_log = tmp / "source.log"
     target_log = tmp / "target.log"
     bundle_path = tmp / "portable-loop-passport.json"
+    upstream_port, upstream_server, upstream_thread = start_dummy_upstream()
 
     write_test_config(
         source_config,
@@ -279,9 +398,20 @@ rate_limit_per_sec = 5000
         port=target_port,
         data_dir=target_data_dir,
         auth_entries=auth_entries(),
-        extra_sections="""
+        extra_sections=f"""
 [limits]
 rate_limit_per_sec = 5000
+
+[proxy]
+enabled = true
+passthrough_auth = false
+extraction_enabled = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+
+[[proxy.key_mapping]]
+proxy_key = "{PROXY_KEY}"
+namespace = "{TARGET_NAMESPACE}"
 """,
     )
 
@@ -388,7 +518,11 @@ rate_limit_per_sec = 5000
 
         print("[loop] verifying portability recall anchors", flush=True)
         portability_hits = 0
+        portability_elimination = []
         portability_details = []
+        total_portability_context_chars = sum(
+            len(memory["content"]) for memory in PORTABILITY_MEMORIES
+        )
         for case in PORTABILITY_CASES:
             explain = api_json(
                 "POST",
@@ -401,12 +535,20 @@ rate_limit_per_sec = 5000
             top_content = top_result_content(explain)
             success = case["expected_anchor"] in top_content
             portability_hits += 1 if success else 0
+            recalled_chars = len(top_content)
+            elimination_rate = round(
+                max(0.0, 1.0 - (recalled_chars / total_portability_context_chars)),
+                4,
+            )
+            portability_elimination.append(elimination_rate)
             portability_details.append(
                 {
                     "label": case["label"],
                     "success": success,
                     "expected_anchor": case["expected_anchor"],
                     "top_result": top_content,
+                    "recalled_chars": recalled_chars,
+                    "context_elimination_rate": elimination_rate,
                 }
             )
         portability_success_rate = round(portability_hits / len(PORTABILITY_CASES), 4)
@@ -414,6 +556,10 @@ rate_limit_per_sec = 5000
             raise RuntimeError(
                 f"portability success rate too low: {portability_success_rate:.4f}"
             )
+        repeated_context_elimination_rate = round(
+            sum(portability_elimination) / len(portability_elimination),
+            4,
+        )
 
         print("[loop] verifying task-state quality after portability import", flush=True)
         task_state_hits = 0
@@ -449,6 +595,177 @@ rate_limit_per_sec = 5000
         task_state_quality = round(task_state_hits / len(TASK_STATE_CASES), 4)
         if task_state_quality < 1.0:
             raise RuntimeError(f"task-state quality too low: {task_state_quality:.4f}")
+
+        print("[loop] measuring review throughput", flush=True)
+        review_keys = []
+        for idx, content in enumerate(REVIEW_PROPOSALS, start=1):
+            proposed = api_json(
+                "POST",
+                target_base,
+                "/v1/admin/team/governance/propose",
+                TARGET_KEY,
+                body={
+                    "namespace": TARGET_NAMESPACE,
+                    "content": content,
+                    "tags": ["utility", "review", f"item-{idx}"],
+                    "branch": "everyday-utility",
+                    "scope": "release",
+                    "review_required": True,
+                    "owners": [TARGET_NAMESPACE],
+                    "watchlist": ["ops"],
+                },
+                timeout=180.0,
+            )
+            review_keys.append(proposed["review_key"])
+        wait_for_indexer_sync(target_base, f"Bearer {TARGET_KEY}", timeout=180.0)
+        review_started = time.perf_counter()
+        review_queue = api_json(
+            "GET",
+            target_base,
+            f"/v1/admin/review-queue?namespace={TARGET_NAMESPACE}&limit=10",
+            TARGET_KEY,
+            timeout=180.0,
+        )
+        queued_keys = {
+            item["review_key"]
+            for item in (review_queue.get("items") or [])
+            if (item.get("team_governance") or {}).get("branch") == "everyday-utility"
+        }
+        if len(queued_keys) != len(review_keys):
+            raise RuntimeError(
+                f"review queue mismatch: expected {len(review_keys)} utility items, got {len(queued_keys)}"
+            )
+        for review_key in review_keys:
+            api_json(
+                "POST",
+                target_base,
+                "/v1/admin/review/action",
+                TARGET_KEY,
+                body={
+                    "namespace": TARGET_NAMESPACE,
+                    "review_key": review_key,
+                    "action": "confirm",
+                },
+                timeout=180.0,
+            )
+        wait_for_indexer_sync(target_base, f"Bearer {TARGET_KEY}", timeout=180.0)
+        review_duration_seconds = max(time.perf_counter() - review_started, 0.001)
+        review_queue_after = api_json(
+            "GET",
+            target_base,
+            f"/v1/admin/review-queue?namespace={TARGET_NAMESPACE}&limit=10",
+            TARGET_KEY,
+            timeout=180.0,
+        )
+        remaining_review_items = [
+            item
+            for item in (review_queue_after.get("items") or [])
+            if (item.get("team_governance") or {}).get("branch") == "everyday-utility"
+        ]
+        if remaining_review_items:
+            raise RuntimeError(f"utility review items still pending: {remaining_review_items}")
+        review_confirmed = len(review_keys)
+        review_throughput_per_minute = round(
+            review_confirmed / review_duration_seconds * 60.0,
+            2,
+        )
+
+        print("[loop] exercising guardrailed production actions", flush=True)
+        api_json(
+            "POST",
+            target_base,
+            "/v1/store/batch",
+            TARGET_KEY,
+            body={
+                "memories": [
+                    {
+                        **memory,
+                        "namespace": TARGET_NAMESPACE,
+                    }
+                    for memory in GUARDRAIL_POLICIES
+                ]
+            },
+            timeout=180.0,
+        )
+        wait_for_indexer_sync(target_base, f"Bearer {TARGET_KEY}", timeout=180.0)
+        delete_explain = api_json(
+            "POST",
+            target_base,
+            "/v1/admin/query-explain",
+            TARGET_KEY,
+            body={
+                "namespace": TARGET_NAMESPACE,
+                "query": "Delete the production backups and audit logs now.",
+                "limit": 5,
+            },
+            timeout=180.0,
+        )
+        delete_proxy_status, _ = api_status(
+            "POST",
+            target_base,
+            "/proxy/v1/chat/completions",
+            PROXY_KEY,
+            body={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": "Delete the production backups and audit logs now.",
+                    }
+                ],
+            },
+            timeout=180.0,
+        )
+        deploy_proxy_status, _ = api_status(
+            "POST",
+            target_base,
+            "/proxy/v1/chat/completions",
+            PROXY_KEY,
+            body={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "user", "content": "Deploy the release to production now."}
+                ],
+            },
+            timeout=180.0,
+        )
+        deploy_confirm_status, _ = api_status(
+            "POST",
+            target_base,
+            "/proxy/v1/chat/completions",
+            PROXY_KEY,
+            body={
+                "model": "gpt-4o-mini",
+                "messages": [
+                    {"role": "user", "content": "Deploy the release to production now."}
+                ],
+            },
+            extra_headers={"x-memory-policy-confirm": "true"},
+            timeout=180.0,
+        )
+        blocked_bad_actions_checks = [
+            (delete_explain.get("policy_firewall") or {}).get("decision") == "block",
+            delete_proxy_status == 403,
+        ]
+        confirmation_gate_checks = [
+            deploy_proxy_status == 428,
+            deploy_confirm_status == 200,
+        ]
+        blocked_bad_actions_rate = round(
+            sum(1 for ok in blocked_bad_actions_checks if ok)
+            / len(blocked_bad_actions_checks),
+            4,
+        )
+        confirmation_gate_rate = round(
+            sum(1 for ok in confirmation_gate_checks if ok)
+            / len(confirmation_gate_checks),
+            4,
+        )
+        if blocked_bad_actions_rate < 1.0 or confirmation_gate_rate < 1.0:
+            raise RuntimeError(
+                "guardrail loop failed: "
+                f"block={blocked_bad_actions_rate:.4f} confirmation={confirmation_gate_rate:.4f}"
+            )
 
         print("[loop] creating replay lineage on source runtime", flush=True)
         source_process = start_server(source_config, log_path=source_log)
@@ -576,34 +893,118 @@ rate_limit_per_sec = 5000
                 "demo_clients": [
                     "http_api_store",
                     "cli_passport_export",
+                    "cli_reader_open",
                     "http_api_import",
                     "http_query_explain",
+                    "http_review_queue",
+                    "http_review_action",
+                    "http_proxy_guardrail",
                     "http_history_replay",
                 ],
+                "everyday_loops": 3,
                 "bundle_entries": bundle_entries,
                 "portability_queries": len(PORTABILITY_CASES),
+                "repeated_context_elimination_rate": repeated_context_elimination_rate,
                 "portability_success_rate": portability_success_rate,
                 "merge_count": int(merge_preview["merge_count"]),
                 "conflict_count": int(merge_preview["conflict_count"]),
                 "merge_conflict_rate": merge_conflict_rate,
+                "review_throughput_per_minute": review_throughput_per_minute,
+                "blocked_bad_actions_rate": blocked_bad_actions_rate,
+                "confirmation_gate_rate": confirmation_gate_rate,
                 "replay_fidelity": replay_fidelity,
                 "task_state_cases": len(TASK_STATE_CASES),
                 "task_state_quality": task_state_quality,
             },
+            "loops": [
+                {
+                    "id": "portable_project_transfer",
+                    "title": "Portable project transfer",
+                    "clients": [
+                        "http_api_store",
+                        "cli_passport_export",
+                        "cli_reader_open",
+                        "http_api_import",
+                        "http_query_explain",
+                    ],
+                    "devices": ["source_runtime", "target_runtime"],
+                    "status": "pass",
+                    "note": "Project context moves from one runtime to another without losing recall anchors.",
+                },
+                {
+                    "id": "team_review_triage",
+                    "title": "Team review triage",
+                    "clients": ["http_team_governance_propose", "http_review_queue", "http_review_action"],
+                    "devices": ["target_runtime"],
+                    "status": "pass",
+                    "note": "Governed candidate memories are queued, reviewed, and confirmed in one measurable operator loop.",
+                },
+                {
+                    "id": "guarded_production_actions",
+                    "title": "Guarded production actions",
+                    "clients": ["http_store", "http_query_explain", "http_proxy_guardrail"],
+                    "devices": ["target_runtime", "dummy_upstream"],
+                    "status": "pass",
+                    "note": "Risky delete actions block and deploy actions require confirmation before upstream execution.",
+                },
+            ],
+            "claims": {
+                "stable": [
+                    "Repeated-context elimination in daily loops is measured locally and reproducibly.",
+                    "Portable transfer, replay fidelity, review throughput, and blocked bad actions are exercised on every full run.",
+                ],
+                "experimental": [
+                    "Retrieval shadow lanes, identifier-first routing, and extraction-quality deltas remain tunable rather than default guarantees.",
+                    "Provider-specific token and latency artifacts are evidence, not universal promises.",
+                ],
+                "moonshot": [
+                    "Always-on ambient utility across every client and every workday remains a directional product claim, not a current CI guarantee.",
+                ],
+            },
             "items": build_items(
                 portability_success_rate,
                 portability_hits,
+                repeated_context_elimination_rate,
                 merge_preview,
                 merge_conflict_rate,
+                review_confirmed,
+                review_throughput_per_minute,
+                blocked_bad_actions_rate,
+                confirmation_gate_rate,
                 replay_fidelity,
                 replay_checks,
                 task_state_quality,
                 task_state_hits,
+                3,
             ),
             "details": {
                 "passport_export_stdout": passport_export_stdout,
+                "reader_open_stdout": run_cli(
+                    "--config",
+                    str(source_config),
+                    "reader",
+                    "open",
+                    str(bundle_path),
+                    "--format",
+                    "json",
+                ),
                 "portability_cases": portability_details,
                 "task_state_cases": task_state_details,
+                "review_loop": {
+                    "confirmed_count": review_confirmed,
+                    "duration_seconds": round(review_duration_seconds, 4),
+                    "throughput_per_minute": review_throughput_per_minute,
+                },
+                "guardrail_loop": {
+                    "delete_explain_decision": (delete_explain.get("policy_firewall") or {}).get(
+                        "decision"
+                    ),
+                    "delete_proxy_status": delete_proxy_status,
+                    "deploy_proxy_status": deploy_proxy_status,
+                    "deploy_confirm_status": deploy_confirm_status,
+                    "blocked_bad_actions_rate": blocked_bad_actions_rate,
+                    "confirmation_gate_rate": confirmation_gate_rate,
+                },
                 "replay_checks": replay_checks,
                 "source_history": {
                     "root_id": source_history.get("root_id"),
@@ -624,6 +1025,9 @@ rate_limit_per_sec = 5000
             stop_process(source_process)
         if target_process is not None:
             stop_process(target_process)
+        upstream_server.shutdown()
+        upstream_server.server_close()
+        upstream_thread.join(timeout=2)
 
 
 if __name__ == "__main__":
