@@ -222,6 +222,7 @@ Control memory behavior per request via headers:
 |--------|--------|--------|
 | `X-Memory-Mode` | `full` / `readonly` / `off` / `after` | Set memory mode for this request |
 | `X-Memory-After` | `YYYY-MM-DD` | Only inject memories after this date (with mode `after`) |
+| `X-Memory-Policy-Confirm` | `true` / `1` / `yes` | Confirm a risky action that the policy firewall marked as `require_confirmation` |
 
 Server operators can set a default mode in config (`default_memory_mode`) and disable client overrides with `allow_client_memory_control = false`.
 
@@ -352,6 +353,16 @@ For recognized task classes (`deploy`, `bugfix`, `review`, `style`), memoryOSS n
 - evidence
 
 The admin explain surface exposes the same compiled task state plus the input memories and condensation decisions that produced it.
+
+Query explain now also returns a `policy_firewall` section. For risky action prompts (`deploy`, `delete`, `exfiltrate`, `override`) the same policy evaluation used by the proxy reports whether the request would `warn`, `block`, or `require_confirmation`, plus the exact policy memories that caused that intervention.
+
+Proxy responses surface the same preflight via headers:
+- `x-memory-policy-decision`
+- `x-memory-policy-actions`
+- `x-memory-policy-match-count`
+- `x-memory-policy-confirmed`
+
+If the firewall returns `require_confirmation`, resend the request with `X-Memory-Policy-Confirm: true`. Hard blocks return `403` before the upstream model is called.
 
 ### Portable Runtime Contract
 

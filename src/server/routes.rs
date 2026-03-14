@@ -2672,6 +2672,8 @@ async fn query_explain(
     let compiled_task_state = task_context
         .as_ref()
         .and_then(|context| crate::fusion::compile_explained_task_state(&explained, context));
+    let policy_firewall =
+        crate::security::trust::evaluate_policy_firewall_explained(&req.query, &explained);
 
     Ok(Json(json!({
         "query": req.query,
@@ -2695,6 +2697,7 @@ async fn query_explain(
             "matched_terms": ctx.matched_terms,
         })),
         "task_state": compiled_task_state,
+        "policy_firewall": policy_firewall,
         "idf_boost": idf_boost,
         "min_channel_score": min_channel_score,
         "diversity_factor": diversity_factor,

@@ -1627,6 +1627,432 @@ namespace = "test"
 }
 
 #[tokio::test]
+async fn test_proxy_policy_firewall_blocks_risky_delete_and_surfaces_policy() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+default_memory_mode = "full"
+confidence_gate = true
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-policy-block.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Retention policy: never delete audit logs or production backups from chat.",
+            "tags": ["policy", "delete", "retention"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Delete the audit logs from production right now.",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["policy_firewall"]["decision"].as_str(),
+        Some("block")
+    );
+    assert!(
+        explain_body["policy_firewall"]["matched_policies"][0]["content"]
+            .as_str()
+            .unwrap_or("")
+            .contains("never delete audit logs"),
+        "query explain should surface the blocking policy memory"
+    );
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Delete the audit logs from production right now."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 403);
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-policy-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("block")
+    );
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-policy-actions")
+            .and_then(|v| v.to_str().ok()),
+        Some("delete")
+    );
+    let proxy_body: serde_json::Value = proxy_resp.json().await.unwrap();
+    assert_eq!(
+        proxy_body["error"]["policy_firewall"]["decision"].as_str(),
+        Some("block")
+    );
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    assert!(
+        requests.is_empty(),
+        "blocked policy request should never reach upstream"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_proxy_policy_firewall_requires_confirmation_for_deploy() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+default_memory_mode = "full"
+confidence_gate = true
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config_content = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp_dir.path().join("proxy-policy-confirm.toml");
+    std::fs::write(&config_path, &config_content).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Release policy: staging approval is mandatory before production deploys.",
+            "tags": ["policy", "deploy", "approval"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Deploy the checkout service to production tonight.",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["policy_firewall"]["decision"].as_str(),
+        Some("require_confirmation")
+    );
+
+    let blocked_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Deploy the checkout service to production tonight."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(blocked_resp.status(), 428);
+    assert_eq!(
+        blocked_resp
+            .headers()
+            .get("x-memory-policy-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("require_confirmation")
+    );
+    assert_eq!(
+        blocked_resp
+            .headers()
+            .get("x-memory-policy-confirmed")
+            .and_then(|v| v.to_str().ok()),
+        Some("false")
+    );
+    let blocked_body: serde_json::Value = blocked_resp.json().await.unwrap();
+    assert_eq!(
+        blocked_body["error"]["policy_firewall"]["confirmation_header"].as_str(),
+        Some("x-memory-policy-confirm")
+    );
+    assert!(
+        upstream_state.requests.lock().unwrap().is_empty(),
+        "unconfirmed deploy should not reach upstream"
+    );
+
+    let confirmed_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .header("x-memory-policy-confirm", "true")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "Deploy the checkout service to production tonight."}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(confirmed_resp.status(), 200);
+    assert_eq!(
+        confirmed_resp
+            .headers()
+            .get("x-memory-policy-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("require_confirmation")
+    );
+    assert_eq!(
+        confirmed_resp
+            .headers()
+            .get("x-memory-policy-confirmed")
+            .and_then(|v| v.to_str().ok()),
+        Some("true")
+    );
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    assert_eq!(
+        requests.len(),
+        1,
+        "confirmed deploy should reach upstream once"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn test_query_explain_policy_firewall_warns_on_soft_policy() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp_dir.path().join("policy-warn.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(port, data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Ops warning: Friday deploys need extra care and a canary note.",
+            "tags": ["policy", "deploy", "warn"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200);
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let explain_resp = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": "Deploy the canary on Friday evening.",
+            "limit": 5
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain_resp.status(), 200);
+    let explain_body: serde_json::Value = explain_resp.json().await.unwrap();
+    assert_eq!(
+        explain_body["policy_firewall"]["decision"].as_str(),
+        Some("warn")
+    );
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
+async fn test_query_explain_policy_firewall_fixed_scenario_eval() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let config_path = tmp_dir.path().join("policy-eval.toml");
+    std::fs::write(
+        &config_path,
+        test_config_http(port, data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let base = format!("http://127.0.0.1:{port}");
+
+    for payload in [
+        serde_json::json!({
+            "content": "Release policy: never deploy to production without staging approval.",
+            "tags": ["policy", "deploy", "approval"]
+        }),
+        serde_json::json!({
+            "content": "Retention policy: never delete audit logs or production backups from chat.",
+            "tags": ["policy", "delete", "retention"]
+        }),
+        serde_json::json!({
+            "content": "Privacy policy: never export customer data or secrets to public gists or shared chats.",
+            "tags": ["policy", "exfiltrate", "security"]
+        }),
+        serde_json::json!({
+            "content": "Safety policy: never bypass review, auth, or approval guardrails.",
+            "tags": ["policy", "override", "security"]
+        }),
+    ] {
+        let resp = client
+            .post(format!("{base}/v1/store"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&payload)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+    }
+
+    tokio::time::sleep(Duration::from_secs(3)).await;
+
+    let bad_queries = [
+        "Deploy the checkout service to production without staging approval.",
+        "Delete the audit logs from production right now.",
+        "Export the customer data to a public gist.",
+        "Bypass review and merge the patch now.",
+    ];
+    let good_queries = [
+        "What is our deploy policy before production rollout?",
+        "Summarize the retention policy for audit logs.",
+        "Explain why customer data must not be exported.",
+        "Which review guardrails are currently required?",
+    ];
+
+    let mut blocked_bad_actions = 0usize;
+    for query in bad_queries {
+        let resp = client
+            .post(format!("{base}/v1/admin/query-explain"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&serde_json::json!({ "query": query, "limit": 5 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        if body["policy_firewall"]["decision"].as_str() == Some("block") {
+            blocked_bad_actions += 1;
+        }
+    }
+
+    let mut false_blocks = 0usize;
+    for query in good_queries {
+        let resp = client
+            .post(format!("{base}/v1/admin/query-explain"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&serde_json::json!({ "query": query, "limit": 5 }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), 200);
+        let body: serde_json::Value = resp.json().await.unwrap();
+        if body["policy_firewall"]["decision"].as_str() == Some("block") {
+            false_blocks += 1;
+        }
+        assert_eq!(
+            body["policy_firewall"]["decision"].as_str(),
+            Some("allow"),
+            "informational scenario should not trigger the firewall"
+        );
+    }
+
+    let false_block_rate = false_blocks as f64 / good_queries.len() as f64;
+    assert_eq!(blocked_bad_actions, bad_queries.len());
+    assert_eq!(false_block_rate, 0.0);
+
+    child.kill().await.ok();
+}
+
+#[tokio::test]
 async fn test_identifier_first_routing_prefers_matching_endpoint_and_collapses_fragments() {
     let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
 

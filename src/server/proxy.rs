@@ -21,6 +21,9 @@ use axum::response::{IntoResponse, Response};
 use crate::config::{ProxyConfig, ProxyKeyMapping};
 use crate::memory::MemoryStatus;
 use crate::memory::{Memory, ScoredMemory};
+use crate::security::trust::{
+    POLICY_CONFIRMATION_HEADER, PolicyFirewallDecision, PolicyFirewallDecisionKind,
+};
 use crate::server::routes::{AppState, SharedState};
 
 /// Shared HTTP client — reuses connections, avoids per-request overhead.
@@ -534,6 +537,25 @@ fn record_gate_decision(state: &AppState, decision: crate::scoring::RetrievalCon
     counter.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
+fn record_proxy_metrics(
+    state: &AppState,
+    gate_evaluated: bool,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
+    injected_count: u64,
+) {
+    state
+        .metrics
+        .proxy_requests
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if gate_evaluated {
+        record_gate_decision(state, gate_decision);
+    }
+    state
+        .metrics
+        .proxy_memories_injected
+        .fetch_add(injected_count, std::sync::atomic::Ordering::Relaxed);
+}
+
 fn add_memory_headers(
     mut response: axum::http::response::Builder,
     injected_count: u64,
@@ -541,6 +563,132 @@ fn add_memory_headers(
 ) -> axum::http::response::Builder {
     response = response.header("x-memory-injected-count", injected_count.to_string());
     response.header("x-memory-gate-decision", gate_decision.to_string())
+}
+
+fn policy_confirmation_supplied(headers: &HeaderMap) -> bool {
+    headers
+        .get(POLICY_CONFIRMATION_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| {
+            matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "1" | "true" | "yes" | "confirm"
+            )
+        })
+        .unwrap_or(false)
+}
+
+fn add_policy_headers(
+    mut response: axum::http::response::Builder,
+    policy_firewall: Option<&PolicyFirewallDecision>,
+    policy_confirmed: bool,
+) -> axum::http::response::Builder {
+    let Some(policy_firewall) = policy_firewall.filter(|decision| decision.active) else {
+        return response;
+    };
+
+    response = response.header(
+        "x-memory-policy-decision",
+        policy_firewall.decision.to_string(),
+    );
+    if !policy_firewall.risky_actions.is_empty() {
+        let actions = policy_firewall
+            .risky_actions
+            .iter()
+            .map(std::string::ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(",");
+        response = response.header("x-memory-policy-actions", actions);
+    }
+    if !policy_firewall.matched_policies.is_empty() {
+        response = response.header(
+            "x-memory-policy-match-count",
+            policy_firewall.matched_policies.len().to_string(),
+        );
+    }
+    if policy_firewall.decision == PolicyFirewallDecisionKind::RequireConfirmation
+        || policy_confirmed
+    {
+        response = response.header("x-memory-policy-confirmed", policy_confirmed.to_string());
+    }
+    response
+}
+
+fn add_proxy_headers(
+    response: axum::http::response::Builder,
+    injected_count: u64,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
+    policy_firewall: Option<&PolicyFirewallDecision>,
+    policy_confirmed: bool,
+) -> axum::http::response::Builder {
+    let response = add_memory_headers(response, injected_count, gate_decision);
+    add_policy_headers(response, policy_firewall, policy_confirmed)
+}
+
+fn policy_firewall_response_message(policy_firewall: &PolicyFirewallDecision) -> String {
+    match policy_firewall.decision {
+        PolicyFirewallDecisionKind::Block => {
+            "request blocked by policy memory firewall".to_string()
+        }
+        PolicyFirewallDecisionKind::RequireConfirmation => format!(
+            "risky action requires confirmation via {}: true",
+            policy_firewall
+                .confirmation_header
+                .as_deref()
+                .unwrap_or(POLICY_CONFIRMATION_HEADER)
+        ),
+        PolicyFirewallDecisionKind::Warn => "request flagged by policy memory firewall".to_string(),
+        PolicyFirewallDecisionKind::Allow => "policy memory firewall allowed request".to_string(),
+    }
+}
+
+fn policy_firewall_preflight_response(
+    policy_firewall: &PolicyFirewallDecision,
+    gate_decision: crate::scoring::RetrievalConfidenceDecision,
+    anthropic_wire_format: bool,
+    policy_confirmed: bool,
+) -> Option<Response> {
+    let status = match policy_firewall.decision {
+        PolicyFirewallDecisionKind::Block => StatusCode::FORBIDDEN,
+        PolicyFirewallDecisionKind::RequireConfirmation if !policy_confirmed => {
+            StatusCode::PRECONDITION_REQUIRED
+        }
+        _ => return None,
+    };
+    let message = policy_firewall_response_message(policy_firewall);
+    let body = if anthropic_wire_format {
+        serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "policy_firewall_error",
+                "message": message,
+                "policy_firewall": policy_firewall,
+            }
+        })
+    } else {
+        serde_json::json!({
+            "error": {
+                "message": message,
+                "type": "policy_firewall_error",
+                "policy_firewall": policy_firewall,
+            }
+        })
+    };
+    let bytes = serde_json::to_vec(&body).unwrap_or_else(|_| b"{}".to_vec());
+    let response = add_proxy_headers(
+        Response::builder()
+            .status(status)
+            .header("content-type", "application/json"),
+        0,
+        gate_decision,
+        Some(policy_firewall),
+        policy_confirmed,
+    );
+    Some(
+        response
+            .body(axum::body::Body::from(bytes))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+    )
 }
 
 fn should_store_extracted_fact(content: &str) -> bool {
@@ -1178,6 +1326,8 @@ pub async fn proxy_chat_completions(
     let mut injected_count = 0u64;
     let mut gate_decision = crate::scoring::RetrievalConfidenceDecision::Abstain;
     let mut gate_evaluated = false;
+    let mut policy_firewall = PolicyFirewallDecision::default();
+    let mut policy_confirmed = false;
 
     // Extract model name before mutable borrow of messages
     let model_name = body
@@ -1233,6 +1383,23 @@ pub async fn proxy_chat_completions(
                     );
                     gate_decision = gate.decision;
                     gate_evaluated = true;
+                    let policy_source = if qualified.is_empty() {
+                        eligible.as_slice()
+                    } else {
+                        qualified.as_slice()
+                    };
+                    policy_firewall =
+                        crate::security::trust::evaluate_policy_firewall(&query, policy_source);
+                    policy_confirmed = policy_confirmation_supplied(headers);
+                    if let Some(response) = policy_firewall_preflight_response(
+                        &policy_firewall,
+                        gate_decision,
+                        false,
+                        policy_confirmed,
+                    ) {
+                        record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+                        return response;
+                    }
 
                     // Now mutable borrow for injection
                     if let Some(messages) = body.get_mut("messages").and_then(|m| m.as_array_mut())
@@ -1257,18 +1424,8 @@ pub async fn proxy_chat_completions(
         }
     }
 
-    // Update proxy metrics
-    state
-        .metrics
-        .proxy_requests
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if gate_evaluated {
-        record_gate_decision(&state, gate_decision);
-    }
-    state
-        .metrics
-        .proxy_memories_injected
-        .fetch_add(injected_count, std::sync::atomic::Ordering::Relaxed);
+    let policy_headers = policy_firewall.active.then_some(policy_firewall.clone());
+    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
 
     // Detect streaming mode
     let is_streaming = body
@@ -1351,6 +1508,8 @@ pub async fn proxy_chat_completions(
             namespace.to_string(),
             messages_for_extract,
             extraction_override.clone(),
+            policy_headers.clone(),
+            policy_confirmed,
         )
         .await;
     }
@@ -1418,9 +1577,15 @@ pub async fn proxy_chat_completions(
         }
     }
 
-    add_memory_headers(response, injected_count, gate_decision)
-        .body(axum::body::Body::from(resp_body))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_headers.as_ref(),
+        policy_confirmed,
+    )
+    .body(axum::body::Body::from(resp_body))
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Forward an SSE stream from upstream to client, accumulating content for extraction.
@@ -1434,6 +1599,8 @@ async fn forward_stream(
     namespace: String,
     messages: Option<Vec<serde_json::Value>>,
     extraction_override: Option<ExtractionOverride>,
+    policy_firewall: Option<PolicyFirewallDecision>,
+    policy_confirmed: bool,
 ) -> Response {
     use futures_util::StreamExt;
     use tokio::sync::mpsc;
@@ -1517,7 +1684,13 @@ async fn forward_stream(
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive");
-    response = add_memory_headers(response, injected_count, gate_decision);
+    response = add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_firewall.as_ref(),
+        policy_confirmed,
+    );
 
     // Forward rate limit headers from upstream
     for (name, value) in resp_headers.iter() {
@@ -2775,6 +2948,8 @@ pub async fn proxy_anthropic_messages(
     let mut injected_count = 0u64;
     let mut gate_decision = crate::scoring::RetrievalConfidenceDecision::Abstain;
     let mut gate_evaluated = false;
+    let mut policy_firewall = PolicyFirewallDecision::default();
+    let mut policy_confirmed = false;
 
     // Extract model name
     let model_name = body
@@ -2830,6 +3005,23 @@ pub async fn proxy_anthropic_messages(
                     );
                     gate_decision = gate.decision;
                     gate_evaluated = true;
+                    let policy_source = if qualified.is_empty() {
+                        eligible.as_slice()
+                    } else {
+                        qualified.as_slice()
+                    };
+                    policy_firewall =
+                        crate::security::trust::evaluate_policy_firewall(&query, policy_source);
+                    policy_confirmed = policy_confirmation_supplied(headers);
+                    if let Some(response) = policy_firewall_preflight_response(
+                        &policy_firewall,
+                        gate_decision,
+                        true,
+                        policy_confirmed,
+                    ) {
+                        record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+                        return response;
+                    }
 
                     injected_count = inject_memories_anthropic(
                         &mut body,
@@ -2853,18 +3045,8 @@ pub async fn proxy_anthropic_messages(
         }
     }
 
-    // Update metrics
-    state
-        .metrics
-        .proxy_requests
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if gate_evaluated {
-        record_gate_decision(&state, gate_decision);
-    }
-    state
-        .metrics
-        .proxy_memories_injected
-        .fetch_add(injected_count, std::sync::atomic::Ordering::Relaxed);
+    let policy_headers = policy_firewall.active.then_some(policy_firewall.clone());
+    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
 
     // Detect streaming
     let is_streaming = body
@@ -2970,6 +3152,8 @@ pub async fn proxy_anthropic_messages(
             namespace.to_string(),
             messages_for_extract,
             extraction_override.clone(),
+            policy_headers.clone(),
+            policy_confirmed,
         )
         .await;
     }
@@ -3036,9 +3220,15 @@ pub async fn proxy_anthropic_messages(
         }
     }
 
-    add_memory_headers(response, injected_count, gate_decision)
-        .body(axum::body::Body::from(resp_body))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_headers.as_ref(),
+        policy_confirmed,
+    )
+    .body(axum::body::Body::from(resp_body))
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Forward Anthropic SSE stream with content accumulation for extraction.
@@ -3051,6 +3241,8 @@ async fn forward_anthropic_stream(
     namespace: String,
     messages: Option<Vec<serde_json::Value>>,
     extraction_override: Option<ExtractionOverride>,
+    policy_firewall: Option<PolicyFirewallDecision>,
+    policy_confirmed: bool,
 ) -> Response {
     use futures_util::StreamExt;
     use tokio::sync::mpsc;
@@ -3135,7 +3327,13 @@ async fn forward_anthropic_stream(
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive");
-    response = add_memory_headers(response, injected_count, gate_decision);
+    response = add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_firewall.as_ref(),
+        policy_confirmed,
+    );
 
     for (name, value) in resp_headers.iter() {
         if name == "request-id" || name.as_str().starts_with("x-ratelimit") {
@@ -3796,6 +3994,8 @@ pub async fn proxy_responses(
     let mut injected_count = 0u64;
     let mut gate_decision = crate::scoring::RetrievalConfidenceDecision::Abstain;
     let mut gate_evaluated = false;
+    let mut policy_firewall = PolicyFirewallDecision::default();
+    let mut policy_confirmed = false;
 
     if let OpenAIAuth::OAuthPassthrough { token, .. } = &openai_auth
         && oauth_token_lacks_openai_proxy_scope(token)
@@ -3893,6 +4093,23 @@ pub async fn proxy_responses(
                 );
                 gate_decision = gate.decision;
                 gate_evaluated = true;
+                let policy_source = if qualified.is_empty() {
+                    eligible.as_slice()
+                } else {
+                    qualified.as_slice()
+                };
+                policy_firewall =
+                    crate::security::trust::evaluate_policy_firewall(&query, policy_source);
+                policy_confirmed = policy_confirmation_supplied(headers);
+                if let Some(response) = policy_firewall_preflight_response(
+                    &policy_firewall,
+                    gate_decision,
+                    false,
+                    policy_confirmed,
+                ) {
+                    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
+                    return response;
+                }
 
                 injected_count =
                     inject_memories(&mut messages, &qualified, memory_budget, Some(&query)) as u64;
@@ -3917,18 +4134,8 @@ pub async fn proxy_responses(
         }
     }
 
-    // Update metrics
-    state
-        .metrics
-        .proxy_requests
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    if gate_evaluated {
-        record_gate_decision(&state, gate_decision);
-    }
-    state
-        .metrics
-        .proxy_memories_injected
-        .fetch_add(injected_count, std::sync::atomic::Ordering::Relaxed);
+    let policy_headers = policy_firewall.active.then_some(policy_firewall.clone());
+    record_proxy_metrics(&state, gate_evaluated, gate_decision, injected_count);
 
     let is_streaming = body
         .get("stream")
@@ -4002,6 +4209,8 @@ pub async fn proxy_responses(
             namespace.to_string(),
             messages_for_extract,
             extraction_override.clone(),
+            policy_headers.clone(),
+            policy_confirmed,
         )
         .await;
     }
@@ -4022,6 +4231,8 @@ pub async fn proxy_responses(
             namespace.to_string(),
             messages_for_extract,
             extraction_override.clone(),
+            policy_headers.clone(),
+            policy_confirmed,
         )
         .await;
     }
@@ -4095,20 +4306,26 @@ pub async fn proxy_responses(
         resp_body.to_vec()
     };
 
-    add_memory_headers(response, injected_count, gate_decision)
-        .header(
-            "content-type",
-            if use_oauth_chat_fallback && status.is_success() {
-                "application/json"
-            } else {
-                resp_headers
-                    .get("content-type")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("application/json")
-            },
-        )
-        .body(axum::body::Body::from(response_body))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+    add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_headers.as_ref(),
+        policy_confirmed,
+    )
+    .header(
+        "content-type",
+        if use_oauth_chat_fallback && status.is_success() {
+            "application/json"
+        } else {
+            resp_headers
+                .get("content-type")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("application/json")
+        },
+    )
+    .body(axum::body::Body::from(response_body))
+    .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 /// Extract assistant text from Responses API output format.
@@ -4143,6 +4360,8 @@ async fn forward_responses_stream(
     namespace: String,
     messages: Option<Vec<serde_json::Value>>,
     extraction_override: Option<ExtractionOverride>,
+    policy_firewall: Option<PolicyFirewallDecision>,
+    policy_confirmed: bool,
 ) -> Response {
     use futures_util::StreamExt;
     use tokio::sync::mpsc;
@@ -4225,7 +4444,13 @@ async fn forward_responses_stream(
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive");
-    response = add_memory_headers(response, injected_count, gate_decision);
+    response = add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_firewall.as_ref(),
+        policy_confirmed,
+    );
 
     for (name, value) in resp_headers.iter() {
         if name == "x-request-id" || name.as_str().starts_with("x-ratelimit") {
@@ -4247,6 +4472,8 @@ async fn forward_chat_stream_as_responses(
     namespace: String,
     messages: Option<Vec<serde_json::Value>>,
     extraction_override: Option<ExtractionOverride>,
+    policy_firewall: Option<PolicyFirewallDecision>,
+    policy_confirmed: bool,
 ) -> Response {
     use futures_util::StreamExt;
     use std::collections::BTreeMap;
@@ -4477,7 +4704,13 @@ async fn forward_chat_stream_as_responses(
         .header("content-type", "text/event-stream")
         .header("cache-control", "no-cache")
         .header("connection", "keep-alive");
-    response = add_memory_headers(response, injected_count, gate_decision);
+    response = add_proxy_headers(
+        response,
+        injected_count,
+        gate_decision,
+        policy_firewall.as_ref(),
+        policy_confirmed,
+    );
 
     for (name, value) in resp_headers.iter() {
         if name == "x-request-id" || name.as_str().starts_with("x-ratelimit") {
