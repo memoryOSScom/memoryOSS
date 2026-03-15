@@ -27,7 +27,7 @@ from runner_common import (
 DEFAULT_OUTPUT_JSON = Path(
     os.environ.get(
         "UNIVERSAL_LOOP_OUTPUT_JSON",
-        ROOT_DIR / "tests" / "universal-memory-loop-report.json",
+        ROOT_DIR / "tests" / ".last-run" / "universal-memory-loop-report.json",
     )
 )
 

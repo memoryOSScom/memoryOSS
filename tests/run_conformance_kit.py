@@ -9,7 +9,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 OUTPUT_JSON = Path(
-    os.environ.get("CONFORMANCE_OUTPUT_JSON", ROOT / "tests/conformance-report.json")
+    os.environ.get("CONFORMANCE_OUTPUT_JSON", ROOT / "tests/.last-run/conformance-report.json")
 )
 FIXTURES = [
     ("runtime_contract", ROOT / "conformance/fixtures/runtime-contract.json"),
@@ -28,6 +28,7 @@ def run(command):
 
 
 def main() -> int:
+    OUTPUT_JSON.parent.mkdir(parents=True, exist_ok=True)
     missing = [str(path) for path in SCHEMAS + [fixture for _, fixture in FIXTURES] if not path.exists()]
     if missing:
         raise SystemExit(f"missing conformance kit files: {', '.join(missing)}")

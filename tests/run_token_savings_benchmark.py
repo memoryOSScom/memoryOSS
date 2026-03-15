@@ -457,7 +457,8 @@ def run_benchmark():
             "tasks": results,
         }
 
-        report_path = os.path.join(os.path.dirname(__file__), "token-savings-report.json")
+        report_path = os.path.join(os.path.dirname(__file__), ".last-run", "token-savings-report.json")
+        os.makedirs(os.path.dirname(report_path), exist_ok=True)
         with open(report_path, "w") as f:
             json.dump(report, f, indent=2)
         print(f"\n  Report saved: {report_path}")
