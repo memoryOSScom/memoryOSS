@@ -1,17 +1,17 @@
 {
   "runner": "tests/run_all.sh",
-  "generated_at": "2026-03-14T23:50:42.671718+00:00",
-  "duration_seconds": 1329,
+  "generated_at": "2026-03-15T09:55:08.771576+00:00",
+  "duration_seconds": 1804,
   "summary": {
     "status": "pass",
-    "total_checks_passed": 300,
+    "total_checks_passed": 302,
     "sections": 26,
     "failed_steps": 0,
     "skipped_steps": 0,
-    "rust_unit_tests": 91,
+    "rust_unit_tests": 93,
     "rust_integration_tests": 78,
     "typescript_tests": 6,
-    "wizard_assertions": 186,
+    "wizard_assertions": 253,
     "wizard_scenarios": 13,
     "benchmark_memories": 20000,
     "calibration_queries": 20000,
@@ -21,7 +21,7 @@
     "universal_loop_portability_rate": 1.0,
     "universal_loop_replay_fidelity": 1.0,
     "repeated_context_elimination_rate": 0.79,
-    "review_throughput_per_minute": 353.64,
+    "review_throughput_per_minute": 219.41,
     "blocked_bad_actions_rate": 1.0,
     "update_plane_rollback_recovery_rate": 1.0,
     "compatibility_lts_tests": 2,
@@ -32,91 +32,91 @@
       "slug": "cargo_fmt",
       "label": "cargo fmt --check",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 4,
       "log_path": "tests/.last-run/cargo_fmt.log"
     },
     {
       "slug": "cargo_clippy",
       "label": "cargo clippy -- -D warnings",
       "status": "pass",
-      "duration_seconds": 2,
+      "duration_seconds": 4,
       "log_path": "tests/.last-run/cargo_clippy.log"
     },
     {
       "slug": "cargo_test",
       "label": "cargo test",
       "status": "pass",
-      "duration_seconds": 61,
+      "duration_seconds": 196,
       "log_path": "tests/.last-run/cargo_test.log"
     },
     {
       "slug": "cargo_build",
       "label": "cargo build",
       "status": "pass",
-      "duration_seconds": 1,
+      "duration_seconds": 3,
       "log_path": "tests/.last-run/cargo_build.log"
     },
     {
       "slug": "wizard_smoke",
       "label": "setup wizard smoke test",
       "status": "pass",
-      "duration_seconds": 1,
+      "duration_seconds": 3,
       "log_path": "tests/.last-run/wizard_smoke.log"
     },
     {
       "slug": "wizard_matrix",
       "label": "setup wizard matrix",
       "status": "pass",
-      "duration_seconds": 39,
+      "duration_seconds": 29,
       "log_path": "tests/.last-run/wizard_matrix.log"
     },
     {
       "slug": "benchmark",
       "label": "20k benchmark",
       "status": "pass",
-      "duration_seconds": 195,
+      "duration_seconds": 311,
       "log_path": "tests/.last-run/benchmark.log"
     },
     {
       "slug": "calibration",
       "label": "scoring calibration",
       "status": "pass",
-      "duration_seconds": 766,
+      "duration_seconds": 912,
       "log_path": "tests/.last-run/calibration.log"
     },
     {
       "slug": "extraction_eval",
       "label": "extraction quality evaluation",
       "status": "pass",
-      "duration_seconds": 213,
+      "duration_seconds": 218,
       "log_path": "tests/.last-run/extraction_eval.log"
     },
     {
       "slug": "coverage_gaps",
       "label": "coverage gaps",
       "status": "pass",
-      "duration_seconds": 20,
+      "duration_seconds": 31,
       "log_path": "tests/.last-run/coverage_gaps.log"
     },
     {
       "slug": "report_artifact_regression",
       "label": "report artifact regression",
       "status": "pass",
-      "duration_seconds": 1,
+      "duration_seconds": 0,
       "log_path": "tests/.last-run/report_artifact_regression.log"
     },
     {
       "slug": "update_plane",
       "label": "zero-friction update plane",
       "status": "pass",
-      "duration_seconds": 11,
+      "duration_seconds": 55,
       "log_path": "tests/.last-run/update_plane.log"
     },
     {
       "slug": "typescript_sdk",
       "label": "TypeScript SDK build/test",
       "status": "pass",
-      "duration_seconds": 3,
+      "duration_seconds": 7,
       "log_path": "tests/.last-run/typescript_sdk.log"
     },
     {
@@ -130,21 +130,21 @@
       "slug": "compatibility_lts",
       "label": "compatibility and LTS",
       "status": "pass",
-      "duration_seconds": 3,
+      "duration_seconds": 7,
       "log_path": "tests/.last-run/compatibility_lts.log"
     },
     {
       "slug": "universal_memory_loop",
       "label": "everyday utility loop",
       "status": "pass",
-      "duration_seconds": 9,
+      "duration_seconds": 20,
       "log_path": "tests/.last-run/universal_memory_loop.log"
     },
     {
       "slug": "cargo_audit",
       "label": "cargo audit (offline if available)",
       "status": "pass",
-      "duration_seconds": 1,
+      "duration_seconds": 2,
       "log_path": "tests/.last-run/cargo_audit.log"
     }
   ],
@@ -156,28 +156,28 @@
         {
           "name": "cargo fmt --check",
           "status": "pass",
-          "note": "2s"
+          "note": "4s"
         },
         {
           "name": "cargo clippy -- -D warnings",
           "status": "pass",
-          "note": "2s"
+          "note": "4s"
         },
         {
           "name": "cargo test",
           "status": "pass",
-          "note": "61s"
+          "note": "196s"
         },
         {
           "name": "cargo build",
           "status": "pass",
-          "note": "1s"
+          "note": "3s"
         }
       ]
     },
     {
       "title": "Rust Unit Tests",
-      "count": 91,
+      "count": 93,
       "items": [
         {
           "name": "engines::fts::tests::sanitize_user_query_removes_parser_syntax",
@@ -188,11 +188,11 @@
           "status": "pass"
         },
         {
-          "name": "adapters::tests::test_cursor_rule_markdown_normalizes_frontmatter_and_bullets",
+          "name": "adapters::tests::test_git_history_normalizes_conventional_commits",
           "status": "pass"
         },
         {
-          "name": "adapters::tests::test_git_history_normalizes_conventional_commits",
+          "name": "adapters::tests::test_cursor_rule_markdown_normalizes_frontmatter_and_bullets",
           "status": "pass"
         },
         {
@@ -204,7 +204,7 @@
           "status": "pass"
         },
         {
-          "name": "adapters::tests::test_git_history_imports_stay_candidate",
+          "name": "Content fusion preserves unique sentences",
           "status": "pass"
         },
         {
@@ -212,15 +212,11 @@
           "status": "pass"
         },
         {
+          "name": "adapters::tests::test_git_history_imports_stay_candidate",
+          "status": "pass"
+        },
+        {
           "name": "adapters::tests::test_adapter_import_plan_maps_to_contract_preview",
-          "status": "pass"
-        },
-        {
-          "name": "Content fusion preserves unique sentences",
-          "status": "pass"
-        },
-        {
-          "name": "Structural duplicate detection handles containment",
           "status": "pass"
         },
         {
@@ -228,11 +224,7 @@
           "status": "pass"
         },
         {
-          "name": "fusion::tests::test_primitive_collapse_merges_shared_dependency_key",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache session isolation",
+          "name": "Structural duplicate detection handles containment",
           "status": "pass"
         },
         {
@@ -240,11 +232,15 @@
           "status": "pass"
         },
         {
+          "name": "Intent cache invalidation on writes",
+          "status": "pass"
+        },
+        {
           "name": "Intent cache hit/miss behavior",
           "status": "pass"
         },
         {
-          "name": "Intent cache invalidation on writes",
+          "name": "Intent cache session isolation",
           "status": "pass"
         },
         {
@@ -256,6 +252,22 @@
           "status": "pass"
         },
         {
+          "name": "fusion::tests::test_primitive_collapse_merges_shared_dependency_key",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache strips punctuation",
+          "status": "pass"
+        },
+        {
+          "name": "Intent cache keeps meaningful query terms",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_apply_feedback_action_and_review_event_capture_auditable_trail",
+          "status": "pass"
+        },
+        {
           "name": "Intent cache sorts and deduplicates tokens",
           "status": "pass"
         },
@@ -264,23 +276,7 @@
           "status": "pass"
         },
         {
-          "name": "Intent cache strips punctuation",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_apply_lifecycle_policy_archives_old_stale_memory",
-          "status": "pass"
-        },
-        {
-          "name": "Intent cache keeps meaningful query terms",
-          "status": "pass"
-        },
-        {
-          "name": "mcp::tests::marketplace_tool_metadata_covers_every_tool",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_apply_feedback_action_and_review_event_capture_auditable_trail",
+          "name": "memory::tests::test_apply_lifecycle_policy_stales_low_relevance_active_memory",
           "status": "pass"
         },
         {
@@ -288,15 +284,15 @@
           "status": "pass"
         },
         {
+          "name": "memory::tests::test_apply_lifecycle_policy_archives_old_stale_memory",
+          "status": "pass"
+        },
+        {
           "name": "Candidate memories promote from repeated signal",
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memories_contradict_for_negated_fact_pair",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_apply_lifecycle_policy_stales_low_relevance_active_memory",
+          "name": "mcp::tests::marketplace_tool_metadata_covers_every_tool",
           "status": "pass"
         },
         {
@@ -308,7 +304,7 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memory_history_bundle_and_replay_plan_require_empty_target_namespace",
+          "name": "memory::tests::test_memories_contradict_for_negated_fact_pair",
           "status": "pass"
         },
         {
@@ -316,19 +312,7 @@
           "status": "pass"
         },
         {
-          "name": "memory::tests::test_memory_passport_import_plan_reports_create_merge_and_conflict",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_record_reuse_signal_promotes_candidate_and_tracks_outcome",
-          "status": "pass"
-        },
-        {
-          "name": "memory::tests::test_runtime_contract_document_exposes_stable_semantics_and_known_gaps",
-          "status": "pass"
-        },
-        {
-          "name": "Prefetch session tracking avoids duplicate warmups",
+          "name": "memory::tests::test_memory_history_bundle_and_replay_plan_require_empty_target_namespace",
           "status": "pass"
         },
         {
@@ -336,7 +320,11 @@
           "status": "pass"
         },
         {
-          "name": "Prefetch query recording deduplicates repeated prompts",
+          "name": "memory::tests::test_record_reuse_signal_promotes_candidate_and_tracks_outcome",
+          "status": "pass"
+        },
+        {
+          "name": "memory::tests::test_memory_passport_import_plan_reports_create_merge_and_conflict",
           "status": "pass"
         },
         {
@@ -344,7 +332,7 @@
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_detect_identifier_route_finds_env_and_endpoint_queries",
+          "name": "Prefetch session tracking avoids duplicate warmups",
           "status": "pass"
         },
         {
@@ -352,11 +340,19 @@
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_detect_identifier_route_finds_runtime_contract_queries",
+          "name": "Prefetch query recording deduplicates repeated prompts",
+          "status": "pass"
+        },
+        {
+          "name": "scoring::tests::test_detect_identifier_route_finds_env_and_endpoint_queries",
           "status": "pass"
         },
         {
           "name": "scoring::tests::test_detect_task_context_fails_closed_on_ambiguous_query",
+          "status": "pass"
+        },
+        {
+          "name": "scoring::tests::test_detect_identifier_route_finds_runtime_contract_queries",
           "status": "pass"
         },
         {
@@ -368,7 +364,7 @@
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_retrieval_confidence_gate_abstains_without_plausible_candidate",
+          "name": "memory::tests::test_runtime_contract_document_exposes_stable_semantics_and_known_gaps",
           "status": "pass"
         },
         {
@@ -376,11 +372,15 @@
           "status": "pass"
         },
         {
-          "name": "scoring::tests::test_retrieval_confidence_gate_injects_on_strong_candidate",
+          "name": "scoring::tests::test_retrieval_confidence_gate_abstains_without_plausible_candidate",
           "status": "pass"
         },
         {
           "name": "scoring::tests::test_retrieval_confidence_gate_needs_more_evidence_when_top_candidates_are_close",
+          "status": "pass"
+        },
+        {
+          "name": "scoring::tests::test_retrieval_confidence_gate_injects_on_strong_candidate",
           "status": "pass"
         },
         {
@@ -396,15 +396,11 @@
           "status": "pass"
         },
         {
+          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
+          "status": "pass"
+        },
+        {
           "name": "scoring::tests::test_scored_retrieval_confidence_gate_needs_more_evidence_for_shared_query_anchor",
-          "status": "pass"
-        },
-        {
-          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
-          "status": "pass"
-        },
-        {
-          "name": "security::trust::tests::policy_firewall_skips_low_trust_and_contested_policy_memories",
           "status": "pass"
         },
         {
@@ -412,7 +408,7 @@
           "status": "pass"
         },
         {
-          "name": "security::auth::tests::create_and_validate_jwt_sets_audience",
+          "name": "security::auth::tests::validate_jwt_rejects_missing_audience",
           "status": "pass"
         },
         {
@@ -424,6 +420,22 @@
           "status": "pass"
         },
         {
+          "name": "security::trust::tests::policy_firewall_skips_low_trust_and_contested_policy_memories",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::build_memory_injection_uses_compiled_task_state_for_review_queries",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::build_memory_injection_uses_summary_and_evidence_and_compacts_multisentence_context",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_decision",
+          "status": "pass"
+        },
+        {
           "name": "server::proxy::tests::extracted_fact_fallback_detects_negative_display_preference",
           "status": "pass"
         },
@@ -432,31 +444,11 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extracted_fact_filter_keeps_project_specific_decision",
-          "status": "pass"
-        },
-        {
           "name": "security::trust::tests::policy_firewall_detects_block_require_confirmation_and_warn",
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_capability_summary",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::build_memory_injection_uses_summary_and_evidence_and_compacts_multisentence_context",
-          "status": "pass"
-        },
-        {
           "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_copy",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::extracted_fact_filter_rejects_transient_status",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::build_memory_injection_uses_compiled_task_state_for_review_queries",
           "status": "pass"
         },
         {
@@ -472,7 +464,11 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_when_provider_is_claude",
+          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_override_for_openai_default",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_generic_product_capability_summary",
           "status": "pass"
         },
         {
@@ -480,11 +476,19 @@
           "status": "pass"
         },
         {
+          "name": "server::proxy::tests::extraction_uses_mapping_key_as_openai_fallback",
+          "status": "pass"
+        },
+        {
           "name": "server::proxy::tests::extraction_request_disables_openai_oauth_override_without_real_key",
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_uses_mapping_key_as_openai_fallback",
+          "name": "server::proxy::tests::extracted_fact_filter_rejects_transient_status",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_when_provider_is_claude",
           "status": "pass"
         },
         {
@@ -500,15 +504,7 @@
           "status": "pass"
         },
         {
-          "name": "server::proxy::tests::extraction_request_disables_claude_oauth_override_for_openai_default",
-          "status": "pass"
-        },
-        {
           "name": "server::proxy::tests::local_coprocessor_fails_closed_on_generic_chatter",
-          "status": "pass"
-        },
-        {
-          "name": "server::proxy::tests::passthrough_local_only_allows_loopback_direct",
           "status": "pass"
         },
         {
@@ -516,11 +512,19 @@
           "status": "pass"
         },
         {
+          "name": "tests::claude_hook_match_requires_all_events",
+          "status": "pass"
+        },
+        {
+          "name": "server::proxy::tests::passthrough_local_only_allows_loopback_direct",
+          "status": "pass"
+        },
+        {
           "name": "tests::decay_namespace_set_includes_stored_namespaces_not_in_config",
           "status": "pass"
         },
         {
-          "name": "tests::shell_config_detection_finds_exported_key",
+          "name": "tests::policy_block_upsert_replaces_old_block_once",
           "status": "pass"
         },
         {
@@ -528,11 +532,15 @@
           "status": "pass"
         },
         {
-          "name": "tests::prefers_stable_candidate_over_target_build_output",
+          "name": "tests::shell_config_detection_finds_exported_key",
           "status": "pass"
         },
         {
           "name": "tests::shell_config_detection_ignores_commented_or_empty_keys",
+          "status": "pass"
+        },
+        {
+          "name": "tests::prefers_stable_candidate_over_target_build_output",
           "status": "pass"
         },
         {
@@ -592,11 +600,11 @@
           "status": "pass"
         },
         {
-          "name": "Proxy handles upstream failure without panicking",
+          "name": "Proxy transport paths cover OpenAI and Anthropic connections",
           "status": "pass"
         },
         {
-          "name": "Proxy transport paths cover OpenAI and Anthropic connections",
+          "name": "Proxy handles upstream failure without panicking",
           "status": "pass"
         },
         {
@@ -652,7 +660,7 @@
           "status": "pass"
         },
         {
-          "name": "test_cli_adapter_cursor_to_claude_roundtrip",
+          "name": "test_admin_hud_and_cli_surface_policy_review_and_quick_actions",
           "status": "pass"
         },
         {
@@ -660,15 +668,11 @@
           "status": "pass"
         },
         {
+          "name": "test_cli_adapter_cursor_to_claude_roundtrip",
+          "status": "pass"
+        },
+        {
           "name": "test_cli_memory_bundle_export_preview_validate_and_diff_without_runtime",
-          "status": "pass"
-        },
-        {
-          "name": "test_admin_hud_and_cli_surface_policy_review_and_quick_actions",
-          "status": "pass"
-        },
-        {
-          "name": "test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases",
           "status": "pass"
         },
         {
@@ -680,7 +684,7 @@
           "status": "pass"
         },
         {
-          "name": "test_cli_passport_export_and_import_roundtrip",
+          "name": "test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases",
           "status": "pass"
         },
         {
@@ -688,11 +692,7 @@
           "status": "pass"
         },
         {
-          "name": "test_consolidation_worker_runs_automatically",
-          "status": "pass"
-        },
-        {
-          "name": "test_cli_reader_open_and_diff_work_without_runtime_and_surface_signature_provenance",
+          "name": "test_cli_passport_export_and_import_roundtrip",
           "status": "pass"
         },
         {
@@ -700,11 +700,19 @@
           "status": "pass"
         },
         {
-          "name": "test_contradiction_detection_marks_memories_contested",
+          "name": "test_cli_reader_open_and_diff_work_without_runtime_and_surface_signature_provenance",
           "status": "pass"
         },
         {
           "name": "test_connector_manifest_and_ingest_feed_review_queue_and_recall",
+          "status": "pass"
+        },
+        {
+          "name": "test_consolidation_worker_runs_automatically",
+          "status": "pass"
+        },
+        {
+          "name": "test_contradiction_detection_marks_memories_contested",
           "status": "pass"
         },
         {
@@ -724,11 +732,7 @@
           "status": "pass"
         },
         {
-          "name": "Published N/N-1/N-2 fixtures stay importable and replayable",
-          "status": "pass"
-        },
-        {
-          "name": "Runtime, bundle, and reader keep N/N-1/N-2 compatibility",
+          "name": "test_identifier_first_routing_prefers_matching_endpoint_and_collapses_fragments",
           "status": "pass"
         },
         {
@@ -736,7 +740,11 @@
           "status": "pass"
         },
         {
-          "name": "test_identifier_first_routing_prefers_matching_endpoint_and_collapses_fragments",
+          "name": "Published N/N-1/N-2 fixtures stay importable and replayable",
+          "status": "pass"
+        },
+        {
+          "name": "Runtime, bundle, and reader keep N/N-1/N-2 compatibility",
           "status": "pass"
         },
         {
@@ -748,6 +756,10 @@
           "status": "pass"
         },
         {
+          "name": "test_proxy_confidence_gate_skips_ambiguous_memory_injection",
+          "status": "pass"
+        },
+        {
           "name": "test_passport_api_export_import_roundtrip_with_dry_run_preview",
           "status": "pass"
         },
@@ -756,15 +768,11 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_extraction_repeated_signals_promote_candidate_and_track_reuse",
-          "status": "pass"
-        },
-        {
           "name": "test_proxy_passthrough_is_local_only_by_default",
           "status": "pass"
         },
         {
-          "name": "test_proxy_confidence_gate_skips_ambiguous_memory_injection",
+          "name": "test_proxy_extraction_repeated_signals_promote_candidate_and_track_reuse",
           "status": "pass"
         },
         {
@@ -772,7 +780,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
+          "name": "test_proxy_policy_firewall_blocks_risky_delete_and_surfaces_policy",
           "status": "pass"
         },
         {
@@ -780,7 +788,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_policy_firewall_blocks_risky_delete_and_surfaces_policy",
+          "name": "test_proxy_policy_firewall_requires_confirmation_for_deploy",
           "status": "pass"
         },
         {
@@ -788,15 +796,15 @@
           "status": "pass"
         },
         {
+          "name": "test_proxy_responses_oauth_response_format_passthrough_maps_json_output",
+          "status": "pass"
+        },
+        {
           "name": "test_proxy_responses_oauth_text_fallback_uses_chat_completions",
           "status": "pass"
         },
         {
-          "name": "test_proxy_policy_firewall_requires_confirmation_for_deploy",
-          "status": "pass"
-        },
-        {
-          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
+          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
           "status": "pass"
         },
         {
@@ -804,7 +812,7 @@
           "status": "pass"
         },
         {
-          "name": "test_proxy_responses_oauth_top_level_function_tools_map_to_chat_tools",
+          "name": "test_proxy_responses_oauth_text_stream_fallback_maps_to_responses_sse",
           "status": "pass"
         },
         {
@@ -816,15 +824,11 @@
           "status": "pass"
         },
         {
-          "name": "test_query_explain_policy_firewall_warns_on_soft_policy",
-          "status": "pass"
-        },
-        {
           "name": "test_query_explain_needs_more_evidence_for_shared_smoke_anchor_with_extra_memories",
           "status": "pass"
         },
         {
-          "name": "test_query_explain_reports_need_more_evidence_and_abstain",
+          "name": "test_query_explain_policy_firewall_warns_on_soft_policy",
           "status": "pass"
         },
         {
@@ -836,6 +840,10 @@
           "status": "pass"
         },
         {
+          "name": "test_query_explain_reports_need_more_evidence_and_abstain",
+          "status": "pass"
+        },
+        {
           "name": "test_review_queue_lists_candidate_and_confirm_records_audit_trail",
           "status": "pass"
         },
@@ -844,7 +852,7 @@
           "status": "pass"
         },
         {
-          "name": "test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps",
+          "name": "test_repeated_unused_injection_drives_memory_stale",
           "status": "pass"
         },
         {
@@ -852,7 +860,7 @@
           "status": "pass"
         },
         {
-          "name": "test_server_can_run_plain_http_without_dev_mode",
+          "name": "test_runtime_contract_endpoint_maps_stable_semantics_and_known_gaps",
           "status": "pass"
         },
         {
@@ -860,11 +868,7 @@
           "status": "pass"
         },
         {
-          "name": "test_repeated_unused_injection_drives_memory_stale",
-          "status": "pass"
-        },
-        {
-          "name": "test_trust_fabric_sign_verify_revoke_restore_for_bundle_passport_and_sync_peer",
+          "name": "test_server_can_run_plain_http_without_dev_mode",
           "status": "pass"
         },
         {
@@ -872,11 +876,15 @@
           "status": "pass"
         },
         {
-          "name": "test_update_recomputes_contradictions_when_content_changes",
+          "name": "test_trust_fabric_sign_verify_revoke_restore_for_bundle_passport_and_sync_peer",
           "status": "pass"
         },
         {
           "name": "test_team_governance_propose_review_merge_and_history_replay_preserves_metadata",
+          "status": "pass"
+        },
+        {
+          "name": "test_update_recomputes_contradictions_when_content_changes",
           "status": "pass"
         }
       ]
@@ -888,17 +896,17 @@
         {
           "name": "Setup wizard writes a config file",
           "status": "pass",
-          "note": "1s"
+          "note": "3s"
         },
         {
           "name": "Setup wizard persists `default_memory_mode = \"readonly\"`",
           "status": "pass",
-          "note": "1s"
+          "note": "3s"
         },
         {
           "name": "Setup wizard reaches the ready banner and serves `/health`",
           "status": "pass",
-          "note": "1s"
+          "note": "3s"
         }
       ]
     },
@@ -939,7 +947,7 @@
         {
           "name": "cargo audit (offline if available)",
           "status": "pass",
-          "note": "1s"
+          "note": "2s"
         }
       ]
     },
@@ -950,12 +958,12 @@
         {
           "name": "No tools at all",
           "status": "pass",
-          "note": "claude=False, codex=False, openai_key=False, anthropic_key=False, assertions=14"
+          "note": "claude=False, codex=False, openai_key=False, anthropic_key=False, assertions=12"
         },
         {
           "name": "Claude OAuth only",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=14"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=22"
         },
         {
           "name": "Codex OAuth only",
@@ -965,32 +973,32 @@
         {
           "name": "Both OAuth without keys",
           "status": "pass",
-          "note": "claude=True, codex=True, openai_key=False, anthropic_key=False, assertions=14"
+          "note": "claude=True, codex=True, openai_key=False, anthropic_key=False, assertions=24"
         },
         {
           "name": "Claude OAuth + OpenAI key",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=True, anthropic_key=False, assertions=14"
+          "note": "claude=True, codex=False, openai_key=True, anthropic_key=False, assertions=22"
         },
         {
           "name": "Claude OAuth + Anthropic key (default OAuth)",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=14"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=22"
         },
         {
           "name": "Claude OAuth + Anthropic key (force API key)",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=14"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=True, assertions=22"
         },
         {
           "name": "Both OAuth + OpenAI key (default OAuth)",
           "status": "pass",
-          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=14"
+          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=24"
         },
         {
           "name": "Both OAuth + OpenAI key (force Codex API key)",
           "status": "pass",
-          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=14"
+          "note": "claude=True, codex=True, openai_key=True, anthropic_key=False, assertions=24"
         },
         {
           "name": "Codex OAuth + OpenAI key (default OAuth)",
@@ -1005,12 +1013,12 @@
         {
           "name": "Idempotency double run",
           "status": "pass",
-          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=17"
+          "note": "claude=True, codex=False, openai_key=False, anthropic_key=False, assertions=25"
         },
         {
           "name": "Codex stale MCP config is repaired",
           "status": "pass",
-          "note": "claude=False, codex=True, openai_key=False, anthropic_key=False, assertions=15"
+          "note": "claude=False, codex=True, openai_key=False, anthropic_key=False, assertions=14"
         }
       ]
     },
@@ -1066,7 +1074,7 @@
         {
           "name": "Recall latency p50 / p95 / p99",
           "status": "pass",
-          "note": "125.28ms / 187.86ms / 200.64ms"
+          "note": "394.38ms / 526.32ms / 645.86ms"
         }
       ]
     },
@@ -1077,7 +1085,7 @@
         {
           "name": "Probe dataset coverage",
           "status": "pass",
-          "note": "17 cases (10 inject, 6 abstain, 1 need_more_evidence) (artifact 2026-03-14)"
+          "note": "17 cases (10 inject, 6 abstain, 1 need_more_evidence) (artifact 2026-03-15)"
         },
         {
           "name": "Stable positive injection hit rate",
@@ -1137,7 +1145,7 @@
         {
           "name": "Stable proxy latency p95",
           "status": "pass",
-          "note": "244 ms"
+          "note": "475 ms"
         }
       ]
     },
@@ -1184,17 +1192,17 @@
         {
           "name": "Exact score distribution",
           "status": "pass",
-          "note": "min 0.463, p5 1.016, p50 1.020, p95 1.024, max 1.024"
+          "note": "min 1.016, p5 1.016, p50 1.020, p95 1.024, max 1.024"
         },
         {
           "name": "Related score distribution",
           "status": "pass",
-          "note": "min 0.662, p5 0.666, p50 0.697, p95 1.108, max 1.108"
+          "note": "min 0.662, p5 0.666, p50 0.693, p95 1.108, max 1.108"
         },
         {
           "name": "Noise score distribution",
           "status": "pass",
-          "note": "min 0.348, p5 0.348, p50 0.348, p95 0.359, max 0.376"
+          "note": "min 0.348, p5 0.348, p50 0.348, p95 0.360, max 0.376"
         },
         {
           "name": "Threshold 0.400",
@@ -1215,7 +1223,7 @@
         {
           "name": "Dataset coverage",
           "status": "pass",
-          "note": "120 cases (59 positive, 61 negative; 16 base + 104 template) (artifact 2026-03-14)"
+          "note": "120 cases (59 positive, 61 negative; 16 base + 104 template) (artifact 2026-03-15)"
         },
         {
           "name": "Stable project-specific fact rate",
@@ -1245,7 +1253,7 @@
         {
           "name": "Stable positive-case recall",
           "status": "pass",
-          "note": "96.6%"
+          "note": "100.0%"
         },
         {
           "name": "Stable negative-case specificity",
@@ -1265,7 +1273,7 @@
         {
           "name": "Stable claude / claude-sonnet-4-6",
           "status": "pass",
-          "note": "mean 1772 ms, p95 2644 ms"
+          "note": "mean 1807 ms, p95 2759 ms"
         }
       ]
     },
@@ -1302,12 +1310,12 @@
         {
           "name": "Release/update channel",
           "status": "pass",
-          "note": "local (artifact 2026-03-14)"
+          "note": "local (artifact 2026-03-15)"
         },
         {
           "name": "Versioned install roots prepared",
           "status": "pass",
-          "note": "stable=/root/engraim/tests/.tmp/memoryoss-update-plane-l37ueb38/install/stable candidate=/root/engraim/tests/.tmp/memoryoss-update-plane-l37ueb38/install/candidate"
+          "note": "stable=/root/engraim/tests/.tmp/memoryoss-update-plane-dj0xy568/install/stable candidate=/root/engraim/tests/.tmp/memoryoss-update-plane-dj0xy568/install/candidate"
         },
         {
           "name": "Fresh install boots cleanly",
@@ -1321,7 +1329,7 @@
         {
           "name": "Pre-update backup created",
           "status": "pass",
-          "note": "21489 bytes"
+          "note": "21658 bytes"
         },
         {
           "name": "Candidate update runs schema migration cleanly",
@@ -1385,7 +1393,7 @@
         {
           "name": "Review throughput",
           "status": "pass",
-          "note": "3 governed reviews confirmed at 353.6/min"
+          "note": "3 governed reviews confirmed at 219.4/min"
         },
         {
           "name": "Blocked bad actions",
@@ -1477,7 +1485,7 @@
         {
           "name": "Review throughput",
           "status": "pass",
-          "note": "3 governed reviews confirmed at 353.6/min"
+          "note": "3 governed reviews confirmed at 219.4/min"
         },
         {
           "name": "Blocked bad actions",
@@ -1547,7 +1555,7 @@
         {
           "name": "Backup creates valid archive",
           "status": "pass",
-          "note": "32791 bytes"
+          "note": "32596 bytes"
         },
         {
           "name": "Restore from backup succeeds",
@@ -1622,10 +1630,10 @@
   ],
   "utility_loop": {
     "runner": "tests/run_universal_memory_loop.py",
-    "generated_at": "2026-03-14T23:50:39Z",
-    "duration_seconds": 7,
+    "generated_at": "2026-03-15T09:55:04Z",
+    "duration_seconds": 17,
     "status": "pass",
-    "workspace": "/tmp/memoryoss-universal-loop-_krwitai",
+    "workspace": "/tmp/memoryoss-universal-loop-fbdtvehk",
     "summary": {
       "demo_clients": [
         "http_api_store",
@@ -1646,7 +1654,7 @@
       "merge_count": 1,
       "conflict_count": 1,
       "merge_conflict_rate": 0.2,
-      "review_throughput_per_minute": 353.64,
+      "review_throughput_per_minute": 219.41,
       "blocked_bad_actions_rate": 1.0,
       "confirmation_gate_rate": 1.0,
       "replay_fidelity": 1.0,
@@ -1738,7 +1746,7 @@
       {
         "name": "Review throughput",
         "status": "pass",
-        "note": "3 governed reviews confirmed at 353.6/min"
+        "note": "3 governed reviews confirmed at 219.4/min"
       },
       {
         "name": "Blocked bad actions",
@@ -1757,8 +1765,8 @@
       }
     ],
     "details": {
-      "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-_krwitai/portable-loop-passport.json (scope=all memories=5)",
-      "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-_krwitai/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-14T23:50:35.178549777Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"744b4acefe4043a5ebcb7dc45eebf46a21d310d1e56ef3ecd1eb88db39b0bd3b\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
+      "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-fbdtvehk/portable-loop-passport.json (scope=all memories=5)",
+      "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-fbdtvehk/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-15T09:54:51.730556715Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"6623b42da006539966e1a3d04965fb793b0eb6ee75451445e7acf3420bd6ed26\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
       "portability_cases": [
         {
           "label": "review style",
@@ -1817,8 +1825,8 @@
       ],
       "review_loop": {
         "confirmed_count": 3,
-        "duration_seconds": 0.509,
-        "throughput_per_minute": 353.64
+        "duration_seconds": 0.8204,
+        "throughput_per_minute": 219.41
       },
       "guardrail_loop": {
         "delete_explain_decision": "block",
@@ -1839,12 +1847,12 @@
         "conflict_node_present": true
       },
       "source_history": {
-        "root_id": "019ceec2-54a2-7f81-af41-86949961ebb7",
+        "root_id": "019cf0eb-a902-7371-88bc-ec1ac3be1a1a",
         "node_count": 3,
         "timeline_count": 7
       },
       "target_history": {
-        "root_id": "019ceec2-54a2-7f81-af41-86949961ebb7",
+        "root_id": "019cf0eb-a902-7371-88bc-ec1ac3be1a1a",
         "node_count": 3,
         "timeline_count": 7
       }
@@ -1852,8 +1860,8 @@
   },
   "benchmark": {
     "runner": "tests/run_benchmarks.sh",
-    "generated_at": "2026-03-14T23:33:33Z",
-    "duration_seconds": 193,
+    "generated_at": "2026-03-15T09:34:12Z",
+    "duration_seconds": 308,
     "parameters": {
       "memory_count": 20000,
       "batch_size": 200,
@@ -1928,7 +1936,7 @@
             "task_state_usage_rate": 1.0,
             "task_state_hit_rate": 1.0,
             "task_state_context_shrink_rate": 0.0222,
-            "proxy_latency_ms_p95": 244.05
+            "proxy_latency_ms_p95": 475.19
           },
           "cases": [
             {
@@ -1946,7 +1954,7 @@
               ],
               "top_score": 0.4058,
               "top_content": "If production deploy metrics regress, roll back within 15 minutes and notify ops-red immediately.",
-              "proxy_latency_ms": 112.14,
+              "proxy_latency_ms": 195.08,
               "memory_context_chars": 570
             },
             {
@@ -1964,7 +1972,7 @@
               ],
               "top_score": 0.5057,
               "top_content": "On this host the stable binary path is /usr/local/bin/memoryoss and systemd should point to /root/memoryoss.toml.",
-              "proxy_latency_ms": 159.67,
+              "proxy_latency_ms": 376.54,
               "memory_context_chars": 0
             },
             {
@@ -1982,7 +1990,7 @@
               ],
               "top_score": 0.5984,
               "top_content": "For this repo, name bugfix branches fix/<ticket>-<slug>.",
-              "proxy_latency_ms": 76.01,
+              "proxy_latency_ms": 177.87,
               "memory_context_chars": 511
             },
             {
@@ -2000,7 +2008,7 @@
               ],
               "top_score": 0.6334,
               "top_content": "Never show raw MemoryOSS entries unless the user explicitly asks; short summaries or counts are enough.",
-              "proxy_latency_ms": 315.51,
+              "proxy_latency_ms": 395.37,
               "memory_context_chars": 368
             },
             {
@@ -2018,7 +2026,7 @@
               ],
               "top_score": 0.6298,
               "top_content": "Auth rollback prerequisite: token cache flush must happen before the patch ships.",
-              "proxy_latency_ms": 226.18,
+              "proxy_latency_ms": 317.88,
               "memory_context_chars": 0
             },
             {
@@ -2034,9 +2042,9 @@
               "gate_reasons": [
                 "strong_top_candidate"
               ],
-              "top_score": 0.4438,
+              "top_score": 0.4436,
               "top_content": "Keep redb as the source of truth and use tantivy only for BM25 and full-text search.",
-              "proxy_latency_ms": 82.13,
+              "proxy_latency_ms": 144.53,
               "memory_context_chars": 195
             },
             {
@@ -2054,7 +2062,7 @@
               ],
               "top_score": 0.5069,
               "top_content": "Docker image releases should publish to ghcr.io/memoryosscom/memoryoss after release smoke passes.",
-              "proxy_latency_ms": 67.96,
+              "proxy_latency_ms": 109.19,
               "memory_context_chars": 473
             },
             {
@@ -2072,7 +2080,7 @@
               ],
               "top_score": 0.4717,
               "top_content": "For review responses, keep findings first and summaries brief.",
-              "proxy_latency_ms": 92.01,
+              "proxy_latency_ms": 534.58,
               "memory_context_chars": 499
             },
             {
@@ -2090,7 +2098,7 @@
               ],
               "top_score": 0.3822,
               "top_content": "Docker image releases should publish to ghcr.io/memoryosscom/memoryoss after release smoke passes.",
-              "proxy_latency_ms": 138.16,
+              "proxy_latency_ms": 460.34,
               "memory_context_chars": 0
             },
             {
@@ -2108,7 +2116,7 @@
               ],
               "top_score": 0.3801,
               "top_content": "Never show raw MemoryOSS entries unless the user explicitly asks; short summaries or counts are enough.",
-              "proxy_latency_ms": 39.21,
+              "proxy_latency_ms": 168.38,
               "memory_context_chars": 0
             },
             {
@@ -2126,7 +2134,7 @@
               ],
               "top_score": 0.3809,
               "top_content": "If production deploy metrics regress, roll back within 15 minutes and notify ops-red immediately.",
-              "proxy_latency_ms": 214.57,
+              "proxy_latency_ms": 69.31,
               "memory_context_chars": 0
             },
             {
@@ -2144,7 +2152,7 @@
               ],
               "top_score": 0.3801,
               "top_content": "Never show raw MemoryOSS entries unless the user explicitly asks; short summaries or counts are enough.",
-              "proxy_latency_ms": 71.95,
+              "proxy_latency_ms": 158.16,
               "memory_context_chars": 0
             },
             {
@@ -2162,7 +2170,7 @@
               ],
               "top_score": 0.0,
               "top_content": "",
-              "proxy_latency_ms": 64.76,
+              "proxy_latency_ms": 96.42,
               "memory_context_chars": 0
             },
             {
@@ -2180,7 +2188,7 @@
               ],
               "top_score": 0.3806,
               "top_content": "If the auth setup changes from OAuth to API key or back, tell users to rerun memoryoss setup.",
-              "proxy_latency_ms": 41.39,
+              "proxy_latency_ms": 182.09,
               "memory_context_chars": 0
             },
             {
@@ -2198,7 +2206,7 @@
               ],
               "top_score": 0.3822,
               "top_content": "Docker image releases should publish to ghcr.io/memoryosscom/memoryoss after release smoke passes.",
-              "proxy_latency_ms": 62.42,
+              "proxy_latency_ms": 162.31,
               "memory_context_chars": 0
             },
             {
@@ -2216,7 +2224,7 @@
               ],
               "top_score": 0.6348,
               "top_content": "Claude proxy mode should export ANTHROPIC_BASE_URL=http://127.0.0.1:8000/proxy/anthropic/v1.",
-              "proxy_latency_ms": 117.44,
+              "proxy_latency_ms": 185.28,
               "memory_context_chars": 737
             },
             {
@@ -2234,7 +2242,7 @@
               ],
               "top_score": 0.6338,
               "top_content": "The Anthropic proxy endpoint is /proxy/anthropic/v1/messages and the OpenAI chat endpoint is /proxy/v1/chat/completions.",
-              "proxy_latency_ms": 106.19,
+              "proxy_latency_ms": 287.98,
               "memory_context_chars": 973
             }
           ]
@@ -2289,7 +2297,7 @@
             "quality_hit_rate": 1.0,
             "abstain_precision": 1.0,
             "avg_cost_units": 0.0,
-            "latency_ms_p95": 0.0252
+            "latency_ms_p95": 3.5914
           },
           "cases": [
             {
@@ -2353,8 +2361,8 @@
           {
             "metric": "latency_ms_p95",
             "reference_model": 8.0,
-            "local_coprocessor": 0.0252,
-            "delta": -7.9748,
+            "local_coprocessor": 3.5914,
+            "delta": -4.4086,
             "direction": "lower_is_better",
             "regression": false
           }
@@ -2408,11 +2416,11 @@
       "comparison": null
     },
     "latency_ms": {
-      "min": 83.71,
-      "p50": 125.28,
-      "p95": 187.86,
-      "p99": 200.64,
-      "max": 201.42
+      "min": 250.15,
+      "p50": 394.38,
+      "p95": 526.32,
+      "p99": 645.86,
+      "max": 658.21
     },
     "index_health": {
       "embedding_cache": {
@@ -2475,14 +2483,14 @@
       {
         "name": "Recall latency p50 / p95 / p99",
         "status": "pass",
-        "note": "125.28ms / 187.86ms / 200.64ms"
+        "note": "394.38ms / 526.32ms / 645.86ms"
       }
     ]
   },
   "calibration": {
     "runner": "tests/run_calibration.sh",
-    "generated_at": "2026-03-14T23:46:20Z",
-    "duration_seconds": 765,
+    "generated_at": "2026-03-15T09:49:25Z",
+    "duration_seconds": 910,
     "summary": {
       "queries": 20000,
       "exact_queries": 344,
@@ -2494,7 +2502,7 @@
     },
     "score_distribution": {
       "exact": {
-        "min": 0.463,
+        "min": 1.016,
         "p5": 1.016,
         "p50": 1.02,
         "p95": 1.024,
@@ -2503,7 +2511,7 @@
       "related": {
         "min": 0.662,
         "p5": 0.666,
-        "p50": 0.697,
+        "p50": 0.693,
         "p95": 1.108,
         "max": 1.108
       },
@@ -2511,7 +2519,7 @@
         "min": 0.348,
         "p5": 0.348,
         "p50": 0.348,
-        "p95": 0.359,
+        "p95": 0.36,
         "max": 0.376
       }
     },
@@ -2555,11 +2563,11 @@
       {
         "threshold": 0.5,
         "noise_rejected_pct": 1.0,
-        "exact_kept_pct": 0.9942,
+        "exact_kept_pct": 1.0,
         "related_kept_pct": 1.0,
         "precision": 1.0,
-        "recall": 0.9974,
-        "f1": 0.9987
+        "recall": 1.0,
+        "f1": 1.0
       }
     ],
     "current_threshold_row": {
@@ -2600,12 +2608,12 @@
   },
   "wizard": {
     "runner": "tests/run_wizard_matrix.sh",
-    "generated_at": "2026-03-14T23:30:19Z",
-    "duration_seconds": 38,
+    "generated_at": "2026-03-15T09:29:03Z",
+    "duration_seconds": 29,
     "summary": {
       "scenarios": 13,
       "scenarios_passed": 13,
-      "assertions_passed": 186
+      "assertions_passed": 253
     },
     "scenarios": [
       {
@@ -2665,17 +2673,9 @@
           {
             "name": "ANTHROPIC_BASE_URL export matches scenario",
             "status": "pass"
-          },
-          {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass"
-          },
-          {
-            "name": "No Codex MCP log created",
-            "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 12
       },
       {
         "name": "Claude OAuth only",
@@ -2736,15 +2736,47 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
+            "name": "Claude user MCP config written",
             "status": "pass"
           },
           {
-            "name": "No Codex MCP log created",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 22
       },
       {
         "name": "Codex OAuth only",
@@ -2805,12 +2837,11 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
+            "name": "Codex MCP config written",
+            "status": "pass"
           },
           {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
@@ -2875,16 +2906,55 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
+            "name": "Claude user MCP config written",
+            "status": "pass"
           },
           {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
+            "status": "pass"
+          },
+          {
+            "name": "Codex MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 24
       },
       {
         "name": "Claude OAuth + OpenAI key",
@@ -2945,15 +3015,47 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
+            "name": "Claude user MCP config written",
             "status": "pass"
           },
           {
-            "name": "No Codex MCP log created",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 22
       },
       {
         "name": "Claude OAuth + Anthropic key (default OAuth)",
@@ -3014,15 +3116,47 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
+            "name": "Claude user MCP config written",
             "status": "pass"
           },
           {
-            "name": "No Codex MCP log created",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 22
       },
       {
         "name": "Claude OAuth + Anthropic key (force API key)",
@@ -3083,15 +3217,47 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
+            "name": "Claude user MCP config written",
             "status": "pass"
           },
           {
-            "name": "No Codex MCP log created",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 22
       },
       {
         "name": "Both OAuth + OpenAI key (default OAuth)",
@@ -3152,16 +3318,55 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
+            "name": "Claude user MCP config written",
+            "status": "pass"
           },
           {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
+            "status": "pass"
+          },
+          {
+            "name": "Codex MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 24
       },
       {
         "name": "Both OAuth + OpenAI key (force Codex API key)",
@@ -3222,16 +3427,55 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
+            "name": "Claude user MCP config written",
+            "status": "pass"
           },
           {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
+            "status": "pass"
+          },
+          {
+            "name": "Codex MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
-        "assertion_count": 14
+        "assertion_count": 24
       },
       {
         "name": "Codex OAuth + OpenAI key (default OAuth)",
@@ -3292,12 +3536,11 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
+            "name": "Codex MCP config written",
+            "status": "pass"
           },
           {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
@@ -3362,12 +3605,11 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
+            "name": "Codex MCP config written",
+            "status": "pass"
           },
           {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
@@ -3432,11 +3674,43 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
+            "name": "Claude user MCP config written",
             "status": "pass"
           },
           {
-            "name": "No Codex MCP log created",
+            "name": "Claude user MCP command matches setup binary",
+            "status": "pass"
+          },
+          {
+            "name": "Claude compatibility MCP config written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude guard hook script written",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook script is executable",
+            "status": "pass"
+          },
+          {
+            "name": "Claude settings.local configures all memoryOSS hooks",
+            "status": "pass"
+          },
+          {
+            "name": "Claude statusline configured",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook denies tool use before recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook allows tool use after recall",
+            "status": "pass"
+          },
+          {
+            "name": "Claude hook blocks stop without store",
             "status": "pass"
           },
           {
@@ -3452,7 +3726,7 @@
             "status": "pass"
           }
         ],
-        "assertion_count": 17
+        "assertion_count": 25
       },
       {
         "name": "Codex stale MCP config is repaired",
@@ -3513,29 +3787,24 @@
             "status": "pass"
           },
           {
-            "name": "Codex MCP registration matches scenario",
-            "status": "pass",
-            "note": "3 codex invocation(s)"
-          },
-          {
-            "name": "Codex MCP add invoked with memoryoss mcp-server",
+            "name": "Codex MCP config written",
             "status": "pass"
           },
           {
-            "name": "Codex stale MCP registration removed before add",
+            "name": "Codex AGENTS policy block written",
             "status": "pass"
           }
         ],
-        "assertion_count": 15
+        "assertion_count": 14
       }
     ]
   },
   "universal_memory_loop": {
     "runner": "tests/run_universal_memory_loop.py",
-    "generated_at": "2026-03-14T23:50:39Z",
-    "duration_seconds": 7,
+    "generated_at": "2026-03-15T09:55:04Z",
+    "duration_seconds": 17,
     "status": "pass",
-    "workspace": "/tmp/memoryoss-universal-loop-_krwitai",
+    "workspace": "/tmp/memoryoss-universal-loop-fbdtvehk",
     "summary": {
       "demo_clients": [
         "http_api_store",
@@ -3556,7 +3825,7 @@
       "merge_count": 1,
       "conflict_count": 1,
       "merge_conflict_rate": 0.2,
-      "review_throughput_per_minute": 353.64,
+      "review_throughput_per_minute": 219.41,
       "blocked_bad_actions_rate": 1.0,
       "confirmation_gate_rate": 1.0,
       "replay_fidelity": 1.0,
@@ -3648,7 +3917,7 @@
       {
         "name": "Review throughput",
         "status": "pass",
-        "note": "3 governed reviews confirmed at 353.6/min"
+        "note": "3 governed reviews confirmed at 219.4/min"
       },
       {
         "name": "Blocked bad actions",
@@ -3667,8 +3936,8 @@
       }
     ],
     "details": {
-      "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-_krwitai/portable-loop-passport.json (scope=all memories=5)",
-      "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-_krwitai/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-14T23:50:35.178549777Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"744b4acefe4043a5ebcb7dc45eebf46a21d310d1e56ef3ecd1eb88db39b0bd3b\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
+      "passport_export_stdout": "Exported passport bundle /tmp/memoryoss-universal-loop-fbdtvehk/portable-loop-passport.json (scope=all memories=5)",
+      "reader_open_stdout": "{\n  \"source_path\": \"/tmp/memoryoss-universal-loop-fbdtvehk/portable-loop-passport.json\",\n  \"artifact_line\": \"memoryoss.passport.v1alpha1\",\n  \"artifact_type\": \"passport_bundle\",\n  \"kind\": \"passport\",\n  \"namespace\": \"loop-source\",\n  \"scope\": \"all\",\n  \"runtime_contract_id\": \"memoryoss.runtime.v1alpha1\",\n  \"exported_at\": \"2026-03-15T09:54:51.730556715Z\",\n  \"memory_count\": 5,\n  \"visible_count\": 5,\n  \"root_id\": null,\n  \"reference_uri\": null,\n  \"attachment_name\": null,\n  \"integrity\": {\n    \"envelope_valid\": true,\n    \"nested_valid\": true,\n    \"algorithm\": \"sha256\",\n    \"payload_sha256\": \"6623b42da006539966e1a3d04965fb793b0eb6ee75451445e7acf3420bd6ed26\"\n  },\n  \"signature\": {\n    \"scheme\": \"unsigned\",\n    \"signer\": null,\n    \"signable\": false,\n    \"identity_kind\": null,\n    \"signed_at\": null,\n    \"value_present\": false,\n    \"chain\": []\n  },\n  \"trust\": null,\n  \"provenance\": {\n    \"exported_from_namespace\": \"loop-source\",\n    \"source_key_ids\": [\n      \"278e36a4b02afa64\"\n    ]\n  },\n  \"preview\": [\n    \"For review responses, keep findings first and summary brief.\",\n    \"Startup behavior: browser launcher should auto-open on start.\",\n    \"Deployment rollback guardrail: if production deploy metrics regress, roll back within 15 minutes.\",\n    \"Deployment checklist: require staging approval before production release.\",\n    \"Auth review checklist: require tests and security review before merging sensitive changes.\"\n  ]\n}",
       "portability_cases": [
         {
           "label": "review style",
@@ -3727,8 +3996,8 @@
       ],
       "review_loop": {
         "confirmed_count": 3,
-        "duration_seconds": 0.509,
-        "throughput_per_minute": 353.64
+        "duration_seconds": 0.8204,
+        "throughput_per_minute": 219.41
       },
       "guardrail_loop": {
         "delete_explain_decision": "block",
@@ -3749,12 +4018,12 @@
         "conflict_node_present": true
       },
       "source_history": {
-        "root_id": "019ceec2-54a2-7f81-af41-86949961ebb7",
+        "root_id": "019cf0eb-a902-7371-88bc-ec1ac3be1a1a",
         "node_count": 3,
         "timeline_count": 7
       },
       "target_history": {
-        "root_id": "019ceec2-54a2-7f81-af41-86949961ebb7",
+        "root_id": "019cf0eb-a902-7371-88bc-ec1ac3be1a1a",
         "node_count": 3,
         "timeline_count": 7
       }
@@ -3762,8 +4031,8 @@
   },
   "update_plane": {
     "runner": "tests/run_update_plane_smoke.py",
-    "generated_at": "2026-03-14T23:50:25Z",
-    "duration_seconds": 10.84,
+    "generated_at": "2026-03-15T09:54:29Z",
+    "duration_seconds": 53.6,
     "channel": "local",
     "status": "pass",
     "seed_count": 3,
@@ -3773,7 +4042,7 @@
       {
         "name": "Versioned install roots prepared",
         "status": "pass",
-        "note": "stable=/root/engraim/tests/.tmp/memoryoss-update-plane-l37ueb38/install/stable candidate=/root/engraim/tests/.tmp/memoryoss-update-plane-l37ueb38/install/candidate"
+        "note": "stable=/root/engraim/tests/.tmp/memoryoss-update-plane-dj0xy568/install/stable candidate=/root/engraim/tests/.tmp/memoryoss-update-plane-dj0xy568/install/candidate"
       },
       {
         "name": "Fresh install boots cleanly",
@@ -3787,7 +4056,7 @@
       {
         "name": "Pre-update backup created",
         "status": "pass",
-        "note": "21489 bytes"
+        "note": "21658 bytes"
       },
       {
         "name": "Candidate update runs schema migration cleanly",
@@ -3809,7 +4078,7 @@
         "note": "recall_count=3"
       }
     ],
-    "workspace": "/root/engraim/tests/.tmp/memoryoss-update-plane-l37ueb38"
+    "workspace": "/root/engraim/tests/.tmp/memoryoss-update-plane-dj0xy568"
   },
   "compatibility_lts": {
     "status": "pass",

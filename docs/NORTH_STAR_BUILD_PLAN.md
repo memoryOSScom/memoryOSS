@@ -553,35 +553,34 @@ If this block does not work, the rest of P12 should be treated as optional resea
 
 ## Cross-Phase Execution Order
 
-This section is synchronized to the current repository state as of 2026-03-14.
+This section is synchronized to the current repository state as of 2026-03-15.
 
 ### Completed so far
 
 - `P10` is complete
 - `P11` is complete
-- `P12-T1` through `P12-T6` are complete
+- `P12` is complete
 
 Completed block summary:
 
 - Reliability, operator control, and adaptive recall are shipped.
 - Runtime semantics, portability, and cross-app proof are shipped.
-- The current utility surface, ambient mesh, primitive algebra lane, and local coprocessor are shipped.
+- The utility surface, ambient mesh, primitive algebra lane, local coprocessor, team governance, reader, trust fabric, update plane, compatibility discipline, and public everyday-utility proof are shipped.
 
-### Remaining build order
+### Current planning gap
 
-1. `P12-T7` team memory governance
-2. `P12-T9` universal memory reader
-3. `P12-T10` trust and revocation fabric
-4. `P12-T11` zero-friction update plane
-5. `P12-T12` compatibility and LTS
-6. `P12-T8` everyday utility loop
+The roadmap no longer has an unfinished `P10`/`P11`/`P12` execution queue. The next build block is not another tail task inside `P12`; it is a new post-`P12` program that turns the shipped runtime into a default-installed utility.
 
-Reason:
+Working title:
 
-- `P12-T7` unlocks the remaining team-governed utility proof path.
-- `P12-T9`, `P12-T10`, and `P12-T11` finish the reader/trust/update prerequisites for a true utility artifact.
-- `P12-T12` depends on `P12-T11` and closes the long-term compatibility claim.
-- `P12-T8` should run last so the public everyday-utility proof reflects the finished governance and trust surfaces rather than an intermediate product state.
+- `P13` distribution and ecosystem default
+
+Likely scope:
+
+- first-class distribution channels and installer surfaces for Claude, Codex, Cursor, and local teams
+- trusted bundle and signer discovery beyond one local machine
+- zero-friction team onboarding and rollout paths
+- public proof and adoption surfaces that show why memoryOSS should stay installed
 
 ## Kill-Switch Rules
 
@@ -714,26 +713,15 @@ Tasks:
 - Keep `P10-T9` as ongoing documentation hygiene, not as a standalone roadmap wave.
 - Preserve `P10-T10` as platform-quality maintenance instead of reopening the main sequencing path.
 
-### Wave R1 - Team Governance
+### Wave R1 - Runtime Completion
 
-Purpose:
-Finish the last missing collaborative control surface before the final utility proof.
+Status:
+Completed.
 
-Primary task:
+What shipped:
 
 - `P12-T7` team memory governance
-
-Exit gate:
-
-- Team memory can be proposed, reviewed, merged, and replayed with explicit owner/policy semantics.
-
-### Wave R2 - Reader and Trust Utility Core
-
-Purpose:
-Finish the artifact reader and the operational trust/update layer around it.
-
-Tasks:
-
+- `P12-T8` everyday utility loop
 - `P12-T9` universal memory reader
 - `P12-T10` trust and revocation fabric
 - `P12-T11` zero-friction update plane
@@ -745,38 +733,36 @@ Exit gate:
 - Trust and revocation are explicit in runtime surfaces.
 - Update and rollback paths are boring and tested.
 - Compatibility policy is executable, not just documented.
+- The public proof loop measures repeated-context elimination, governance throughput, replay fidelity, and blocked bad actions against the finished product surface.
 
-### Wave R3 - Everyday Utility Proof
+### Wave R2 - Distribution and Ecosystem Default
 
 Purpose:
-Close the phase with a public proof loop on top of the finished utility surfaces.
+Turn the finished runtime into an obvious default install across supported clients and teams.
 
-Primary task:
+Candidate tasks:
 
-- `P12-T8` everyday utility loop
-
-Exit gate:
-
-- The benchmark and public proof loop measure repeated-context elimination, governance throughput, replay fidelity, and blocked bad actions against the finished product surface.
+- release channels and installer surfaces that match the supported client matrix
+- shared signer and trust-root discovery beyond a single local machine
+- team rollout and onboarding paths that do not require operator handholding
+- public website and proof surfaces that keep repo, docs, and live install story in lockstep
 
 ## First Build Step
 
 From the current state, the next task should be:
 
-- `P12-T7` team memory governance
+- define `P13` as an explicit post-`P12` distribution and ecosystem-default phase
 
 Immediate follow-on after that:
 
-- `P12-T9`
-- `P12-T10`
-- `P12-T11`
-- `P12-T12`
-- `P12-T8`
+- first-class distribution channels and client onboarding
+- trust-root and signer discovery across machines and teams
+- live website and release-surface synchronization as release discipline
 
 Reason:
 
-- `P12-T7` is the first remaining dependency for the everyday utility proof.
-- The reader/trust/update/LTS stack should be completed before freezing the public "installed everywhere" claim in `P12-T8`.
+- The runtime build itself is complete.
+- The next bottleneck is no longer core capability; it is distribution, onboarding, and ecosystem-default adoption.
 
 ## Origin Map
 

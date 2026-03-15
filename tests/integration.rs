@@ -21,6 +21,30 @@ fn free_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+fn preferred_runtime_binary_for_home(home_dir: &std::path::Path) -> std::path::PathBuf {
+    let current = std::path::PathBuf::from(env!("CARGO_BIN_EXE_memoryoss"))
+        .canonicalize()
+        .unwrap();
+    let current_is_target = current
+        .components()
+        .any(|component| component.as_os_str() == "target");
+    if !current_is_target && current.is_file() {
+        return current;
+    }
+
+    for candidate in [
+        std::path::PathBuf::from("/usr/local/bin/memoryoss"),
+        std::path::PathBuf::from("/usr/bin/memoryoss"),
+        home_dir.join(".cargo/bin/memoryoss"),
+    ] {
+        if candidate != current && candidate.is_file() {
+            return candidate;
+        }
+    }
+
+    current
+}
+
 fn test_config_with_sections(
     port: u16,
     data_dir: &str,
@@ -7532,14 +7556,103 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     let port = free_port();
     let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
     let data_dir = tmp_dir.path().join("data");
+    let home_dir = tmp_dir.path().join("home");
     std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&home_dir).unwrap();
 
     let config_content = test_config(port, data_dir.to_str().unwrap());
     let config_path = tmp_dir.path().join("doctor-healthy.toml");
     std::fs::write(&config_path, &config_content).unwrap();
+    let config_abs = config_path.canonicalize().unwrap();
+    let binary = preferred_runtime_binary_for_home(&home_dir);
+
+    let claude_dir = home_dir.join(".claude");
+    std::fs::create_dir_all(&claude_dir).unwrap();
+    let hook_path = claude_dir.join("memoryoss-guard.py");
+    std::fs::write(&hook_path, "#!/usr/bin/env python3\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let args = serde_json::json!(["-c", config_abs.to_string_lossy(), "mcp-server"]);
+    std::fs::write(
+        home_dir.join(".claude.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "memoryoss": {
+                    "type": "stdio",
+                    "command": binary.to_string_lossy(),
+                    "args": args,
+                    "env": {}
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        claude_dir.join("settings.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "memoryoss": {
+                    "command": binary.to_string_lossy(),
+                    "args": ["-c", config_abs.to_string_lossy(), "mcp-server"]
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let hook_command = format!("python3 {}", hook_path.display());
+    let hook_entry = serde_json::json!([
+        {
+            "matcher": "*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": hook_command,
+                    "timeout": 10
+                }
+            ]
+        }
+    ]);
+    std::fs::write(
+        claude_dir.join("settings.local.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "hooks": {
+                "PreToolUse": hook_entry,
+                "SessionStart": hook_entry,
+                "Stop": hook_entry,
+                "SubagentStop": hook_entry,
+                "UserPromptSubmit": hook_entry
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+
+    let codex_dir = home_dir.join(".codex");
+    std::fs::create_dir_all(&codex_dir).unwrap();
+    std::fs::write(
+        codex_dir.join("config.toml"),
+        format!(
+            "[mcp_servers.memoryoss]\ncommand = \"{}\"\nargs = [\"-c\", \"{}\", \"mcp-server\"]\n",
+            binary.display(),
+            config_abs.display()
+        ),
+    )
+    .unwrap();
+    std::fs::write(
+        home_dir.join("AGENTS.md"),
+        "<!-- MEMORYOSS_POLICY_BEGIN -->\n## memoryOSS Mandatory\n- Call `memoryoss_recall` at session start and before substantial work.\n- Call `memoryoss_store` or `memoryoss_update` before stopping after important confirmed learning.\n- Do not start non-memoryOSS tool work before recall.\n- If memoryOSS is unavailable or unconfigured, stop and repair that first.\n<!-- MEMORYOSS_POLICY_END -->\n",
+    )
+    .unwrap();
 
     let status = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args(["--config", config_path.to_str().unwrap(), "status"])
+        .env("HOME", &home_dir)
+        .env_remove("CODEX_HOME")
         .output()
         .await
         .expect("failed to run status");
@@ -7560,6 +7673,8 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
 
     let doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args(["--config", config_path.to_str().unwrap(), "doctor"])
+        .env("HOME", &home_dir)
+        .env_remove("CODEX_HOME")
         .output()
         .await
         .expect("failed to run doctor");
@@ -7572,6 +7687,10 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
     assert!(doctor_stdout.contains("Doctor OK"));
     assert!(doctor_stdout.contains("[ok] auth: 1 admin key(s) configured"));
+    assert!(doctor_stdout.contains("[ok] claude mcp:"));
+    assert!(doctor_stdout.contains("[ok] claude hooks:"));
+    assert!(doctor_stdout.contains("[ok] codex mcp:"));
+    assert!(doctor_stdout.contains("[ok] codex policy:"));
 
     let broken_dir = tempfile::tempdir().expect("failed to create broken temp dir");
     let broken_data_dir = broken_dir.path().join("data");
@@ -7582,6 +7701,8 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
 
     let broken_doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args(["--config", broken_config_path.to_str().unwrap(), "doctor"])
+        .env("HOME", &home_dir)
+        .env_remove("CODEX_HOME")
         .output()
         .await
         .expect("failed to run broken doctor");
@@ -7594,6 +7715,54 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     let broken_stdout = String::from_utf8_lossy(&broken_doctor.stdout);
     assert!(broken_stdout.contains("[error] auth: no admin API key configured"));
     assert!(broken_stdout.contains("Doctor FAILED"));
+
+    let broken_integration_home = broken_dir.path().join("broken-home");
+    std::fs::create_dir_all(broken_integration_home.join(".claude")).unwrap();
+    std::fs::create_dir_all(broken_integration_home.join(".codex")).unwrap();
+    std::fs::write(
+        broken_integration_home.join(".claude.json"),
+        serde_json::to_string_pretty(&serde_json::json!({ "mcpServers": {} })).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        broken_integration_home.join(".claude/settings.json"),
+        serde_json::to_string_pretty(&serde_json::json!({})).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        broken_integration_home.join(".claude/settings.local.json"),
+        serde_json::to_string_pretty(&serde_json::json!({ "hooks": {} })).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        broken_integration_home.join(".codex/config.toml"),
+        "[mcp_servers.other]\ncommand = \"echo\"\n",
+    )
+    .unwrap();
+    std::fs::write(
+        broken_integration_home.join("AGENTS.md"),
+        "# no memory policy\n",
+    )
+    .unwrap();
+
+    let broken_integration_doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", config_path.to_str().unwrap(), "doctor"])
+        .env("HOME", &broken_integration_home)
+        .env_remove("CODEX_HOME")
+        .output()
+        .await
+        .expect("failed to run integration doctor");
+    assert!(
+        !broken_integration_doctor.status.success(),
+        "doctor should fail on missing Claude/Codex integration: stdout={} stderr={}",
+        String::from_utf8_lossy(&broken_integration_doctor.stdout),
+        String::from_utf8_lossy(&broken_integration_doctor.stderr)
+    );
+    let broken_integration_stdout = String::from_utf8_lossy(&broken_integration_doctor.stdout);
+    assert!(broken_integration_stdout.contains("[error] claude mcp:"));
+    assert!(broken_integration_stdout.contains("[error] claude hooks:"));
+    assert!(broken_integration_stdout.contains("[error] codex mcp:"));
+    assert!(broken_integration_stdout.contains("[error] codex policy:"));
 }
 
 #[tokio::test]

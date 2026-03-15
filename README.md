@@ -131,7 +131,7 @@ Windows-specific notes:
 - if you need remote access from outside the machine, change `[server].host` to `0.0.0.0`; otherwise keep the default loopback host
 - current Windows builds use a portable brute-force vector backend instead of `usearch`, so very large-memory recall will be slower than on Linux/macOS
 
-The setup wizard auto-detects your environment, registers MCP for Claude/Codex, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
+The setup wizard auto-detects your environment, writes deterministic Claude/Codex MCP registrations, installs Claude guard hooks, installs the Codex fallback policy block in `~/AGENTS.md`, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
 If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup` again so memoryOSS can safely update the integration path.
 
@@ -183,7 +183,7 @@ So you get transparent memory when available, plus explicit MCP tools when neede
 
 ### After `memoryoss setup`
 
-Start Claude Code or Codex normally. The wizard always registers MCP and writes local `BASE_URL` exports only when the chosen auth mode is proxy-safe.
+Start Claude Code or Codex normally. The wizard always registers MCP, enforces Claude recall/store discipline through client hooks, writes the Codex policy fallback to `~/AGENTS.md`, and only writes local `BASE_URL` exports when the chosen auth mode is proxy-safe.
 
 ### Manual proxy mode (optional)
 
@@ -742,7 +742,7 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 | `memoryoss dev` | Start without TLS (development) |
 | `memoryoss mcp-server` | Start as MCP server (stdio, embedded) |
 | `memoryoss status` | Show namespace health, lifecycle counts, worker state, and index health |
-| `memoryoss doctor` | Diagnose config, auth, database, and index issues (non-zero on error) |
+| `memoryoss doctor` | Diagnose config, auth, database, index, and Claude/Codex integration drift (non-zero on error) |
 | `memoryoss recent` | Show recent injections, extractions, feedbacks, and consolidations |
 | `memoryoss hud --namespace test --limit 5` | Terminal HUD for quick search/why/recent/review/import/export loops |
 | `memoryoss bundle export --kind passport --namespace test --scope project -o project.membundle.json` | Export a portable memory bundle envelope and sign it with the local runtime identity |

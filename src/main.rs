@@ -560,6 +560,626 @@ fn shell_config_has_var(home_dir: &str, var_name: &str) -> bool {
         })
 }
 
+const CLAUDE_HOOK_EVENTS: [&str; 5] = [
+    "PreToolUse",
+    "SessionStart",
+    "Stop",
+    "SubagentStop",
+    "UserPromptSubmit",
+];
+
+const MEMORYOSS_POLICY_BEGIN: &str = "<!-- MEMORYOSS_POLICY_BEGIN -->";
+const MEMORYOSS_POLICY_END: &str = "<!-- MEMORYOSS_POLICY_END -->";
+const MEMORYOSS_POLICY_BLOCK: &str = r#"<!-- MEMORYOSS_POLICY_BEGIN -->
+## memoryOSS Mandatory
+- Call `memoryoss_recall` at session start and before substantial work.
+- Call `memoryoss_store` or `memoryoss_update` before stopping after important confirmed learning.
+- Do not start non-memoryOSS tool work before recall.
+- If memoryOSS is unavailable or unconfigured, stop and repair that first.
+<!-- MEMORYOSS_POLICY_END -->"#;
+
+const CLAUDE_MEMORYOSS_GUARD: &str = r#"#!/usr/bin/env python3
+"""Enforce memoryOSS recall/store discipline for Claude project sessions."""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+MEMORY_RECALL_MARKERS = (
+    "memoryoss_recall",
+    "mcp__memoryoss__memoryoss_recall",
+)
+MEMORY_STORE_MARKERS = (
+    "memoryoss_store",
+    "mcp__memoryoss__memoryoss_store",
+    "memoryoss_update",
+    "mcp__memoryoss__memoryoss_update",
+)
+MEMORY_TOOL_MARKERS = (
+    "memoryoss",
+    "mcp__memoryoss__",
+)
+
+
+def _read_stdin() -> dict:
+    try:
+        return json.load(sys.stdin)
+    except Exception:
+        return {}
+
+
+def _read_transcript(path_value: str | None) -> str:
+    if not path_value:
+        return ""
+    try:
+        return Path(path_value).read_text(encoding="utf-8")
+    except Exception:
+        return ""
+
+
+def _iter_transcript_tool_names(transcript: str) -> list[str]:
+    names: list[str] = []
+    for line in transcript.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        try:
+            payload = json.loads(stripped)
+        except Exception:
+            continue
+        if payload.get("type") != "assistant":
+            continue
+        message = payload.get("message", {})
+        if not isinstance(message, dict):
+            continue
+        content = message.get("content", [])
+        if not isinstance(content, list):
+            continue
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") != "tool_use":
+                continue
+            name = str(item.get("name", "") or "")
+            if name:
+                names.append(name)
+    return names
+
+
+def _contains_any(haystack: str, needles: tuple[str, ...]) -> bool:
+    lower = haystack.lower()
+    return any(needle.lower() in lower for needle in needles)
+
+
+def _tool_name(payload: dict) -> str:
+    return str(payload.get("tool_name", "") or "")
+
+
+def _is_memory_tool(payload: dict) -> bool:
+    tool_name = _tool_name(payload).lower()
+    if _contains_any(tool_name, MEMORY_TOOL_MARKERS):
+        return True
+    tool_input = json.dumps(payload.get("tool_input", {}), sort_keys=True).lower()
+    return _contains_any(tool_input, MEMORY_TOOL_MARKERS)
+
+
+def _has_recall(transcript: str) -> bool:
+    for name in _iter_transcript_tool_names(transcript):
+        if _contains_any(name, MEMORY_RECALL_MARKERS):
+            return True
+    return _contains_any(transcript, MEMORY_RECALL_MARKERS)
+
+
+def _has_store(transcript: str) -> bool:
+    for name in _iter_transcript_tool_names(transcript):
+        if _contains_any(name, MEMORY_STORE_MARKERS):
+            return True
+    return _contains_any(transcript, MEMORY_STORE_MARKERS)
+
+
+def _has_non_memory_tool_use(transcript: str) -> bool:
+    tool_names = _iter_transcript_tool_names(transcript)
+    if tool_names:
+        return any(not _contains_any(name, MEMORY_TOOL_MARKERS) for name in tool_names)
+    lower = transcript.lower()
+    if '"tool_name"' not in lower and "<function_calls>" not in lower:
+        return False
+    if "memoryoss" not in lower:
+        return True
+    segments = [segment for segment in lower.splitlines() if "tool_name" in segment]
+    return any("memoryoss" not in segment for segment in segments)
+
+
+def _allow(message: str | None = None) -> dict:
+    payload: dict[str, object] = {"continue": True}
+    if message:
+        payload["systemMessage"] = message
+    return payload
+
+
+def _deny(event_name: str, message: str) -> dict:
+    if event_name in {"PreToolUse", "PostToolUse"}:
+        return {
+            "continue": True,
+            "hookSpecificOutput": {
+                "hookEventName": event_name,
+                "permissionDecision": "deny",
+            },
+            "systemMessage": message,
+        }
+    return {
+        "continue": False,
+        "decision": "block",
+        "reason": message,
+        "systemMessage": message,
+    }
+
+
+def main() -> int:
+    payload = _read_stdin()
+    event_name = str(payload.get("hook_event_name", "") or "")
+    transcript = _read_transcript(payload.get("transcript_path"))
+    project_dir = os.environ.get("CLAUDE_PROJECT_DIR", "")
+    policy_note = (
+        "memoryOSS is mandatory in this project. Call `memoryoss_recall` at session start "
+        "and before substantial work. Call `memoryoss_store` or `memoryoss_update` before stopping "
+        "when you learned or confirmed something important."
+    )
+
+    if event_name == "SessionStart":
+        print(json.dumps(_allow(policy_note)))
+        return 0
+
+    if event_name == "UserPromptSubmit":
+        print(json.dumps(_allow(policy_note)))
+        return 0
+
+    if event_name == "PreToolUse":
+        if _is_memory_tool(payload):
+            print(json.dumps(_allow()))
+            return 0
+        if _has_recall(transcript):
+            print(json.dumps(_allow()))
+            return 0
+        message = (
+            f"{policy_note} Current project: {project_dir or 'unknown'}. "
+            "This tool call is blocked until `memoryoss_recall` runs."
+        )
+        print(json.dumps(_deny(event_name, message)))
+        return 0
+
+    if event_name in {"Stop", "SubagentStop"}:
+        if not _has_non_memory_tool_use(transcript):
+            print(json.dumps(_allow()))
+            return 0
+        if _has_store(transcript):
+            print(json.dumps(_allow()))
+            return 0
+        message = (
+            f"{policy_note} Current project: {project_dir or 'unknown'}. "
+            "This session used tools but has no `memoryoss_store`/`memoryoss_update` yet."
+        )
+        print(json.dumps(_deny(event_name, message)))
+        return 0
+
+    print(json.dumps(_allow()))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+"#;
+
+fn command_exists(name: &str) -> bool {
+    std::process::Command::new("which")
+        .arg(name)
+        .output()
+        .map(|output| output.status.success())
+        .unwrap_or(false)
+}
+
+fn home_dir_path() -> PathBuf {
+    std::env::var("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| PathBuf::from("."))
+}
+
+fn claude_dir(home_dir: &std::path::Path) -> PathBuf {
+    home_dir.join(".claude")
+}
+
+fn claude_user_config_path(home_dir: &std::path::Path) -> PathBuf {
+    home_dir.join(".claude.json")
+}
+
+fn claude_settings_path(home_dir: &std::path::Path) -> PathBuf {
+    claude_dir(home_dir).join("settings.json")
+}
+
+fn claude_settings_local_path(home_dir: &std::path::Path) -> PathBuf {
+    claude_dir(home_dir).join("settings.local.json")
+}
+
+fn claude_guard_script_path(home_dir: &std::path::Path) -> PathBuf {
+    claude_dir(home_dir).join("memoryoss-guard.py")
+}
+
+fn codex_home_dir(home_dir: &std::path::Path) -> PathBuf {
+    std::env::var("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|_| home_dir.join(".codex"))
+}
+
+fn codex_config_path(home_dir: &std::path::Path) -> PathBuf {
+    codex_home_dir(home_dir).join("config.toml")
+}
+
+fn agents_policy_path(home_dir: &std::path::Path) -> PathBuf {
+    home_dir.join("AGENTS.md")
+}
+
+fn read_json_file(path: &std::path::Path) -> serde_json::Value {
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+    {
+        Some(value) if value.is_object() => value,
+        _ => serde_json::json!({}),
+    }
+}
+
+fn write_json_file(path: &std::path::Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, serde_json::to_string_pretty(value)?)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn write_text_file(path: &std::path::Path, contents: &str, mode: u32) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, contents)?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode));
+    }
+    Ok(())
+}
+
+fn memoryoss_command_args(config_path: &std::path::Path) -> Vec<String> {
+    vec![
+        "-c".to_string(),
+        config_path.to_string_lossy().to_string(),
+        "mcp-server".to_string(),
+    ]
+}
+
+fn claude_user_mcp_value(
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+) -> serde_json::Value {
+    serde_json::json!({
+        "type": "stdio",
+        "command": binary.to_string_lossy().to_string(),
+        "args": memoryoss_command_args(config_path),
+        "env": {}
+    })
+}
+
+fn claude_legacy_mcp_value(
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+) -> serde_json::Value {
+    serde_json::json!({
+        "command": binary.to_string_lossy().to_string(),
+        "args": memoryoss_command_args(config_path),
+    })
+}
+
+fn claude_hook_command(script_path: &std::path::Path) -> String {
+    format!("python3 {}", script_path.display())
+}
+
+fn claude_hook_entry(command: &str) -> serde_json::Value {
+    serde_json::json!([
+        {
+            "matcher": "*",
+            "hooks": [
+                {
+                    "type": "command",
+                    "command": command,
+                    "timeout": 10
+                }
+            ]
+        }
+    ])
+}
+
+fn is_claude_installed(home_dir: &std::path::Path) -> bool {
+    home_dir.join(".claude").exists()
+        || home_dir.join(".claude.json").exists()
+        || command_exists("claude")
+}
+
+fn is_codex_installed(home_dir: &std::path::Path) -> bool {
+    codex_home_dir(home_dir).exists() || command_exists("codex")
+}
+
+fn json_mcp_matches(
+    value: &serde_json::Value,
+    binary: &std::path::Path,
+    config: &std::path::Path,
+) -> bool {
+    let command = value.get("command").and_then(|entry| entry.as_str());
+    let args = value.get("args").and_then(|entry| entry.as_array());
+    let expected_args = memoryoss_command_args(config);
+    command == Some(binary.to_string_lossy().as_ref())
+        && args.map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+                == expected_args
+        }) == Some(true)
+}
+
+fn claude_user_mcp_matches(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config: &std::path::Path,
+) -> bool {
+    let value = read_json_file(&claude_user_config_path(home_dir));
+    value
+        .get("mcpServers")
+        .and_then(|entry| entry.get("memoryoss"))
+        .map(|entry| json_mcp_matches(entry, binary, config))
+        == Some(true)
+}
+
+fn claude_legacy_mcp_matches(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config: &std::path::Path,
+) -> bool {
+    let value = read_json_file(&claude_settings_path(home_dir));
+    value
+        .get("mcpServers")
+        .and_then(|entry| entry.get("memoryoss"))
+        .map(|entry| json_mcp_matches(entry, binary, config))
+        == Some(true)
+}
+
+fn claude_hooks_match(home_dir: &std::path::Path) -> bool {
+    let script_path = claude_guard_script_path(home_dir);
+    if !script_path.is_file() {
+        return false;
+    }
+    let expected_command = claude_hook_command(&script_path);
+    let value = read_json_file(&claude_settings_local_path(home_dir));
+    let Some(hooks) = value.get("hooks") else {
+        return false;
+    };
+    CLAUDE_HOOK_EVENTS.iter().all(|event| {
+        hooks
+            .get(*event)
+            .and_then(|entries| entries.as_array())
+            .and_then(|entries| entries.first())
+            .and_then(|entry| entry.get("hooks"))
+            .and_then(|entries| entries.as_array())
+            .and_then(|entries| entries.first())
+            .map(|hook| {
+                hook.get("type").and_then(|entry| entry.as_str()) == Some("command")
+                    && hook.get("command").and_then(|entry| entry.as_str())
+                        == Some(expected_command.as_str())
+            })
+            == Some(true)
+    })
+}
+
+fn codex_mcp_matches(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config: &std::path::Path,
+) -> bool {
+    let Ok(text) = std::fs::read_to_string(codex_config_path(home_dir)) else {
+        return false;
+    };
+    let Ok(value) = text.parse::<toml::Value>() else {
+        return false;
+    };
+    let Some(entry) = value
+        .get("mcp_servers")
+        .and_then(|table| table.get("memoryoss"))
+    else {
+        return false;
+    };
+    let command = entry.get("command").and_then(|item| item.as_str());
+    let args = entry.get("args").and_then(|item| item.as_array());
+    let expected_args = memoryoss_command_args(config);
+    command == Some(binary.to_string_lossy().as_ref())
+        && args.map(|items| {
+            items
+                .iter()
+                .filter_map(|item| item.as_str())
+                .map(str::to_string)
+                .collect::<Vec<_>>()
+                == expected_args
+        }) == Some(true)
+}
+
+fn codex_policy_matches(home_dir: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(agents_policy_path(home_dir)) else {
+        return false;
+    };
+    text.contains(MEMORYOSS_POLICY_BEGIN)
+        && text.contains(MEMORYOSS_POLICY_END)
+        && text.contains("memoryoss_recall")
+        && text.contains("memoryoss_store")
+}
+
+fn upsert_policy_block(existing: &str) -> String {
+    let trimmed = existing.trim_end();
+    let mut without_block = Vec::new();
+    let mut in_block = false;
+    for line in trimmed.lines() {
+        let current = line.trim();
+        if current == MEMORYOSS_POLICY_BEGIN {
+            in_block = true;
+            continue;
+        }
+        if current == MEMORYOSS_POLICY_END {
+            in_block = false;
+            continue;
+        }
+        if !in_block {
+            without_block.push(line);
+        }
+    }
+    let mut rendered = without_block.join("\n").trim_end().to_string();
+    if !rendered.is_empty() {
+        rendered.push_str("\n\n");
+    }
+    rendered.push_str(MEMORYOSS_POLICY_BLOCK);
+    rendered.push('\n');
+    rendered
+}
+
+fn configure_claude_integration(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+    bind_host: &str,
+    port: &str,
+) -> anyhow::Result<()> {
+    let user_config_path = claude_user_config_path(home_dir);
+    let settings_path = claude_settings_path(home_dir);
+    let settings_local_path = claude_settings_local_path(home_dir);
+    let guard_script_path = claude_guard_script_path(home_dir);
+
+    let mut user_config = read_json_file(&user_config_path);
+    user_config["mcpServers"]["memoryoss"] = claude_user_mcp_value(binary, config_path);
+    write_json_file(&user_config_path, &user_config)?;
+
+    write_text_file(&guard_script_path, CLAUDE_MEMORYOSS_GUARD, 0o755)?;
+
+    let mut settings = read_json_file(&settings_path);
+    settings["mcpServers"]["memoryoss"] = claude_legacy_mcp_value(binary, config_path);
+    settings["statusLine"] = serde_json::json!({
+        "type": "command",
+        "command": format!("bash {}", claude_dir(home_dir).join("statusline-command.sh").display()),
+    });
+
+    let script_path = claude_dir(home_dir).join("statusline-command.sh");
+    let health_url = format!("http://{}:{}/health", bind_host, port);
+    let script = format!(
+        r#"#!/usr/bin/env bash
+# Claude Code status line — memoryOSS health indicator
+input=$(cat)
+cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
+model=$(echo "$input" | jq -r '.model.display_name // empty')
+used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+dir_segment=""
+[ -n "$cwd" ] && dir_segment="$(basename "$cwd")"
+model_segment=""
+[ -n "$model" ] && model_segment="$model"
+ctx_segment=""
+[ -n "$used_pct" ] && ctx_segment="ctx:${{used_pct}}%"
+MEMORY_STATUS=""
+response=$(curl -sf --max-time 1 {health_url} 2>/dev/null)
+if [ $? -eq 0 ] && [ -n "$response" ]; then
+  status=$(echo "$response" | jq -r '.status // empty' 2>/dev/null)
+  if [ "$status" = "ok" ]; then
+    MEMORY_STATUS=$(printf '\033[32mmemoryOSS ●\033[0m')
+  else
+    MEMORY_STATUS=$(printf '\033[31mmemoryOSS ●\033[0m')
+  fi
+else
+  MEMORY_STATUS=$(printf '\033[31mmemoryOSS ●\033[0m')
+fi
+parts=()
+[ -n "$dir_segment" ] && parts+=("$dir_segment")
+[ -n "$model_segment" ] && parts+=("$model_segment")
+[ -n "$ctx_segment" ] && parts+=("$ctx_segment")
+parts+=("$MEMORY_STATUS")
+printf '%s' "$(IFS=' | '; echo "${{parts[*]}}")"
+"#
+    );
+    write_text_file(&script_path, &script, 0o755)?;
+    write_json_file(&settings_path, &settings)?;
+
+    let hook_command = claude_hook_command(&guard_script_path);
+    let mut settings_local = read_json_file(&settings_local_path);
+    for event in CLAUDE_HOOK_EVENTS {
+        settings_local["hooks"][event] = claude_hook_entry(&hook_command);
+    }
+    write_json_file(&settings_local_path, &settings_local)?;
+    Ok(())
+}
+
+fn configure_codex_integration(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let config_file = codex_config_path(home_dir);
+    if let Some(parent) = config_file.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let mut table = std::fs::read_to_string(&config_file)
+        .ok()
+        .and_then(|text| text.parse::<toml::Value>().ok())
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+
+    let mut mcp_servers = table
+        .remove("mcp_servers")
+        .and_then(|value| value.as_table().cloned())
+        .unwrap_or_default();
+    let mut memoryoss = toml::Table::new();
+    memoryoss.insert(
+        "command".to_string(),
+        toml::Value::String(binary.to_string_lossy().to_string()),
+    );
+    memoryoss.insert(
+        "args".to_string(),
+        toml::Value::Array(
+            memoryoss_command_args(config_path)
+                .into_iter()
+                .map(toml::Value::String)
+                .collect(),
+        ),
+    );
+    mcp_servers.insert("memoryoss".to_string(), toml::Value::Table(memoryoss));
+    table.insert("mcp_servers".to_string(), toml::Value::Table(mcp_servers));
+
+    std::fs::write(
+        &config_file,
+        toml::to_string_pretty(&toml::Value::Table(table))?,
+    )?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&config_file, std::fs::Permissions::from_mode(0o600));
+    }
+
+    let agents_path = agents_policy_path(home_dir);
+    let existing = std::fs::read_to_string(&agents_path).unwrap_or_default();
+    write_text_file(&agents_path, &upsert_policy_block(&existing), 0o644)?;
+    Ok(())
+}
+
 fn decay_namespaces(
     config: &config::Config,
     stored_namespaces: impl IntoIterator<Item = String>,
@@ -2770,6 +3390,10 @@ fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()>
     let mut issues = 0usize;
     println!("Running doctor for {}", config_path.display());
     println!("[ok] config: loaded and validated");
+    let home_dir = home_dir_path();
+    let config_path_abs =
+        std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
+    let memoryoss_bin = preferred_runtime_binary();
 
     let admin_keys = config
         .auth
@@ -2864,6 +3488,70 @@ fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()>
                 "not required"
             }
         );
+    }
+
+    if is_claude_installed(&home_dir) {
+        if claude_user_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
+            && claude_legacy_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
+        {
+            println!(
+                "[ok] claude mcp: user and compatibility registrations point to {}",
+                config_path_abs.display()
+            );
+        } else {
+            println!(
+                "[error] claude mcp: missing or stale registration in {} or {}",
+                claude_user_config_path(&home_dir).display(),
+                claude_settings_path(&home_dir).display()
+            );
+            issues += 1;
+        }
+
+        if claude_hooks_match(&home_dir) {
+            println!(
+                "[ok] claude hooks: required events point to {}",
+                claude_guard_script_path(&home_dir).display()
+            );
+        } else {
+            println!(
+                "[error] claude hooks: missing required events in {} or missing {}",
+                claude_settings_local_path(&home_dir).display(),
+                claude_guard_script_path(&home_dir).display()
+            );
+            issues += 1;
+        }
+    } else {
+        println!("[ok] claude integration: not detected");
+    }
+
+    if is_codex_installed(&home_dir) {
+        if codex_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs) {
+            println!(
+                "[ok] codex mcp: config points to {}",
+                config_path_abs.display()
+            );
+        } else {
+            println!(
+                "[error] codex mcp: missing or stale {}",
+                codex_config_path(&home_dir).display()
+            );
+            issues += 1;
+        }
+
+        if codex_policy_matches(&home_dir) {
+            println!(
+                "[ok] codex policy: {} contains the memoryOSS policy block",
+                agents_policy_path(&home_dir).display()
+            );
+        } else {
+            println!(
+                "[error] codex policy: {} is missing the memoryOSS policy block",
+                agents_policy_path(&home_dir).display()
+            );
+            issues += 1;
+        }
+    } else {
+        println!("[ok] codex integration: not detected");
     }
 
     if issues > 0 {
@@ -3316,185 +4004,36 @@ max_clusters = 25
         }
     }
 
-    // --- MCP configuration ---
-    // MCP stays enabled for explicit memory tools and Marketplace requirements.
-    // The proxy now runs in front of a fail-open gateway, so transparent memory and
-    // explicit MCP tools coexist under one setup.
+    // --- Client integration ---
+    // Setup must leave Claude and Codex in a deterministic enforced state instead of
+    // relying on client-side CLI side effects.
     let config_path_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
     let memoryoss_bin = preferred_runtime_binary();
 
     if has_claude_code {
-        let status = std::process::Command::new("claude")
-            .args(["mcp", "add", "--transport", "stdio", "memoryoss", "--"])
-            .arg(&memoryoss_bin)
-            .args(["-c", &config_path_abs.to_string_lossy()])
-            .arg("mcp-server")
-            .output();
-
-        match status {
-            Ok(out) if out.status.success() => {
-                println!("  ✓ MCP configured for Claude Code");
+        match configure_claude_integration(
+            &home_dir_path(),
+            &memoryoss_bin,
+            &config_path_abs,
+            bind_host,
+            &port,
+        ) {
+            Ok(()) => {
+                println!("  ✓ Claude Code MCP configured (user + compatibility scope)");
+                println!("  ✓ Claude Code hooks enforced (recall before tools, store before stop)");
             }
-            Ok(out) => {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                if stderr.contains("already exists") || stderr.contains("already configured") {
-                    println!("  ✓ Claude Code MCP already configured");
-                } else {
-                    eprintln!("  ✗ Failed to configure Claude Code MCP: {}", stderr.trim());
-                }
-            }
-            Err(e) => {
-                eprintln!("  ✗ Could not run 'claude mcp add': {e}");
-            }
+            Err(e) => eprintln!("  ✗ Failed to configure Claude Code integration: {e}"),
         }
     }
 
     if has_codex {
-        let mut skip_add = false;
-        let mut replaced_stale = false;
-
-        match std::process::Command::new("codex")
-            .args(["mcp", "get", "memoryoss"])
-            .output()
-        {
-            Ok(out) if out.status.success() => {
-                let stdout = String::from_utf8_lossy(&out.stdout);
-                if codex_mcp_matches_desired(&stdout, &memoryoss_bin, &config_path_abs) {
-                    println!("  ✓ Codex MCP already configured");
-                    skip_add = true;
-                } else {
-                    match std::process::Command::new("codex")
-                        .args(["mcp", "remove", "memoryoss"])
-                        .output()
-                    {
-                        Ok(remove_out) if remove_out.status.success() => {
-                            replaced_stale = true;
-                        }
-                        Ok(remove_out) => {
-                            let stderr = String::from_utf8_lossy(&remove_out.stderr);
-                            eprintln!(
-                                "  ✗ Failed to replace stale Codex MCP config: {}",
-                                stderr.trim()
-                            );
-                            skip_add = true;
-                        }
-                        Err(e) => {
-                            eprintln!("  ✗ Could not run 'codex mcp remove': {e}");
-                            skip_add = true;
-                        }
-                    }
-                }
+        match configure_codex_integration(&home_dir_path(), &memoryoss_bin, &config_path_abs) {
+            Ok(()) => {
+                println!("  ✓ Codex MCP configured");
+                println!("  ✓ Codex policy fallback configured in ~/AGENTS.md");
             }
-            Ok(_) => {}
-            Err(_) => {}
-        }
-
-        if !skip_add {
-            let status = std::process::Command::new("codex")
-                .args(["mcp", "add", "memoryoss", "--"])
-                .arg(&memoryoss_bin)
-                .args(["-c", &config_path_abs.to_string_lossy()])
-                .arg("mcp-server")
-                .output();
-
-            match status {
-                Ok(out) if out.status.success() => {
-                    if replaced_stale {
-                        println!("  ✓ Codex MCP updated");
-                    } else {
-                        println!("  ✓ MCP configured for Codex CLI");
-                    }
-                }
-                Ok(out) => {
-                    let stderr = String::from_utf8_lossy(&out.stderr);
-                    if stderr.contains("already exists") || stderr.contains("already configured") {
-                        println!("  ✓ Codex MCP already configured");
-                    } else {
-                        eprintln!("  ✗ Failed to configure Codex MCP: {}", stderr.trim());
-                    }
-                }
-                Err(e) => {
-                    eprintln!("  ✗ Could not run 'codex mcp add': {e}");
-                }
-            }
-        }
-    }
-
-    // --- Claude Code statusline indicator ---
-    if has_claude_code {
-        let claude_dir = std::env::var("HOME")
-            .ok()
-            .map(|h| std::path::PathBuf::from(h).join(".claude"))
-            .unwrap_or_else(|| std::path::PathBuf::from(".claude"));
-
-        let health_url = format!("http://{}:{}/health", bind_host, port);
-        let script_path = claude_dir.join("statusline-command.sh");
-        let script = format!(
-            r#"#!/usr/bin/env bash
-# Claude Code status line — memoryOSS health indicator
-input=$(cat)
-cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
-model=$(echo "$input" | jq -r '.model.display_name // empty')
-used_pct=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
-dir_segment=""
-[ -n "$cwd" ] && dir_segment="$(basename "$cwd")"
-model_segment=""
-[ -n "$model" ] && model_segment="$model"
-ctx_segment=""
-[ -n "$used_pct" ] && ctx_segment="ctx:${{used_pct}}%"
-MEMORY_STATUS=""
-response=$(curl -sf --max-time 1 {health_url} 2>/dev/null)
-if [ $? -eq 0 ] && [ -n "$response" ]; then
-  status=$(echo "$response" | jq -r '.status // empty' 2>/dev/null)
-  if [ "$status" = "ok" ]; then
-    MEMORY_STATUS=$(printf '\033[32mmemoryOSS ●\033[0m')
-  else
-    MEMORY_STATUS=$(printf '\033[31mmemoryOSS ●\033[0m')
-  fi
-else
-  MEMORY_STATUS=$(printf '\033[31mmemoryOSS ●\033[0m')
-fi
-parts=()
-[ -n "$dir_segment" ] && parts+=("$dir_segment")
-[ -n "$model_segment" ] && parts+=("$model_segment")
-[ -n "$ctx_segment" ] && parts+=("$ctx_segment")
-parts+=("$MEMORY_STATUS")
-printf '%s' "$(IFS=' | '; echo "${{parts[*]}}")"
-"#
-        );
-
-        std::fs::create_dir_all(&claude_dir).ok();
-        match std::fs::write(&script_path, &script) {
-            Ok(_) => {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    std::fs::set_permissions(&script_path, std::fs::Permissions::from_mode(0o755))
-                        .ok();
-                }
-
-                // Add statusLine to Claude Code settings.json
-                let settings_path = claude_dir.join("settings.json");
-                let mut settings: serde_json::Value = std::fs::read_to_string(&settings_path)
-                    .ok()
-                    .and_then(|s| serde_json::from_str(&s).ok())
-                    .unwrap_or_else(|| serde_json::json!({}));
-
-                settings["statusLine"] = serde_json::json!({
-                    "type": "command",
-                    "command": format!("bash {}", script_path.display()),
-                });
-
-                match std::fs::write(
-                    &settings_path,
-                    serde_json::to_string_pretty(&settings).unwrap_or_default(),
-                ) {
-                    Ok(_) => println!("  ✓ Claude Code statusline configured"),
-                    Err(e) => eprintln!("  ✗ Failed to update Claude Code settings: {e}"),
-                }
-            }
-            Err(e) => eprintln!("  ✗ Failed to write statusline script: {e}"),
+            Err(e) => eprintln!("  ✗ Failed to configure Codex integration: {e}"),
         }
     }
 
@@ -3552,7 +4091,9 @@ printf '%s' "$(IFS=' | '; echo "${{parts[*]}}")"
     }
 
     println!();
-    println!("  Setup done. Start your AI agent as usual — memory works automatically.");
+    println!(
+        "  Setup done. Start Claude or Codex as usual — memory is enforced via MCP and client-side guardrails."
+    );
     println!();
 
     Ok(())
@@ -3592,18 +4133,6 @@ fn choose_preferred_binary(current: &std::path::Path, candidates: &[PathBuf]) ->
     } else {
         PathBuf::from("memoryoss")
     }
-}
-
-fn codex_mcp_matches_desired(
-    current: &str,
-    binary: &std::path::Path,
-    config: &std::path::Path,
-) -> bool {
-    let binary_str = binary.to_string_lossy();
-    let config_str = config.to_string_lossy();
-    current.contains(binary_str.as_ref())
-        && current.contains(&format!("-c {}", config_str))
-        && current.contains("mcp-server")
 }
 
 fn is_target_build_path(path: &std::path::Path) -> bool {
@@ -3716,6 +4245,34 @@ mod tests {
             tmp.path().to_str().unwrap(),
             "ANTHROPIC_API_KEY"
         ));
+    }
+
+    #[test]
+    fn policy_block_upsert_replaces_old_block_once() {
+        let existing = format!(
+            "before\n{}\nold\n{}\nafter\n",
+            MEMORYOSS_POLICY_BEGIN, MEMORYOSS_POLICY_END
+        );
+        let updated = upsert_policy_block(&existing);
+        assert_eq!(updated.matches(MEMORYOSS_POLICY_BEGIN).count(), 1);
+        assert!(updated.contains("before"));
+        assert!(updated.contains("after"));
+        assert!(updated.contains("memoryoss_recall"));
+    }
+
+    #[test]
+    fn claude_hook_match_requires_all_events() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let guard = claude_guard_script_path(home);
+        write_text_file(&guard, "#!/usr/bin/env python3\n", 0o755).unwrap();
+        let command = claude_hook_command(&guard);
+        let mut settings = serde_json::json!({ "hooks": {} });
+        for event in CLAUDE_HOOK_EVENTS {
+            settings["hooks"][event] = claude_hook_entry(&command);
+        }
+        write_json_file(&claude_settings_local_path(home), &settings).unwrap();
+        assert!(claude_hooks_match(home));
     }
 
     #[test]

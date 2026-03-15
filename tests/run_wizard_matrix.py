@@ -12,6 +12,13 @@ from runner_common import ROOT_DIR, ensure_binary, http_json, iso_now, stop_proc
 
 
 OUTPUT_JSON = Path(os.environ.get("WIZARD_MATRIX_OUTPUT_JSON", ROOT_DIR / "tests" / "wizard-matrix.json"))
+CLAUDE_HOOK_EVENTS = [
+    "PreToolUse",
+    "SessionStart",
+    "Stop",
+    "SubagentStop",
+    "UserPromptSubmit",
+]
 
 
 def free_port() -> int:
@@ -21,7 +28,11 @@ def free_port() -> int:
         return s.getsockname()[1]
 
 
-PORT = int(os.environ.get("WIZARD_TEST_PORT", str(free_port())))
+PORT = (
+    int(os.environ["WIZARD_TEST_PORT"])
+    if "WIZARD_TEST_PORT" in os.environ
+    else free_port()
+)
 
 
 def port_available(port: int) -> bool:
@@ -86,6 +97,15 @@ def write_codex_oauth_auth(home: Path) -> None:
     (codex_dir / "auth.json").write_text(json.dumps(auth), encoding="utf-8")
 
 
+def write_stale_codex_config(home: Path) -> None:
+    codex_dir = home / ".codex"
+    codex_dir.mkdir(parents=True, exist_ok=True)
+    (codex_dir / "config.toml").write_text(
+        '[mcp_servers.memoryoss]\ncommand = "/usr/local/bin/memoryoss"\nargs = ["-c", "/tmp/stale-mcp/memoryoss.toml", "mcp-server"]\n',
+        encoding="utf-8",
+    )
+
+
 def write_claude_oauth_creds(home: Path) -> None:
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -139,6 +159,57 @@ def wait_for_ready(log_path: Path, config_path: Path, timeout: float = 40.0) -> 
     return False
 
 
+def read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def claude_hook_command(hook_path: Path) -> str:
+    return f"python3 {hook_path}"
+
+
+def claude_hooks_configured(settings_local: dict, hook_path: Path) -> bool:
+    hooks = settings_local.get("hooks", {})
+    expected_command = claude_hook_command(hook_path)
+    for event in CLAUDE_HOOK_EVENTS:
+        entries = hooks.get(event)
+        if not isinstance(entries, list) or not entries:
+            return False
+        hook_entries = entries[0].get("hooks", [])
+        if not isinstance(hook_entries, list) or not hook_entries:
+            return False
+        hook = hook_entries[0]
+        if hook.get("type") != "command" or hook.get("command") != expected_command:
+            return False
+    return True
+
+
+def run_claude_hook(hook_path: Path, event_name: str, transcript_lines: list[dict], *, tool_name: str = "Bash") -> dict:
+    tmp = Path(tempfile.mkdtemp(prefix="memoryoss-claude-hook-"))
+    transcript_path = tmp / "transcript.jsonl"
+    transcript_path.write_text(
+        "".join(json.dumps(line) + "\n" for line in transcript_lines),
+        encoding="utf-8",
+    )
+    os.chmod(transcript_path, 0o644)
+    payload = {
+        "hook_event_name": event_name,
+        "tool_name": tool_name,
+        "tool_input": {"cmd": "echo hi"},
+        "transcript_path": str(transcript_path),
+    }
+    result = subprocess.run(
+        ["python3", str(hook_path)],
+        input=json.dumps(payload),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    shutil.rmtree(tmp, ignore_errors=True)
+    if result.returncode != 0:
+        raise RuntimeError(f"hook run failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+
 def assert_result(name: str, passed: bool, note: str | None = None) -> dict:
     result = {"name": name, "status": "pass" if passed else "fail"}
     if note:
@@ -170,7 +241,6 @@ def run_setup_once(
     (data_dir / "memoryoss.redb").write_bytes(b"wizard-matrix-existing-data")
     config_path = tmp / "memoryoss.toml"
     log_path = tmp / "setup.log"
-    codex_log = tmp / "codex.log"
     bin_dir = tmp / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,13 +249,11 @@ def run_setup_once(
     make_which_stub(bin_dir, has_claude=has_claude, has_codex=has_codex)
     if has_codex:
         write_codex_oauth_auth(home)
-        make_codex_stub(bin_dir, codex_log)
 
     env = os.environ.copy()
     env["HOME"] = str(home)
     env["SHELL"] = "/bin/bash"
     env["PATH"] = f"{bin_dir}:/usr/bin:/bin:/usr/local/bin"
-    env["WIZARD_CODEX_LOG"] = str(codex_log)
     if has_codex:
         env["CODEX_HOME"] = str(home / ".codex")
     else:
@@ -203,15 +271,7 @@ def run_setup_once(
     env["MEMORYOSS_PORT"] = str(PORT)
     env["MEMORYOSS_DISABLE_SYSTEMD"] = "1"
     if stale_codex_mcp:
-        env["WIZARD_CODEX_GET_OUTPUT"] = (
-            "memoryoss\n"
-            "  enabled: true\n"
-            "  transport: stdio\n"
-            "  command: /usr/local/bin/memoryoss\n"
-            "  args: -c /tmp/stale-mcp/memoryoss.toml mcp-server\n"
-        )
-    else:
-        env.pop("WIZARD_CODEX_GET_OUTPUT", None)
+        write_stale_codex_config(home)
 
     def launch(log_target: Path):
         handle = log_target.open("wb")
@@ -256,9 +316,6 @@ def run_setup_once(
     bashrc_path = home / ".bashrc"
     bashrc_text = bashrc_path.read_text(encoding="utf-8") if bashrc_path.exists() else ""
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
-    codex_calls = []
-    if codex_log.exists():
-        codex_calls = [json.loads(line) for line in codex_log.read_text(encoding="utf-8").splitlines() if line.strip()]
 
     expect_extraction = openai_key or anthropic_key
     expect_openai_base = openai_key and (not has_codex or choose_codex_api_key)
@@ -296,31 +353,103 @@ def run_setup_once(
                 "ANTHROPIC_BASE_URL export matches scenario",
                 ("ANTHROPIC_BASE_URL=" in bashrc_text) == expect_anthropic_base,
             ),
-            assert_result(
-                "Codex MCP registration matches scenario",
-                (len(codex_calls) > 0) == has_codex,
-                None if not has_codex else f"{len(codex_calls)} codex invocation(s)",
-            ),
         ]
     )
 
-    if has_codex:
-        flattened = [" ".join(call) for call in codex_calls]
+    if has_claude:
+        claude_user = read_json(home / ".claude.json")
+        claude_settings = read_json(home / ".claude" / "settings.json")
+        claude_settings_local = read_json(home / ".claude" / "settings.local.json")
+        hook_path = home / ".claude" / "memoryoss-guard.py"
+        expected_args = ["-c", str(config_path), "mcp-server"]
+        assertions.extend(
+            [
+                assert_result("Claude user MCP config written", hook_path.parent.exists() and "memoryoss" in claude_user.get("mcpServers", {})),
+                assert_result(
+                    "Claude user MCP command matches setup binary",
+                    claude_user.get("mcpServers", {}).get("memoryoss", {}).get("args") == expected_args,
+                ),
+                assert_result(
+                    "Claude compatibility MCP config written",
+                    claude_settings.get("mcpServers", {}).get("memoryoss", {}).get("args") == expected_args,
+                ),
+                assert_result("Claude guard hook script written", hook_path.exists()),
+                assert_result("Claude hook script is executable", os.access(hook_path, os.X_OK)),
+                assert_result(
+                    "Claude settings.local configures all memoryOSS hooks",
+                    claude_hooks_configured(claude_settings_local, hook_path),
+                ),
+                assert_result(
+                    "Claude statusline configured",
+                    "memoryOSS health indicator" in (home / ".claude" / "statusline-command.sh").read_text(encoding="utf-8"),
+                ),
+            ]
+        )
+
+        deny = run_claude_hook(hook_path, "PreToolUse", [])
+        allow = run_claude_hook(
+            hook_path,
+            "PreToolUse",
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "name": "mcp__memoryoss__memoryoss_recall"}
+                        ]
+                    },
+                }
+            ],
+        )
+        stop_block = run_claude_hook(
+            hook_path,
+            "Stop",
+            [
+                {
+                    "type": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "tool_use", "name": "Bash"}
+                        ]
+                    },
+                }
+            ],
+        )
         assertions.append(
             assert_result(
-                "Codex MCP add invoked with memoryoss mcp-server",
-                any("mcp add memoryoss --" in call and "mcp-server" in call for call in flattened),
+                "Claude hook denies tool use before recall",
+                deny.get("hookSpecificOutput", {}).get("permissionDecision") == "deny",
             )
         )
-        if stale_codex_mcp:
-            assertions.append(
-                assert_result(
-                    "Codex stale MCP registration removed before add",
-                    any("mcp remove memoryoss" in call for call in flattened),
-                )
+        assertions.append(
+            assert_result(
+                "Claude hook allows tool use after recall",
+                allow.get("continue") is True
+                and allow.get("hookSpecificOutput") is None,
             )
-    else:
-        assertions.append(assert_result("No Codex MCP log created", not codex_log.exists()))
+        )
+        assertions.append(
+            assert_result(
+                "Claude hook blocks stop without store",
+                stop_block.get("continue") is False and stop_block.get("decision") == "block",
+            )
+        )
+
+    if has_codex:
+        codex_config = (home / ".codex" / "config.toml").read_text(encoding="utf-8")
+        agents_text = (home / "AGENTS.md").read_text(encoding="utf-8")
+        assertions.extend(
+            [
+                assert_result(
+                    "Codex MCP config written",
+                    '[mcp_servers.memoryoss]' in codex_config and f'"{config_path}"' in codex_config,
+                ),
+                assert_result(
+                    "Codex AGENTS policy block written",
+                    "MEMORYOSS_POLICY_BEGIN" in agents_text and "memoryoss_recall" in agents_text,
+                ),
+            ]
+        )
 
     if idempotency:
         second_log = tmp / "setup-second.log"
