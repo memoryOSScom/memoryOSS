@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-only
 // Copyright (C) 2026 memoryOSS Contributors
 
+use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -14,6 +15,8 @@ pub struct Config {
     pub auth: AuthConfig,
     #[serde(default)]
     pub storage: StorageConfig,
+    #[serde(default)]
+    pub embeddings: EmbeddingsConfig,
     #[serde(default)]
     pub logging: LoggingConfig,
     #[serde(default)]
@@ -31,6 +34,8 @@ pub struct Config {
     #[serde(default)]
     pub proxy: ProxyConfig,
     #[serde(default)]
+    pub setup: SetupConfig,
+    #[serde(default)]
     pub sharing: crate::sharing::SharingConfig,
     /// Runtime flag — true when started via `memoryoss dev`. Not serialized from config file.
     #[serde(skip)]
@@ -44,6 +49,7 @@ impl Default for Config {
             tls: TlsConfig::default(),
             auth: AuthConfig::default(),
             storage: StorageConfig::default(),
+            embeddings: EmbeddingsConfig::default(),
             logging: LoggingConfig::default(),
             limits: LimitsConfig::default(),
             decompose: DecomposeConfig::default(),
@@ -52,8 +58,126 @@ impl Default for Config {
             decay: DecayConfig::default(),
             consolidation: ConsolidationConfig::default(),
             proxy: ProxyConfig::default(),
+            setup: SetupConfig::default(),
             sharing: crate::sharing::SharingConfig::default(),
             dev_mode: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]
+pub enum EmbeddingModelId {
+    #[default]
+    #[serde(rename = "all-minilm-l6-v2")]
+    #[value(name = "all-minilm-l6-v2")]
+    AllMiniLML6V2,
+    #[serde(rename = "bge-small-en-v1.5")]
+    #[value(name = "bge-small-en-v1.5")]
+    BgeSmallEnV15,
+    #[serde(rename = "bge-base-en-v1.5")]
+    #[value(name = "bge-base-en-v1.5")]
+    BgeBaseEnV15,
+    #[serde(rename = "bge-large-en-v1.5")]
+    #[value(name = "bge-large-en-v1.5")]
+    BgeLargeEnV15,
+}
+
+impl EmbeddingModelId {
+    pub fn canonical_name(self) -> &'static str {
+        match self {
+            Self::AllMiniLML6V2 => "all-minilm-l6-v2",
+            Self::BgeSmallEnV15 => "bge-small-en-v1.5",
+            Self::BgeBaseEnV15 => "bge-base-en-v1.5",
+            Self::BgeLargeEnV15 => "bge-large-en-v1.5",
+        }
+    }
+
+    pub fn expected_dimension(self) -> usize {
+        match self {
+            Self::AllMiniLML6V2 => 384,
+            Self::BgeSmallEnV15 => 384,
+            Self::BgeBaseEnV15 => 768,
+            Self::BgeLargeEnV15 => 1024,
+        }
+    }
+
+    #[cfg(test)]
+    pub fn supported() -> &'static [Self] {
+        &[
+            Self::AllMiniLML6V2,
+            Self::BgeSmallEnV15,
+            Self::BgeBaseEnV15,
+            Self::BgeLargeEnV15,
+        ]
+    }
+}
+
+impl std::fmt::Display for EmbeddingModelId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.canonical_name())
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EmbeddingsConfig {
+    #[serde(default)]
+    pub model: EmbeddingModelId,
+}
+
+impl Default for EmbeddingsConfig {
+    fn default() -> Self {
+        Self {
+            model: EmbeddingModelId::AllMiniLML6V2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum SetupProfile {
+    #[default]
+    Auto,
+    Claude,
+    Codex,
+    Cursor,
+    #[value(name = "team-node")]
+    TeamNode,
+}
+
+impl std::fmt::Display for SetupProfile {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Auto => write!(f, "auto"),
+            Self::Claude => write!(f, "claude"),
+            Self::Codex => write!(f, "codex"),
+            Self::Cursor => write!(f, "cursor"),
+            Self::TeamNode => write!(f, "team_node"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetupConfig {
+    #[serde(default)]
+    pub profile: SetupProfile,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_catalog_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub team_manifest_path: Option<String>,
+}
+
+impl Default for SetupConfig {
+    fn default() -> Self {
+        Self {
+            profile: SetupProfile::Auto,
+            team_id: None,
+            team_label: None,
+            team_catalog_id: None,
+            team_manifest_path: None,
         }
     }
 }
@@ -436,15 +560,17 @@ fn default_intent_cache_max_entries() -> usize {
 
 /// Encryption key provider config.
 /// Default: local file-based key with HKDF namespace derivation.
-/// Supports AWS KMS and HashiCorp Vault for cloud deployments.
+/// Supports local and HashiCorp Vault Transit.
+/// AWS KMS remains fail-closed and is not a supported provider surface yet.
 /// Key hierarchy: Master Key → Namespace Keys → Data Encryption Keys.
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct EncryptionConfig {
-    /// Key provider: "local" (default), "aws_kms", or "vault".
+    /// Key provider: "local" (default) or "vault".
+    /// "aws_kms" is accepted only to fail closed with an explicit unsupported error.
     pub provider: Option<String>,
-    /// AWS KMS key ID (ARN or alias). Required for aws_kms provider.
+    /// AWS KMS key ID (ARN or alias). Only used for the explicit fail-closed aws_kms path.
     pub key_id: Option<String>,
-    /// AWS region (default: "us-east-1"). Used with aws_kms.
+    /// AWS region (default: "us-east-1"). Only used for the explicit fail-closed aws_kms path.
     pub region: Option<String>,
     /// HashiCorp Vault address (e.g. "https://vault.example.com:8200").
     pub vault_address: Option<String>,
@@ -742,6 +868,11 @@ impl Config {
         if self.proxy.max_memory_pct < 0.0 || self.proxy.max_memory_pct > 1.0 {
             anyhow::bail!("proxy.max_memory_pct must be in [0.0, 1.0]");
         }
+        if let Some(provider) = self.encryption.provider.as_deref()
+            && !matches!(provider, "local" | "vault" | "aws_kms")
+        {
+            anyhow::bail!("encryption.provider must be one of: local, vault, aws_kms");
+        }
         if self.tls.cert_path.is_some() != self.tls.key_path.is_some() {
             anyhow::bail!("tls.cert_path and tls.key_path must be set together");
         }
@@ -780,5 +911,32 @@ impl ServerConfig {
                 .checked_add(1)
                 .unwrap_or(self.port.saturating_sub(1))
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, EmbeddingModelId};
+
+    #[test]
+    fn embedding_model_ids_use_canonical_runtime_names() {
+        assert_eq!(
+            EmbeddingModelId::AllMiniLML6V2.to_string(),
+            "all-minilm-l6-v2"
+        );
+        assert_eq!(
+            EmbeddingModelId::BgeSmallEnV15.to_string(),
+            "bge-small-en-v1.5"
+        );
+        assert_eq!(EmbeddingModelId::BgeBaseEnV15.expected_dimension(), 768);
+        assert_eq!(EmbeddingModelId::BgeLargeEnV15.expected_dimension(), 1024);
+    }
+
+    #[test]
+    fn config_validation_rejects_unknown_encryption_provider() {
+        let mut config = Config::default();
+        config.encryption.provider = Some("kmsish".to_string());
+        let err = config.validate().expect_err("unknown provider should fail");
+        assert!(err.to_string().contains("encryption.provider"));
     }
 }

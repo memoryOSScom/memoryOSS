@@ -10,7 +10,9 @@ memoryOSS is for project context, preferences, prior fixes, and working history 
 
 Agents lose project context between sessions. memoryOSS persists the things that actually matter in day-to-day work: decisions, conventions, fixes, constraints, and user preferences.
 
-In public retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands. The public test page publishes the current proof set: 20k retention, long-memory regression, soak stability, a universal memory loop proof, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix.
+In public retention, regression, and soak runs, memoryOSS continued to retrieve early high-signal memories even after the stored corpus grew into the tens of thousands. The public test page publishes two clearly separated surfaces: internal proof loops such as 20k retention, long-memory regression, soak stability, the universal memory loop proof, extraction quality, observed duplicate rate, active memory size, observed false-positive injection rate, and the supported Claude/Codex compatibility matrix; plus an open comparison lane with published fixture memories, queries, expected anchors, and explicit failure thresholds.
+
+The benchmark surface now also publishes a small multilingual calibration lane alongside the English default lane before any default embedding-model change is considered. That calibration is a visibility check, not a blanket claim that the current default model is already optimal for every multilingual workload.
 
 In a separate constrained 10-task Claude benchmark, using recalled memory context instead of replaying the full task context reduced average input tokens by 44.4%. We treat this as evidence for repeated-task context compression in that workload, not as a universal promise of lower token usage in every workload.
 
@@ -37,10 +39,16 @@ Linux/macOS example:
 curl -L https://github.com/memoryOSScom/memoryOSS/releases/latest/download/memoryoss-linux-x86_64.tar.gz -o memoryoss.tar.gz
 tar xzf memoryoss.tar.gz
 sudo install -m 0755 memoryoss /usr/local/bin/memoryoss
-memoryoss setup
+memoryoss setup --profile claude
 ```
 
 Windows has a PowerShell example in [Windows](#windows).
+
+If you prefer the install helper, it also accepts explicit setup profiles:
+
+```bash
+curl -fsSL https://memoryoss.com/install.sh | sh -s -- --profile codex
+```
 
 Every published archive ships with a matching `.sha256` file, and the release workflows now attach a GitHub artifact attestation for the built archives before the GitHub Release is published. That is the signed install surface for the binary/update path today; memoryOSS is not claiming OS-native notarization or MSI/PKG installers yet.
 
@@ -131,9 +139,18 @@ Windows-specific notes:
 - if you need remote access from outside the machine, change `[server].host` to `0.0.0.0`; otherwise keep the default loopback host
 - current Windows builds use a portable brute-force vector backend instead of `usearch`, so very large-memory recall will be slower than on Linux/macOS
 
-The setup wizard auto-detects your environment, writes deterministic Claude/Codex MCP registrations, installs Claude guard hooks, installs the Codex fallback policy block in `~/AGENTS.md`, and enables local proxy exports when they are safe for the selected auth mode. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
+The setup wizard now supports explicit install profiles: `auto`, `claude`, `codex`, `cursor`, and `team-node`. In `auto`, it detects your environment and writes the matching integrations. In explicit profiles, it only writes the profile-relevant surfaces. Claude profiles write deterministic MCP registrations plus guard hooks, Codex profiles write MCP plus the fallback policy block in `~/AGENTS.md`, Cursor profiles write `~/.cursor/mcp.json` plus the managed runtime rule `~/.cursor/rules/memoryoss.mdc`, and `team-node` configures whichever of Claude/Codex/Cursor are actually present on that workstation while keeping the machine service-first. Team nodes can also seed shared trust defaults via `--team-manifest`, which persists the manifest path plus a local bootstrap receipt so `memoryoss doctor --repair` can replay the rollout later without silently wiping local opt-ins. OAuth-first setups keep MCP enabled without forcing global `BASE_URL` overrides, so login flows keep working. Re-running setup with a non-Cursor explicit profile prunes the managed Cursor surfaces instead of leaving stale config behind. On a fresh setup it starts in **full** mode. If existing memories are already present, the wizard asks which memory mode you want and defaults that prompt to **full**.
 
-If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup` again so memoryOSS can safely update the integration path.
+If your auth setup changes later — for example from OAuth to API key or the other way around — run `memoryoss setup --profile <profile>` again so memoryOSS can safely update the integration path.
+
+Team rollout example:
+
+```bash
+memoryoss setup --profile team-node --team-manifest ./team-bootstrap.json
+memoryoss doctor --repair
+```
+
+That path replays the managed Claude/Codex/Cursor surfaces plus the shared trust catalog for the current workstation, while preserving local additions outside the managed memoryOSS blocks.
 
 ## Update Channels
 
@@ -183,7 +200,7 @@ So you get transparent memory when available, plus explicit MCP tools when neede
 
 ### After `memoryoss setup`
 
-Start Claude Code or Codex normally. The wizard always registers MCP, enforces Claude recall/store discipline through client hooks, writes the Codex policy fallback to `~/AGENTS.md`, and only writes local `BASE_URL` exports when the chosen auth mode is proxy-safe.
+Start your selected client normally. The wizard always records the active setup profile, writes only the profile-relevant integrations, enforces Claude recall/store discipline through client hooks when Claude is selected, writes the Codex policy fallback to `~/AGENTS.md` when Codex is selected, writes Cursor MCP config plus the managed `~/.cursor/rules/memoryoss.mdc` runtime rule when Cursor is selected, seeds the shared trust catalog when `--team-manifest` is used, and only writes local `BASE_URL` exports when the chosen auth mode and profile are proxy-safe. If a managed team workstation drifts later, `memoryoss doctor --repair` replays the selected client surfaces plus the shared trust seed.
 
 ### Manual proxy mode (optional)
 
@@ -288,6 +305,9 @@ namespace = "default"
 [storage]
 data_dir = "data"
 
+[embeddings]
+model = "all-minilm-l6-v2"                # Or bge-small-en-v1.5 / bge-base-en-v1.5 / bge-large-en-v1.5
+
 [proxy]
 enabled = true
 passthrough_auth = true
@@ -321,6 +341,18 @@ after_days = 14
 [sharing]
 allow_private_webhooks = false             # Keep localhost/private webhook targets blocked by default
 ```
+
+### Managed Key Providers
+
+`[encryption].provider = "local"` is the default and fully supported path.
+
+`[encryption].provider = "vault"` is also supported through Vault Transit. The runtime now has hermetic coverage for:
+- initial Vault bootstrap
+- wrapped-key reload from disk
+- rotation with a retained grace window for old ciphertext inside the running process
+- fail-closed bootstrap errors
+
+`aws_kms` is not currently a supported provider surface. The code accepts the value only to fail closed with an explicit unsupported error instead of silently downgrading to local keys.
 
 ## API Endpoints
 
@@ -359,7 +391,11 @@ allow_private_webhooks = false             # Keep localhost/private webhook targ
 | `/v1/admin/cache/flush` | POST | Flush recall cache |
 | `/v1/admin/cache/stats` | GET | Cache statistics |
 | `/v1/admin/trust-stats` | GET | Memory trust scores |
-| `/v1/admin/trust/fabric` | GET | Portable trust identities, revocations, and replacement links |
+| `/v1/admin/trust/fabric` | GET | Portable trust identities, imported catalogs, local pins, revocations, and replacement links |
+| `/v1/admin/trust/catalog/export` | GET | Export the current trust fabric as a portable signer catalog |
+| `/v1/admin/trust/catalog/import` | POST | Import or refresh a shared signer catalog into the local trust fabric |
+| `/v1/admin/trust/pin` | POST | Locally pin one trust identity so verification shows an explicit local trust root |
+| `/v1/admin/trust/unpin` | POST | Remove a local trust pin without deleting the identity |
 | `/v1/admin/trust/register` | POST | Register an author, device, or sync-peer identity for artifact signing |
 | `/v1/admin/trust/revoke` | POST | Revoke a portable trust identity and attach an optional replacement |
 | `/v1/admin/trust/restore` | POST | Re-trust a previously revoked identity without silent data loss |
@@ -497,6 +533,7 @@ The published report tracks hard daily-utility metrics from those loops:
 
 Claim lanes stay explicit:
 - stable: repeated-context elimination, passport portability, review throughput, blocked bad actions, history replay, task-state portability proof
+- external: open fixture-based recall/injection lane with published inputs, expected anchors, and explicit failure thresholds
 - experimental: retrieval tuning, confidence gating, identifier-first routing, extraction quality deltas, provider-specific token/cost evidence
 - moonshot: ambient everyday utility across every client and every workday
 
@@ -524,7 +561,9 @@ memoryoss reader diff old.membundle.json new.membundle.json --format html
 
 `memoryoss reader` is the offline read-only path on top of those artifacts. It can open an exported envelope or a raw published passport/history artifact, print summary/provenance/signature data, and diff two artifacts without needing a running daemon or even a valid local config file.
 
-When a valid `--config` is available, the reader also verifies signed bundle envelopes against the local trust fabric and shows `trusted`, `revoked`, or `invalid_signature` plus any replacement identity. The admin trust endpoints provide the write path around that same fabric so passports and sync-peer descriptors can use sidecar signatures without mutating the raw artifact.
+When a valid `--config` is available, the reader also verifies signed bundle envelopes against the local trust fabric and shows `trusted`, `revoked`, or `invalid_signature` plus any replacement identity. It now also reports whether trust came from a local pin, an imported signer catalog, or an unknown signer. The admin trust endpoints provide the write path around that same fabric so passports and sync-peer descriptors can use sidecar signatures without mutating the raw artifact.
+
+`memoryoss status` and `memoryoss doctor` now print the active runtime embedding model and expected vector dimension explicitly, so embedding drift is visible without starting a full proxy session.
 
 ### Cross-App Adapter Bridges
 
@@ -646,16 +685,28 @@ memoryOSS uses the same local stdio MCP path Anthropic documents for Claude Desk
 | Support channel | `hello@memoryoss.com` and GitHub issues | Ready |
 | Minimum three usable examples | See examples below | Ready |
 | Tool titles + safety hints | Canonical mapping in [src/mcp.rs](src/mcp.rs) | Mapped |
-| `manifest.json` / `.mcpb` package | Template documented below | Documented, not bundled |
+| Release MCP metadata bundle | Generated `memoryoss-mcp-*.json` artifacts plus `server.json` | Shipped |
 
 Current packaging gaps are explicit:
 
 - `rmcp 0.1.5` does not yet serialize MCP spec-era `title`, `readOnlyHint`, and `destructiveHint` fields on the live `tools/list` response, so memoryOSS is not claiming directory-ready wire compatibility yet.
-- A portable `.mcpb` artifact is still follow-up packaging work; current documented install paths cover source/binary installs plus GitHub Release archives for Windows x86_64.
+- A portable `.mcpb` artifact is still follow-up packaging work; the release pipeline now ships canonical JSON metadata artifacts (`memoryoss-mcp-server.json`, `memoryoss-mcp-manifest.json`, `memoryoss-mcp-claude-desktop.json`, `memoryoss-mcp-tools.json`, `memoryoss-mcp-package.json`) beside the binaries.
+
+### Neutral Runtime Governance
+
+memoryOSS now treats the runtime contract, bundle format, MCP packaging, and signer catalogs as a neutral compatibility surface instead of a repo-local install trick.
+
+The public policy is:
+- runtime contract and bundle changes publish fixture-backed deprecation notice before removal
+- compatibility stays inside the published `N/N-1/N-2` window for import, replay, and reader paths
+- third-party implementations can target the published conformance fixtures and canonical MCP metadata bundle without private coordination
+- signer discovery rides on portable trust catalogs plus local pins, not on hidden vendor-owned trust roots
+
+The machine-readable summary of that policy ships in [server.json](server.json) under `_meta.io.github.memoryOSScom/anthropic-local-mcp.governance`.
 
 ### Current install path
 
-For Claude Desktop, Claude Code, or Codex today, install memoryOSS locally and register the stdio server:
+For Claude Desktop, Claude Code, or Codex today, install memoryOSS locally and register the stdio server. The release artifacts now ship the generated install metadata directly, so the JSON below is derived from the published package files rather than maintained by hand:
 
 ```json
 {
@@ -691,7 +742,7 @@ These are the three practical examples prepared for a future Claude Desktop / lo
 
 ### Manifest / MCPB template
 
-When the packaging step is added, the Anthropic Desktop extension bundle will follow a manifest shape like this:
+The release pipeline now generates an Anthropic/local-MCP manifest artifact with this shape:
 
 ```json
 {
@@ -731,7 +782,7 @@ When the packaging step is added, the Anthropic Desktop extension bundle will fo
 }
 ```
 
-This template is intentionally documented, not claimed as a shipped `.mcpb` artifact yet.
+This JSON is now shipped as `memoryoss-mcp-manifest.json`. A portable `.mcpb` container is still separate follow-up work.
 
 ## CLI Commands
 
@@ -777,14 +828,14 @@ This template is intentionally documented, not claimed as a shipped `.mcpb` arti
 ## Architecture
 
 - **Storage:** redb (embedded, crash-safe, single-file) — source of truth
-- **Vector Index:** usearch (384-dim, AllMiniLM-L6-V2)
+- **Vector Index:** usearch (dimension follows the configured runtime embedding model)
 - **Full-Text Search:** tantivy (BM25 + structured metadata fields)
 - **Recall:** 4-channel retrieval (vector 0.30 + BM25 0.30 + exact match 0.25 + recency 0.15) with IDF identifier boosting, precision gate, MMR diversity, and trust weighting
 - **Extraction:** Async LLM-based fact extraction with quarantine (confidence scoring)
 - **Indexer:** Async outbox-based pipeline with crash recovery across all namespaces
 - **Group Committer:** Batches concurrent writes into single redb transactions
 - **Trust Scoring:** 4-signal Bayesian (recency decay, source reputation, embedding coherence, access frequency) — persisted to redb
-- **Encryption:** AES-256-GCM per-namespace (local key provider, AWS KMS and Vault stubs)
+- **Encryption:** AES-256-GCM per-namespace (supported: local key provider and Vault Transit; AWS KMS fails closed and is not yet a supported provider surface)
 - **Security:** Constant-time key comparison, NFKC injection filtering, secret redaction (API keys, tokens, passwords), rate limiting, body size limits, path traversal protection
 
 ## Security

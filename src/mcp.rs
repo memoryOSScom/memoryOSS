@@ -578,6 +578,8 @@ pub async fn run_mcp_server(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::{MARKETPLACE_TOOLS, marketplace_tool_metadata, tools_list};
 
     #[test]
@@ -617,5 +619,97 @@ mod tests {
                 "metadata must include destructiveHint"
             );
         }
+    }
+
+    #[test]
+    fn server_manifest_tool_annotations_match_marketplace_catalog() {
+        let server_json = std::fs::read_to_string("server.json").expect("server.json missing");
+        let payload: serde_json::Value =
+            serde_json::from_str(&server_json).expect("invalid server.json");
+        let manifest_tools =
+            payload["_meta"]["io.github.memoryOSScom/anthropic-local-mcp"]["toolAnnotations"]
+                .as_array()
+                .expect("server manifest missing toolAnnotations")
+                .iter()
+                .map(|entry| {
+                    (
+                        entry["name"].as_str().unwrap().to_string(),
+                        (
+                            entry["title"].as_str().unwrap().to_string(),
+                            entry["annotations"]["readOnlyHint"].as_bool().unwrap(),
+                            entry["annotations"]["destructiveHint"].as_bool().unwrap(),
+                        ),
+                    )
+                })
+                .collect::<BTreeMap<_, _>>();
+
+        let code_tools = marketplace_tool_metadata()
+            .into_iter()
+            .map(|entry| {
+                (
+                    entry["name"].as_str().unwrap().to_string(),
+                    (
+                        entry["title"].as_str().unwrap().to_string(),
+                        entry["annotations"]["readOnlyHint"].as_bool().unwrap(),
+                        entry["annotations"]["destructiveHint"].as_bool().unwrap(),
+                    ),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+
+        assert_eq!(manifest_tools, code_tools);
+    }
+
+    #[test]
+    fn server_manifest_includes_packaged_release_artifacts() {
+        let server_json = std::fs::read_to_string("server.json").expect("server.json missing");
+        let payload: serde_json::Value =
+            serde_json::from_str(&server_json).expect("invalid server.json");
+        let artifacts =
+            payload["_meta"]["io.github.memoryOSScom/anthropic-local-mcp"]["releaseArtifacts"]
+                .as_array()
+                .expect("server manifest missing releaseArtifacts");
+        let names = artifacts
+            .iter()
+            .filter_map(|entry| entry.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "memoryoss-mcp-server.json",
+            "memoryoss-mcp-manifest.json",
+            "memoryoss-mcp-claude-desktop.json",
+            "memoryoss-mcp-tools.json",
+            "memoryoss-mcp-package.json",
+        ] {
+            assert!(
+                names.contains(&expected),
+                "server manifest missing packaged release artifact {expected}"
+            );
+        }
+    }
+
+    #[test]
+    fn server_manifest_exposes_governance_metadata_for_interop() {
+        let server_json = std::fs::read_to_string("server.json").expect("server.json missing");
+        let payload: serde_json::Value =
+            serde_json::from_str(&server_json).expect("invalid server.json");
+        let governance =
+            &payload["_meta"]["io.github.memoryOSScom/anthropic-local-mcp"]["governance"];
+        assert_eq!(
+            governance["runtimeContract"]["current"].as_str(),
+            Some("memoryoss.runtime.v1alpha1")
+        );
+        assert_eq!(
+            governance["bundleFormat"]["current"].as_str(),
+            Some("memoryoss.bundle.v1alpha1")
+        );
+        assert_eq!(
+            governance["signerRegistry"]["catalogSchema"].as_str(),
+            Some("memoryoss.trust.catalog.v1alpha1")
+        );
+        assert!(
+            governance["interop"]["thirdPartyPolicy"]
+                .as_str()
+                .is_some_and(|value| value.contains("Third-party runtimes"))
+        );
     }
 }

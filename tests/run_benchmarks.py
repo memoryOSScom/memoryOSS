@@ -30,6 +30,7 @@ from runner_common import (
 )
 
 FIXTURE_DIR = ROOT_DIR / "tests" / "fixtures" / "benchmark-20k"
+EXTERNAL_VALIDATION_FIXTURE = ROOT_DIR / "tests" / "fixtures" / "external-memory-lane.json"
 USE_FIXTURE = os.environ.get("BENCHMARK_USE_FIXTURE", "auto").strip().lower()
 
 
@@ -78,6 +79,29 @@ JACCARD_DUP_THRESHOLD = 0.92
 
 PROBE_ADMIN_KEY = "probe-admin-key"
 PROBE_PROXY_KEY = "probe-proxy-key"
+EXTERNAL_VALIDATION_ADMIN_KEY = "external-admin-key"
+EXTERNAL_VALIDATION_PROXY_KEY = "external-proxy-key"
+
+MULTILINGUAL_CALIBRATION_CASES = [
+    {
+        "id": "ML01",
+        "expected_action": "inject",
+        "query": "welcher endpoint verarbeitet Anthropic-Nachrichten durch den Proxy?",
+        "expected_anchor": "/proxy/anthropic/v1/messages",
+        "identifier_case": True,
+    },
+    {
+        "id": "ML02",
+        "expected_action": "inject",
+        "query": "was sollen nutzer nach einer aenderung des auth-modus tun?",
+        "expected_anchor": "rerun memoryoss setup",
+    },
+    {
+        "id": "ML03",
+        "expected_action": "abstain",
+        "query": "wer gewann die letzte bundesliga saison?",
+    },
+]
 
 RETRIEVAL_INJECTION_METRICS = [
     ("positive_injection_hit_rate", "higher_is_better"),
@@ -504,6 +528,11 @@ proxy_key = "{PROBE_PROXY_KEY}"
 upstream_key = "upstream-probe-key"
 namespace = "probe"
 
+[[proxy.key_mapping]]
+proxy_key = "{EXTERNAL_VALIDATION_PROXY_KEY}"
+upstream_key = "upstream-external-key"
+namespace = "external_eval"
+
 [limits]
 rate_limit_per_sec = 5000
 
@@ -638,16 +667,20 @@ def request_matches_anchor(request: dict, anchor: str | None) -> bool:
     return all(token in content_tokens for token in anchor_tokens)
 
 
-def store_probe_memories(base_url: str, auth_header: str) -> None:
+def store_memories(base_url: str, auth_header: str, memories: list[dict]) -> None:
     status, body = http_json_with_retry(
         "POST",
         f"{base_url}/v1/store/batch",
         headers={"Authorization": auth_header},
-        body={"memories": RETRIEVAL_PROBE_MEMORIES},
+        body={"memories": memories},
         timeout=120.0,
     )
     if status != 200:
-        raise RuntimeError(f"probe memory store failed: status={status} body={body}")
+        raise RuntimeError(f"memory store failed: status={status} body={body}")
+
+
+def store_probe_memories(base_url: str, auth_header: str) -> None:
+    store_memories(base_url, auth_header, RETRIEVAL_PROBE_MEMORIES)
 
 
 def run_retrieval_injection_lane(
@@ -657,8 +690,11 @@ def run_retrieval_injection_lane(
     upstream_server: DummyOpenAIUpstream,
     *,
     lane_name: str,
+    fixture_cases: list[dict] | None = None,
+    namespace: str = "probe",
 ) -> dict:
     cases = []
+    lane_cases = fixture_cases or RETRIEVAL_INJECTION_CASES
     expected_inject = 0
     expected_abstain = 0
     expected_need_more_evidence = 0
@@ -678,7 +714,7 @@ def run_retrieval_injection_lane(
     task_state_hits = 0
     task_state_context_shrink_rates: list[float] = []
 
-    for case in RETRIEVAL_INJECTION_CASES:
+    for case in lane_cases:
         explain_status, explain = http_json_with_retry(
             "POST",
             f"{base_url}/v1/admin/query-explain",
@@ -686,7 +722,7 @@ def run_retrieval_injection_lane(
             body={
                 "query": case["query"],
                 "limit": 3,
-                "namespace": "probe",
+                "namespace": namespace,
             },
             timeout=120.0,
         )
@@ -806,7 +842,7 @@ def run_retrieval_injection_lane(
     )
     summary = {
         "lane": lane_name,
-        "dataset_size": len(RETRIEVAL_INJECTION_CASES),
+        "dataset_size": len(lane_cases),
         "expected_inject_cases": expected_inject,
         "expected_abstain_cases": expected_abstain,
         "expected_need_more_evidence_cases": expected_need_more_evidence,
@@ -817,7 +853,7 @@ def run_retrieval_injection_lane(
         "identifier_case_hit_rate": round(identifier_hits / identifier_expected, 4)
         if identifier_expected
         else 1.0,
-        "wrong_injection_rate": round(wrong_injections / len(RETRIEVAL_INJECTION_CASES), 4),
+        "wrong_injection_rate": round(wrong_injections / len(lane_cases), 4),
         "abstain_precision": round(abstain_precision, 4),
         "abstain_recall": round(abstain_recall, 4),
         "need_more_evidence_recall": round(need_more_evidence_recall, 4),
@@ -882,6 +918,117 @@ def compare_retrieval_injection_lanes(stable: dict, experimental: dict) -> dict:
         "experimental_lane": "experimental",
         "regressions": regressions,
         "metrics": metrics,
+    }
+
+
+def load_external_validation_fixture() -> dict:
+    return json.loads(EXTERNAL_VALIDATION_FIXTURE.read_text(encoding="utf-8"))
+
+
+def run_external_validation_lane(
+    base_url: str,
+    auth_header: str,
+    proxy_key: str,
+    upstream_server: DummyOpenAIUpstream,
+) -> dict:
+    fixture = load_external_validation_fixture()
+    store_memories(base_url, auth_header, fixture["memories"])
+    wait_for_indexer_sync(base_url, auth_header, timeout=120.0)
+    lane = run_retrieval_injection_lane(
+        base_url,
+        auth_header,
+        proxy_key,
+        upstream_server,
+        lane_name=fixture["lane_id"],
+        fixture_cases=fixture["cases"],
+        namespace=fixture["namespace"],
+    )
+
+    summary = lane["summary"]
+    thresholds = fixture["thresholds"]
+    checks = [
+        (
+            "positive injection hit rate",
+            summary["positive_injection_hit_rate"] >= thresholds["positive_injection_hit_rate_min"],
+            f"{summary['positive_injection_hit_rate']:.4f} >= {thresholds['positive_injection_hit_rate_min']:.4f}",
+        ),
+        (
+            "wrong injection rate",
+            summary["wrong_injection_rate"] <= thresholds["wrong_injection_rate_max"],
+            f"{summary['wrong_injection_rate']:.4f} <= {thresholds['wrong_injection_rate_max']:.4f}",
+        ),
+        (
+            "abstain precision",
+            summary["abstain_precision"] >= thresholds["abstain_precision_min"],
+            f"{summary['abstain_precision']:.4f} >= {thresholds['abstain_precision_min']:.4f}",
+        ),
+        (
+            "abstain recall",
+            summary["abstain_recall"] >= thresholds["abstain_recall_min"],
+            f"{summary['abstain_recall']:.4f} >= {thresholds['abstain_recall_min']:.4f}",
+        ),
+        (
+            "proxy latency p95",
+            summary["proxy_latency_ms_p95"] <= thresholds["proxy_latency_ms_p95_max"],
+            f"{summary['proxy_latency_ms_p95']:.2f} ms <= {thresholds['proxy_latency_ms_p95_max']:.2f} ms",
+        ),
+    ]
+    failures = [name for name, passed, _ in checks if not passed]
+    return {
+        "fixture": {
+            "lane_id": fixture["lane_id"],
+            "label": fixture["label"],
+            "description": fixture["description"],
+            "namespace": fixture["namespace"],
+            "dataset_size": len(fixture["cases"]),
+        },
+        "thresholds": thresholds,
+        "summary": summary,
+        "cases": lane["cases"],
+        "items": [
+            {
+                "name": f"Open lane threshold: {name}",
+                "status": "pass" if passed else "fail",
+                "note": note,
+            }
+            for name, passed, note in checks
+        ],
+        "failed_thresholds": failures,
+    }
+
+
+def run_multilingual_calibration_lane(
+    base_url: str,
+    auth_header: str,
+    proxy_key: str,
+    upstream_server: DummyOpenAIUpstream,
+) -> dict:
+    lane = run_retrieval_injection_lane(
+        base_url,
+        auth_header,
+        proxy_key,
+        upstream_server,
+        lane_name="multilingual_calibration_de",
+        fixture_cases=MULTILINGUAL_CALIBRATION_CASES,
+        namespace="external_eval",
+    )
+    return {
+        "label": "German calibration lane",
+        "language": "de",
+        "dataset_size": len(MULTILINGUAL_CALIBRATION_CASES),
+        "summary": lane["summary"],
+        "cases": lane["cases"],
+        "items": [
+            {
+                "name": "German recall/injection calibration",
+                "status": "pass",
+                "note": (
+                    f"positive_hit_rate={lane['summary']['positive_injection_hit_rate']:.4f}, "
+                    f"wrong_injection_rate={lane['summary']['wrong_injection_rate']:.4f}, "
+                    f"abstain_recall={lane['summary']['abstain_recall']:.4f}"
+                ),
+            }
+        ],
     }
 
 
@@ -1207,6 +1354,11 @@ namespace = "bench"
 key = "{PROBE_ADMIN_KEY}"
 role = "admin"
 namespace = "probe"
+
+[[auth.api_keys]]
+key = "{EXTERNAL_VALIDATION_ADMIN_KEY}"
+role = "admin"
+namespace = "external_eval"
     """
     extra_sections = build_proxy_sections(
         upstream_port,
@@ -1307,6 +1459,7 @@ namespace = "probe"
         index_health = wait_for_indexer_sync(base_url, auth_header, timeout=180.0)
         print("[benchmark] indexer synced; starting recall quality checks", flush=True)
         probe_auth_header = f"Bearer {PROBE_ADMIN_KEY}"
+        external_auth_header = f"Bearer {EXTERNAL_VALIDATION_ADMIN_KEY}"
         store_probe_memories(base_url, probe_auth_header)
         wait_for_indexer_sync(base_url, auth_header, timeout=120.0)
 
@@ -1495,6 +1648,23 @@ namespace = "probe"
             },
             "comparison": None,
         }
+        external_validation_eval = run_external_validation_lane(
+            base_url,
+            external_auth_header,
+            EXTERNAL_VALIDATION_PROXY_KEY,
+            upstream_server,
+        )
+        multilingual_calibration_eval = run_multilingual_calibration_lane(
+            base_url,
+            external_auth_header,
+            EXTERNAL_VALIDATION_PROXY_KEY,
+            upstream_server,
+        )
+        if external_validation_eval["failed_thresholds"]:
+            raise RuntimeError(
+                "open comparison lane failed thresholds: "
+                + ", ".join(external_validation_eval["failed_thresholds"])
+            )
         coprocessor_eval = run_coprocessor_eval()
         coprocessor_eval["comparison"] = compare_coprocessor_lanes(coprocessor_eval)
         primitive_algebra_eval = {
@@ -1632,6 +1802,10 @@ namespace = "probe"
                     "20k retention under load remains inside the default validation path.",
                     "Noise rejection and positive injection hit rate are published from the stable lane.",
                 ],
+                "external": [
+                    "Open comparison lane runs from a public fixture with published queries, expected anchors, and explicit failure thresholds.",
+                    "This lane is openly rerunnable and reported separately from the internal 20k proof loops.",
+                ],
                 "experimental": [
                     "Retrieval shadow lanes quantify confidence-gate and identifier-routing changes before promotion.",
                     "Primitive algebra comparisons stay experimental until they outperform the stable lane without regressions.",
@@ -1641,6 +1815,8 @@ namespace = "probe"
                 ],
             },
             "retrieval_injection_eval": retrieval_injection_eval,
+            "external_validation_eval": external_validation_eval,
+            "multilingual_calibration_eval": multilingual_calibration_eval,
             "coprocessor_eval": coprocessor_eval,
             "primitive_algebra_eval": primitive_algebra_eval,
             "latency_ms": {
@@ -1715,6 +1891,22 @@ namespace = "probe"
                     "note": (
                         f"{format_pct(positive_injection_rate)} "
                         f"across {positive_probe_count} positive proxy probes"
+                    ),
+                },
+                {
+                    "name": "Open comparison lane",
+                    "status": "pass" if not external_validation_eval["failed_thresholds"] else "fail",
+                    "note": (
+                        f"{external_validation_eval['fixture']['dataset_size']} public cases, "
+                        f"{len(external_validation_eval['failed_thresholds'])} threshold failures"
+                    ),
+                },
+                {
+                    "name": "Multilingual calibration lane",
+                    "status": "pass",
+                    "note": (
+                        f"{multilingual_calibration_eval['language']} "
+                        f"{multilingual_calibration_eval['dataset_size']} cases"
                     ),
                 },
                 {

@@ -48,6 +48,7 @@ pub fn init_engines(
 
     tracing::info!("Loading embedding model...");
     let embedding = Arc::new(EmbeddingEngine::with_cache_config(
+        &config.embeddings,
         config.limits.embedding_cache_ttl_secs,
         config.limits.embedding_cache_max_size,
     )?);

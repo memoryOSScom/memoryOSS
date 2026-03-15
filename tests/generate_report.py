@@ -615,6 +615,29 @@ def build_sections(
                     "items": items,
                 }
             )
+        multilingual_calibration = current_benchmark_report.get("multilingual_calibration_eval")
+        if multilingual_calibration:
+            summary = multilingual_calibration.get("summary", {})
+            items = [
+                item(
+                    "Multilingual calibration fixture",
+                    "pass",
+                    (
+                        f"{multilingual_calibration.get('dataset_size', 0)} "
+                        f"{multilingual_calibration.get('language', 'unknown')} cases"
+                        f"{artifact_suffix(current_benchmark_report, benchmark_step)}"
+                    ),
+                )
+            ]
+            items.extend(multilingual_calibration.get("items", []))
+            items.extend(retrieval_injection_lane_items("Calibration", summary))
+            sections.append(
+                {
+                    "title": "Multilingual Calibration Lane",
+                    "count": len(items),
+                    "items": items,
+                }
+            )
     elif benchmark_step:
         sections.append(artifact_fallback_section("20k Scaling Benchmark", benchmark_step, benchmark_report))
 

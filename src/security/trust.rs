@@ -35,6 +35,23 @@ pub enum PortableIdentityKind {
     SyncPeer,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PortableIdentitySource {
+    #[default]
+    Local,
+    Catalog,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PortableTrustOrigin {
+    LocalRegistry,
+    ImportedCatalog,
+    LocalPin,
+    UnknownSigner,
+}
+
 impl std::fmt::Display for PortableIdentityKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -51,6 +68,10 @@ pub struct PortableIdentity {
     pub kind: PortableIdentityKind,
     pub label: String,
     pub registered_at: DateTime<Utc>,
+    #[serde(default)]
+    pub source: PortableIdentitySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_catalog: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rotated_to: Option<String>,
 }
@@ -61,6 +82,10 @@ pub struct PortableRevocationRecord {
     pub kind: PortableIdentityKind,
     pub reason: String,
     pub revoked_at: DateTime<Utc>,
+    #[serde(default)]
+    pub source: PortableIdentitySource,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_catalog: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_identity: Option<String>,
 }
@@ -100,6 +125,10 @@ pub struct PortableTrustDecision {
     pub verified: bool,
     pub reason: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<PortableTrustOrigin>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub catalog_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replacement_identity: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signature: Option<PortableArtifactSignature>,
@@ -113,18 +142,59 @@ pub struct SyncPeerDescriptor {
     pub device_label: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
-pub struct PortableTrustState {
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableTrustCatalog {
+    pub catalog_id: String,
+    pub label: String,
+    pub exported_at: DateTime<Utc>,
     #[serde(default)]
     pub identities: Vec<PortableIdentity>,
     #[serde(default)]
     pub revocations: Vec<PortableRevocationRecord>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableTrustCatalogRecord {
+    pub catalog_id: String,
+    pub label: String,
+    pub imported_at: DateTime<Utc>,
+    pub exported_at: DateTime<Utc>,
+    pub identity_count: usize,
+    pub revocation_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PortableTrustPinRecord {
+    pub id: String,
+    pub pinned_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PortableTrustImportSummary {
+    pub catalog: PortableTrustCatalogRecord,
+    pub imported_identities: usize,
+    pub imported_revocations: usize,
+    pub skipped_local_conflicts: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct PortableTrustState {
+    #[serde(default)]
+    pub identities: Vec<PortableIdentity>,
+    #[serde(default)]
+    pub revocations: Vec<PortableRevocationRecord>,
+    #[serde(default)]
+    pub catalogs: Vec<PortableTrustCatalogRecord>,
+    #[serde(default)]
+    pub pins: Vec<PortableTrustPinRecord>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct PortableTrustSnapshot {
     pub identities: Vec<PortableIdentity>,
     pub revocations: Vec<PortableRevocationRecord>,
+    pub catalogs: Vec<PortableTrustCatalogRecord>,
+    pub pins: Vec<PortableTrustPinRecord>,
 }
 
 pub struct PortableTrustRegistry {
@@ -176,6 +246,8 @@ impl PortableTrustRegistry {
             kind,
             label: label.to_string(),
             registered_at: Utc::now(),
+            source: PortableIdentitySource::Local,
+            source_catalog: None,
             rotated_to: None,
         };
         state.identities.push(identity.clone());
@@ -207,6 +279,8 @@ impl PortableTrustRegistry {
             kind: identity.kind,
             reason: reason.trim().to_string(),
             revoked_at: Utc::now(),
+            source: identity.source,
+            source_catalog: identity.source_catalog.clone(),
             replacement_identity: replacement_identity.map(|value| value.to_string()),
         };
         state.revocations.retain(|existing| existing.id != id);
@@ -245,10 +319,14 @@ impl PortableTrustRegistry {
             .map(|state| PortableTrustSnapshot {
                 identities: state.identities.clone(),
                 revocations: state.revocations.clone(),
+                catalogs: state.catalogs.clone(),
+                pins: state.pins.clone(),
             })
             .unwrap_or(PortableTrustSnapshot {
                 identities: Vec::new(),
                 revocations: Vec::new(),
+                catalogs: Vec::new(),
+                pins: Vec::new(),
             })
     }
 
@@ -269,6 +347,167 @@ impl PortableTrustRegistry {
                 .iter()
                 .find(|record| record.id == id)
                 .cloned()
+        })
+    }
+
+    pub fn export_catalog(
+        &self,
+        catalog_id: &str,
+        label: &str,
+    ) -> anyhow::Result<PortableTrustCatalog> {
+        let state = self
+            .state
+            .read()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+        Ok(PortableTrustCatalog {
+            catalog_id: catalog_id.trim().to_string(),
+            label: label.trim().to_string(),
+            exported_at: Utc::now(),
+            identities: state.identities.clone(),
+            revocations: state.revocations.clone(),
+        })
+    }
+
+    pub fn import_catalog(
+        &self,
+        catalog: PortableTrustCatalog,
+    ) -> anyhow::Result<PortableTrustImportSummary> {
+        let catalog_id = catalog.catalog_id.trim();
+        let label = catalog.label.trim();
+        if catalog_id.is_empty() || label.is_empty() {
+            anyhow::bail!("catalog_id and label must not be empty");
+        }
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+
+        state
+            .identities
+            .retain(|identity| identity.source_catalog.as_deref() != Some(catalog_id));
+        state
+            .revocations
+            .retain(|record| record.source_catalog.as_deref() != Some(catalog_id));
+
+        let mut imported_identities = 0usize;
+        let mut imported_revocations = 0usize;
+        let mut skipped_local_conflicts = 0usize;
+
+        for identity in catalog.identities {
+            if state.identities.iter().any(|existing| {
+                existing.id == identity.id && existing.source == PortableIdentitySource::Local
+            }) {
+                skipped_local_conflicts += 1;
+                continue;
+            }
+            let mut imported = identity;
+            imported.source = PortableIdentitySource::Catalog;
+            imported.source_catalog = Some(catalog_id.to_string());
+            state
+                .identities
+                .retain(|existing| existing.id != imported.id);
+            state.identities.push(imported);
+            imported_identities += 1;
+        }
+
+        for record in catalog.revocations {
+            if state.revocations.iter().any(|existing| {
+                existing.id == record.id && existing.source == PortableIdentitySource::Local
+            }) {
+                skipped_local_conflicts += 1;
+                continue;
+            }
+            let mut imported = record;
+            imported.source = PortableIdentitySource::Catalog;
+            imported.source_catalog = Some(catalog_id.to_string());
+            state
+                .revocations
+                .retain(|existing| existing.id != imported.id);
+            state.revocations.push(imported);
+            imported_revocations += 1;
+        }
+
+        state
+            .identities
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        state
+            .revocations
+            .sort_by(|left, right| left.id.cmp(&right.id));
+        let record = PortableTrustCatalogRecord {
+            catalog_id: catalog_id.to_string(),
+            label: label.to_string(),
+            imported_at: Utc::now(),
+            exported_at: catalog.exported_at,
+            identity_count: imported_identities,
+            revocation_count: imported_revocations,
+        };
+        state
+            .catalogs
+            .retain(|existing| existing.catalog_id != catalog_id);
+        state.catalogs.push(record.clone());
+        state
+            .catalogs
+            .sort_by(|left, right| left.catalog_id.cmp(&right.catalog_id));
+        self.save_state(&state)?;
+        Ok(PortableTrustImportSummary {
+            catalog: record,
+            imported_identities,
+            imported_revocations,
+            skipped_local_conflicts,
+        })
+    }
+
+    pub fn pin_identity(&self, id: &str) -> anyhow::Result<PortableTrustPinRecord> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+        if !state.identities.iter().any(|identity| identity.id == id) {
+            anyhow::bail!("unknown portable trust identity: {id}");
+        }
+        if let Some(existing) = state.pins.iter().find(|pin| pin.id == id) {
+            return Ok(existing.clone());
+        }
+        let pin = PortableTrustPinRecord {
+            id: id.to_string(),
+            pinned_at: Utc::now(),
+        };
+        state.pins.push(pin.clone());
+        state.pins.sort_by(|left, right| left.id.cmp(&right.id));
+        self.save_state(&state)?;
+        Ok(pin)
+    }
+
+    pub fn unpin_identity(&self, id: &str) -> anyhow::Result<bool> {
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| anyhow::anyhow!("trust registry lock poisoned"))?;
+        let before = state.pins.len();
+        state.pins.retain(|pin| pin.id != id);
+        let changed = state.pins.len() != before;
+        if changed {
+            self.save_state(&state)?;
+        }
+        Ok(changed)
+    }
+
+    pub fn trust_origin(&self, id: &str) -> Option<(PortableTrustOrigin, Option<String>)> {
+        self.state.read().ok().and_then(|state| {
+            let identity = state.identities.iter().find(|identity| identity.id == id)?;
+            if state.pins.iter().any(|pin| pin.id == id) {
+                Some((
+                    PortableTrustOrigin::LocalPin,
+                    identity.source_catalog.clone(),
+                ))
+            } else if identity.source == PortableIdentitySource::Catalog {
+                Some((
+                    PortableTrustOrigin::ImportedCatalog,
+                    identity.source_catalog.clone(),
+                ))
+            } else {
+                Some((PortableTrustOrigin::LocalRegistry, None))
+            }
         })
     }
 }
@@ -342,6 +581,8 @@ pub fn verify_portable_subject(
             status: PortableTrustStatus::Unsigned,
             verified: false,
             reason: "artifact is unsigned".to_string(),
+            origin: None,
+            catalog_id: None,
             replacement_identity: None,
             signature: None,
         };
@@ -352,10 +593,15 @@ pub fn verify_portable_subject(
             status: PortableTrustStatus::UnknownIdentity,
             verified: false,
             reason: format!("unknown trust identity: {}", signature.identity),
+            origin: Some(PortableTrustOrigin::UnknownSigner),
+            catalog_id: None,
             replacement_identity: None,
             signature: Some(signature),
         };
     };
+    let (origin, catalog_id) = registry
+        .trust_origin(&signature.identity)
+        .unwrap_or((PortableTrustOrigin::UnknownSigner, None));
 
     if identity.kind != signature.kind {
         return PortableTrustDecision {
@@ -365,6 +611,8 @@ pub fn verify_portable_subject(
                 "signature kind mismatch for {}: expected {} got {}",
                 signature.identity, identity.kind, signature.kind
             ),
+            origin: Some(origin),
+            catalog_id,
             replacement_identity: None,
             signature: Some(signature),
         };
@@ -375,6 +623,8 @@ pub fn verify_portable_subject(
             status: PortableTrustStatus::Revoked,
             verified: false,
             reason: revocation.reason,
+            origin: Some(origin),
+            catalog_id,
             replacement_identity: revocation.replacement_identity,
             signature: Some(signature),
         };
@@ -387,6 +637,8 @@ pub fn verify_portable_subject(
                 status: PortableTrustStatus::InvalidSignature,
                 verified: false,
                 reason: format!("trust hmac init failed: {err}"),
+                origin: Some(origin),
+                catalog_id,
                 replacement_identity: None,
                 signature: Some(signature),
             };
@@ -399,6 +651,8 @@ pub fn verify_portable_subject(
             status: PortableTrustStatus::InvalidSignature,
             verified: false,
             reason: format!("signature mismatch for {}", signature.identity),
+            origin: Some(origin),
+            catalog_id,
             replacement_identity: None,
             signature: Some(signature),
         };
@@ -408,6 +662,8 @@ pub fn verify_portable_subject(
         status: PortableTrustStatus::Trusted,
         verified: true,
         reason: format!("trusted {} identity {}", identity.kind, identity.id),
+        origin: Some(origin),
+        catalog_id,
         replacement_identity: None,
         signature: Some(signature),
     }

@@ -269,6 +269,30 @@ fn base64_decode(input: &str) -> anyhow::Result<Vec<u8>> {
     Ok(output)
 }
 
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0];
+        let b1 = *chunk.get(1).unwrap_or(&0);
+        let b2 = *chunk.get(2).unwrap_or(&0);
+
+        output.push(TABLE[(b0 >> 2) as usize] as char);
+        output.push(TABLE[(((b0 & 0x03) << 4) | (b1 >> 4)) as usize] as char);
+        if chunk.len() > 1 {
+            output.push(TABLE[(((b1 & 0x0f) << 2) | (b2 >> 6)) as usize] as char);
+        } else {
+            output.push('=');
+        }
+        if chunk.len() > 2 {
+            output.push(TABLE[(b2 & 0x3f) as usize] as char);
+        } else {
+            output.push('=');
+        }
+    }
+    output
+}
+
 // ── HashiCorp Vault key provider ───────────────────────────────────────
 
 /// HashiCorp Vault Transit engine for key management.
@@ -307,19 +331,14 @@ impl VaultKeyProvider {
     }
 
     fn generate_data_key(&self, namespace: &str) -> anyhow::Result<[u8; 32]> {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|_| anyhow::anyhow!("no tokio runtime for Vault call"))?;
-
-        let address = self.address.clone();
-        let token = self.token.clone();
-        let mount = self.mount.clone();
-        let key_name = self.key_name.clone();
         let wrapped_path = self.wrapped_key_path(namespace);
-        let ns = namespace.to_string();
-
-        let (plaintext, ciphertext) = rt.block_on(async move {
-            vault_generate_data_key(&address, &token, &mount, &key_name, &ns).await
-        })?;
+        let (plaintext, ciphertext) = vault_generate_data_key(
+            &self.address,
+            &self.token,
+            &self.mount,
+            &self.key_name,
+            namespace,
+        )?;
 
         // Store the vault-encrypted key
         std::fs::write(&wrapped_path, &ciphertext)?;
@@ -330,18 +349,14 @@ impl VaultKeyProvider {
     }
 
     fn unwrap_data_key(&self, wrapped: &[u8]) -> anyhow::Result<[u8; 32]> {
-        let rt = tokio::runtime::Handle::try_current()
-            .map_err(|_| anyhow::anyhow!("no tokio runtime for Vault call"))?;
-
-        let address = self.address.clone();
-        let token = self.token.clone();
-        let mount = self.mount.clone();
-        let key_name = self.key_name.clone();
         let ciphertext = String::from_utf8_lossy(wrapped).to_string();
-
-        let plaintext = rt.block_on(async move {
-            vault_decrypt(&address, &token, &mount, &key_name, &ciphertext).await
-        })?;
+        let plaintext = vault_decrypt(
+            &self.address,
+            &self.token,
+            &self.mount,
+            &self.key_name,
+            &ciphertext,
+        )?;
 
         let mut key = [0u8; 32];
         key.copy_from_slice(&plaintext[..32]);
@@ -360,10 +375,19 @@ impl KeyProvider for VaultKeyProvider {
 
         self.generate_data_key(namespace)
     }
+
+    fn store_rotated_key(&self, namespace: &str, key: &[u8; 32]) -> anyhow::Result<()> {
+        let wrapped_path = self.wrapped_key_path(namespace);
+        let ciphertext =
+            vault_encrypt(&self.address, &self.token, &self.mount, &self.key_name, key)?;
+
+        std::fs::write(&wrapped_path, &ciphertext)?;
+        Ok(())
+    }
 }
 
 /// Vault Transit: generate a data key (returns plaintext + ciphertext).
-async fn vault_generate_data_key(
+fn vault_generate_data_key(
     address: &str,
     token: &str,
     mount: &str,
@@ -371,23 +395,22 @@ async fn vault_generate_data_key(
     _namespace: &str,
 ) -> anyhow::Result<(Vec<u8>, Vec<u8>)> {
     let url = format!("{address}/v1/{mount}/datakey/plaintext/{key_name}");
-    let client = reqwest::Client::new();
+    let client = reqwest::blocking::Client::new();
 
     let resp = client
         .post(&url)
         .header("X-Vault-Token", token)
         .json(&serde_json::json!({"bits": 256}))
         .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?;
+        .send()?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().unwrap_or_default();
         anyhow::bail!("Vault datakey generation failed {status}: {body}");
     }
 
-    let body: serde_json::Value = resp.json().await?;
+    let body: serde_json::Value = resp.json()?;
     let plaintext_b64 = body["data"]["plaintext"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing plaintext in Vault response"))?;
@@ -400,7 +423,7 @@ async fn vault_generate_data_key(
 }
 
 /// Vault Transit: decrypt a ciphertext.
-async fn vault_decrypt(
+fn vault_decrypt(
     address: &str,
     token: &str,
     mount: &str,
@@ -408,28 +431,59 @@ async fn vault_decrypt(
     ciphertext: &str,
 ) -> anyhow::Result<Vec<u8>> {
     let url = format!("{address}/v1/{mount}/decrypt/{key_name}");
-    let client = reqwest::Client::new();
+    let client = reqwest::blocking::Client::new();
 
     let resp = client
         .post(&url)
         .header("X-Vault-Token", token)
         .json(&serde_json::json!({"ciphertext": ciphertext}))
         .timeout(std::time::Duration::from_secs(10))
-        .send()
-        .await?;
+        .send()?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
+        let body = resp.text().unwrap_or_default();
         anyhow::bail!("Vault decrypt failed {status}: {body}");
     }
 
-    let body: serde_json::Value = resp.json().await?;
+    let body: serde_json::Value = resp.json()?;
     let plaintext_b64 = body["data"]["plaintext"]
         .as_str()
         .ok_or_else(|| anyhow::anyhow!("missing plaintext in Vault decrypt response"))?;
 
     base64_decode(plaintext_b64)
+}
+
+/// Vault Transit: encrypt a plaintext payload and return the wrapped ciphertext.
+fn vault_encrypt(
+    address: &str,
+    token: &str,
+    mount: &str,
+    key_name: &str,
+    plaintext: &[u8],
+) -> anyhow::Result<Vec<u8>> {
+    let url = format!("{address}/v1/{mount}/encrypt/{key_name}");
+    let client = reqwest::blocking::Client::new();
+
+    let resp = client
+        .post(&url)
+        .header("X-Vault-Token", token)
+        .json(&serde_json::json!({"plaintext": base64_encode(plaintext)}))
+        .timeout(std::time::Duration::from_secs(10))
+        .send()?;
+
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().unwrap_or_default();
+        anyhow::bail!("Vault encrypt failed {status}: {body}");
+    }
+
+    let body: serde_json::Value = resp.json()?;
+    let ciphertext = body["data"]["ciphertext"]
+        .as_str()
+        .ok_or_else(|| anyhow::anyhow!("missing ciphertext in Vault encrypt response"))?;
+
+    Ok(ciphertext.as_bytes().to_vec())
 }
 
 // ── Encryptor (uses KeyProvider) ───────────────────────────────────────
@@ -679,5 +733,224 @@ impl Encryptor {
             }
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{EncryptionConfig, Encryptor, base64_encode};
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    use std::sync::{Arc, Mutex};
+
+    const TEST_TOKEN: &str = "vault-token";
+    #[derive(Clone, Copy)]
+    enum VaultMockMode {
+        Success,
+        FailDatakey,
+    }
+
+    fn handle_vault_stream(
+        mut stream: TcpStream,
+        mode: VaultMockMode,
+        requests: &Arc<Mutex<Vec<String>>>,
+    ) {
+        let mut buffer = Vec::new();
+        let mut chunk = [0u8; 4096];
+        let mut header_len = None;
+        let mut content_length = 0usize;
+        loop {
+            let read = stream.read(&mut chunk).expect("read request");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            if header_len.is_none()
+                && let Some(pos) = buffer.windows(4).position(|window| window == b"\r\n\r\n")
+            {
+                let end = pos + 4;
+                header_len = Some(end);
+                let headers = String::from_utf8_lossy(&buffer[..end]);
+                for line in headers.lines() {
+                    if let Some(value) = line.strip_prefix("Content-Length:") {
+                        content_length = value.trim().parse::<usize>().expect("content length");
+                    }
+                }
+            }
+            if let Some(end) = header_len
+                && buffer.len() >= end + content_length
+            {
+                break;
+            }
+        }
+
+        let request = String::from_utf8_lossy(&buffer).to_string();
+        requests.lock().unwrap().push(request.clone());
+        let first_line = request.lines().next().unwrap_or_default().to_string();
+        let seed_b64 = base64_encode(&(0u8..32).collect::<Vec<u8>>());
+        let rotated_b64 = base64_encode(&(32u8..64).collect::<Vec<u8>>());
+
+        let (status, body) = if matches!(mode, VaultMockMode::FailDatakey)
+            && first_line.contains("/datakey/plaintext/")
+        {
+            (
+                "500 Internal Server Error",
+                r#"{"errors":["boom"]}"#.to_string(),
+            )
+        } else if first_line.contains("/datakey/plaintext/") {
+            (
+                "200 OK",
+                format!(r#"{{"data":{{"plaintext":"{seed_b64}","ciphertext":"vault:v1:seed"}}}}"#),
+            )
+        } else if first_line.contains("/decrypt/") {
+            let plaintext_b64 = if request.contains("vault:v1:rotated") {
+                rotated_b64
+            } else {
+                seed_b64
+            };
+            (
+                "200 OK",
+                format!(r#"{{"data":{{"plaintext":"{plaintext_b64}"}}}}"#),
+            )
+        } else if first_line.contains("/encrypt/") {
+            assert!(
+                request.contains(TEST_TOKEN),
+                "Vault request must carry token"
+            );
+            assert!(
+                request.contains("\"plaintext\":\""),
+                "Vault encrypt request must carry plaintext"
+            );
+            (
+                "200 OK",
+                r#"{"data":{"ciphertext":"vault:v1:rotated"}}"#.to_string(),
+            )
+        } else {
+            ("404 Not Found", r#"{"errors":["not found"]}"#.to_string())
+        };
+
+        let response = format!(
+            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        stream
+            .write_all(response.as_bytes())
+            .expect("write response");
+    }
+
+    fn spawn_vault_mock(
+        expected_calls: usize,
+        mode: VaultMockMode,
+    ) -> (String, Arc<Mutex<Vec<String>>>, std::thread::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind vault mock");
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let requests_clone = Arc::clone(&requests);
+        let handle = std::thread::spawn(move || {
+            for stream in listener.incoming().take(expected_calls) {
+                handle_vault_stream(stream.expect("vault stream"), mode, &requests_clone);
+            }
+        });
+        (address, requests, handle)
+    }
+
+    #[test]
+    fn vault_provider_roundtrip_rotation_and_reload_are_hermetic() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (address, requests, handle) = spawn_vault_mock(4, VaultMockMode::Success);
+        let config = EncryptionConfig {
+            provider: Some("vault".to_string()),
+            vault_address: Some(address),
+            vault_token: Some(TEST_TOKEN.to_string()),
+            vault_mount: Some("transit".to_string()),
+            vault_key_name: Some("memoryoss".to_string()),
+            ..EncryptionConfig::default()
+        };
+
+        let encryptor = Encryptor::from_config(&config, tmp.path()).expect("vault encryptor");
+        let encrypted = encryptor
+            .encrypt_ns(b"hello vault", "team")
+            .expect("vault encrypt");
+        assert_eq!(
+            encryptor
+                .decrypt_ns(&encrypted, "team")
+                .expect("vault decrypt"),
+            b"hello vault"
+        );
+
+        let reloaded = Encryptor::from_config(&config, tmp.path()).expect("reloaded encryptor");
+        assert_eq!(
+            reloaded
+                .decrypt_ns(&encrypted, "team")
+                .expect("reload decrypt"),
+            b"hello vault"
+        );
+
+        let old_ciphertext = encrypted.clone();
+        let key_id = encryptor.rotate_namespace("team").expect("vault rotate");
+        assert!(key_id.starts_with("key-team-"));
+        let rotated = encryptor
+            .encrypt_ns(b"hello rotated", "team")
+            .expect("encrypt after rotate");
+        assert_eq!(
+            encryptor
+                .decrypt_ns(&old_ciphertext, "team")
+                .expect("old ciphertext still readable"),
+            b"hello vault"
+        );
+        assert_eq!(
+            encryptor
+                .decrypt_ns(&rotated, "team")
+                .expect("rotated ciphertext readable"),
+            b"hello rotated"
+        );
+
+        handle.join().expect("vault mock join");
+        let request_dump = requests.lock().unwrap().join("\n---\n");
+        assert!(request_dump.contains("/v1/transit/datakey/plaintext/memoryoss"));
+        assert!(request_dump.contains("/v1/transit/decrypt/memoryoss"));
+        assert!(request_dump.contains("/v1/transit/encrypt/memoryoss"));
+    }
+
+    #[test]
+    fn vault_provider_fails_closed_on_bootstrap_error() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let (address, _requests, handle) = spawn_vault_mock(1, VaultMockMode::FailDatakey);
+        let config = EncryptionConfig {
+            provider: Some("vault".to_string()),
+            vault_address: Some(address),
+            vault_token: Some(TEST_TOKEN.to_string()),
+            vault_mount: Some("transit".to_string()),
+            vault_key_name: Some("memoryoss".to_string()),
+            ..EncryptionConfig::default()
+        };
+
+        let encryptor = Encryptor::from_config(&config, tmp.path()).expect("vault encryptor");
+        let err = encryptor
+            .encrypt_ns(b"will fail", "team")
+            .expect_err("vault bootstrap should fail");
+        assert!(err.to_string().contains("Vault datakey generation failed"));
+        handle.join().expect("vault mock join");
+    }
+
+    #[test]
+    fn aws_kms_provider_fails_closed_and_is_not_treated_as_supported() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let config = EncryptionConfig {
+            provider: Some("aws_kms".to_string()),
+            key_id: Some("alias/memoryoss".to_string()),
+            region: Some("eu-central-1".to_string()),
+            ..EncryptionConfig::default()
+        };
+
+        let encryptor = Encryptor::from_config(&config, tmp.path()).expect("aws kms config");
+        let err = encryptor
+            .encrypt_ns(b"hello", "team")
+            .expect_err("aws kms should fail closed");
+        assert!(
+            err.to_string()
+                .contains("AWS KMS key provider is not yet implemented")
+        );
     }
 }

@@ -30,6 +30,26 @@ jwt_expiry_secs = 3600
 # data_dir = 'C:\Users\you\AppData\Local\memoryoss\data'
 data_dir = "data"
 
+[embeddings]
+# Supported runtime models:
+# - "all-minilm-l6-v2" (default, 384-dim)
+# - "bge-small-en-v1.5" (384-dim)
+# - "bge-base-en-v1.5" (768-dim)
+# - "bge-large-en-v1.5" (1024-dim)
+model = "all-minilm-l6-v2"
+
+[encryption]
+# Supported providers:
+# - "local" (default)
+# - "vault" (Vault Transit)
+# "aws_kms" is intentionally unsupported in this build and fails closed.
+provider = "local"
+# vault_address = "https://vault.example.com:8200"
+# vault_token = "replace-with-a-vault-token"
+# vault_mount = "transit"
+# vault_key_name = "memoryoss"
+# grace_period_secs = 86400
+
 [proxy]
 enabled = true
 upstream_url = "https://api.openai.com/v1"

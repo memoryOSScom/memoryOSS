@@ -95,9 +95,41 @@
           }
         }
       ],
+      "releaseArtifacts": [
+        "memoryoss-mcp-server.json",
+        "memoryoss-mcp-manifest.json",
+        "memoryoss-mcp-claude-desktop.json",
+        "memoryoss-mcp-tools.json",
+        "memoryoss-mcp-package.json"
+      ],
+      "governance": {
+        "runtimeContract": {
+          "current": "memoryoss.runtime.v1alpha1",
+          "compatibilityWindow": "N/N-1/N-2",
+          "deprecationPolicy": "Publish fixture-backed notice before removal; keep at least N/N-1/N-2 import and reader compatibility during the supported window.",
+          "conformanceFixtures": "https://github.com/memoryOSScom/memoryOSS/tree/main/conformance"
+        },
+        "bundleFormat": {
+          "current": "memoryoss.bundle.v1alpha1",
+          "readerRequirement": "Artifacts must remain openable through the published reader during the support window.",
+          "deprecationPolicy": "Ship replacement fixture plus reader compatibility before format removal."
+        },
+        "signerRegistry": {
+          "catalogSchema": "memoryoss.trust.catalog.v1alpha1",
+          "exportPath": "/v1/admin/trust/catalog/export",
+          "importPath": "/v1/admin/trust/catalog/import",
+          "pinPath": "/v1/admin/trust/pin",
+          "unpinPath": "/v1/admin/trust/unpin"
+        },
+        "interop": {
+          "submissionPath": "Conformance fixtures + canonical MCP metadata bundle + portable signer catalogs",
+          "thirdPartyPolicy": "Third-party runtimes may implement the published contract and submit fixtures/catalog metadata without requiring private coordination.",
+          "vendorLockIn": "Versioned fixtures, portable catalogs, and explicit deprecation windows are the compatibility boundary."
+        }
+      },
       "submissionGaps": [
         "Live tools/list annotations are blocked on rmcp 0.1.5, which does not yet serialize title/readOnlyHint/destructiveHint fields.",
-        "Portable .mcpb packaging and Windows release artifacts are tracked separately and not claimed in this metadata."
+        "Portable .mcpb bundling is still separate follow-up work; the release pipeline ships canonical JSON metadata artifacts instead."
       ]
     }
   }

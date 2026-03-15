@@ -88,7 +88,11 @@ enum Commands {
         namespace: Option<String>,
     },
     /// Diagnose config, auth, database, and index issues
-    Doctor,
+    Doctor {
+        /// Repair managed client/team drift before evaluating the final state
+        #[arg(long)]
+        repair: bool,
+    },
     /// Show recent injections, extractions, feedbacks, and consolidations
     Recent {
         /// Only inspect a specific namespace
@@ -178,12 +182,19 @@ enum Commands {
         namespace: Option<String>,
     },
     /// Interactive setup wizard — generates config and starts the server
-    Setup,
+    Setup {
+        /// Install profile: auto, claude, codex, cursor, or team-node
+        #[arg(long, value_enum, default_value_t = crate::config::SetupProfile::Auto)]
+        profile: crate::config::SetupProfile,
+        /// Optional team bootstrap manifest that seeds shared trust/catalog defaults
+        #[arg(long)]
+        team_manifest: Option<PathBuf>,
+    },
     /// Re-embed all memories with a new model
     MigrateEmbeddings {
-        /// Target model (e.g. "all-minilm-l6-v2", "bge-small-en-v1.5")
-        #[arg(long, default_value = "all-minilm-l6-v2")]
-        model: String,
+        /// Target model (e.g. "all-minilm-l6-v2", "bge-base-en-v1.5")
+        #[arg(long, value_enum, default_value_t = crate::config::EmbeddingModelId::AllMiniLML6V2)]
+        model: crate::config::EmbeddingModelId,
         /// Batch size for embedding (default 32)
         #[arg(long, default_value = "32")]
         batch_size: usize,
@@ -577,6 +588,23 @@ const MEMORYOSS_POLICY_BLOCK: &str = r#"<!-- MEMORYOSS_POLICY_BEGIN -->
 - Do not start non-memoryOSS tool work before recall.
 - If memoryOSS is unavailable or unconfigured, stop and repair that first.
 <!-- MEMORYOSS_POLICY_END -->"#;
+const MEMORYOSS_CURSOR_RULE_BEGIN: &str = "<!-- MEMORYOSS_CURSOR_RULE_BEGIN -->";
+const MEMORYOSS_CURSOR_RULE_END: &str = "<!-- MEMORYOSS_CURSOR_RULE_END -->";
+const MEMORYOSS_CURSOR_RULE: &str = r#"---
+description: memoryOSS runtime discipline
+globs:
+  - "**/*"
+alwaysApply: true
+---
+
+<!-- MEMORYOSS_CURSOR_RULE_BEGIN -->
+# memoryOSS runtime discipline
+
+- Call `memoryoss_recall` at session start and before substantial work.
+- Call `memoryoss_store` or `memoryoss_update` before finishing after important confirmed learning.
+- If memoryOSS is unavailable or unconfigured, stop and repair the MCP config before continuing.
+<!-- MEMORYOSS_CURSOR_RULE_END -->
+"#;
 
 const CLAUDE_MEMORYOSS_GUARD: &str = r#"#!/usr/bin/env python3
 """Enforce memoryOSS recall/store discipline for Claude project sessions."""
@@ -817,8 +845,84 @@ fn codex_config_path(home_dir: &std::path::Path) -> PathBuf {
     codex_home_dir(home_dir).join("config.toml")
 }
 
+fn cursor_dir(home_dir: &std::path::Path) -> PathBuf {
+    home_dir.join(".cursor")
+}
+
+fn cursor_mcp_path(home_dir: &std::path::Path) -> PathBuf {
+    cursor_dir(home_dir).join("mcp.json")
+}
+
+fn cursor_rules_dir(home_dir: &std::path::Path) -> PathBuf {
+    cursor_dir(home_dir).join("rules")
+}
+
+fn cursor_rule_path(home_dir: &std::path::Path) -> PathBuf {
+    cursor_rules_dir(home_dir).join("memoryoss.mdc")
+}
+
 fn agents_policy_path(home_dir: &std::path::Path) -> PathBuf {
     home_dir.join("AGENTS.md")
+}
+
+#[derive(Debug, Clone, serde::Deserialize)]
+struct TeamBootstrapManifest {
+    team_id: String,
+    team_label: String,
+    catalog: crate::security::trust::PortableTrustCatalog,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+struct TeamBootstrapReceipt {
+    team_id: String,
+    team_label: String,
+    catalog_id: String,
+    manifest_path: String,
+    applied_at: chrono::DateTime<chrono::Utc>,
+    profile: String,
+    configured_clients: Vec<String>,
+}
+
+fn team_bootstrap_receipt_path(home_dir: &std::path::Path) -> PathBuf {
+    home_dir.join(".memoryoss").join("team-bootstrap.json")
+}
+
+fn read_team_bootstrap_manifest(path: &std::path::Path) -> anyhow::Result<TeamBootstrapManifest> {
+    let bytes = std::fs::read(path)?;
+    let manifest: TeamBootstrapManifest = serde_json::from_slice(&bytes)?;
+    if manifest.team_id.trim().is_empty() || manifest.team_label.trim().is_empty() {
+        anyhow::bail!("team manifest must include non-empty team_id and team_label");
+    }
+    Ok(manifest)
+}
+
+fn apply_team_bootstrap_manifest(
+    manifest: &TeamBootstrapManifest,
+    manifest_path: &std::path::Path,
+    config: &crate::config::Config,
+    home_dir: &std::path::Path,
+    profile: crate::config::SetupProfile,
+    configured_clients: &[&str],
+) -> anyhow::Result<crate::security::trust::PortableTrustImportSummary> {
+    let registry = crate::security::trust::PortableTrustRegistry::open(&config.storage.data_dir)?;
+    let summary = registry.import_catalog(manifest.catalog.clone())?;
+    let receipt = TeamBootstrapReceipt {
+        team_id: manifest.team_id.clone(),
+        team_label: manifest.team_label.clone(),
+        catalog_id: manifest.catalog.catalog_id.clone(),
+        manifest_path: manifest_path.display().to_string(),
+        applied_at: chrono::Utc::now(),
+        profile: profile.to_string(),
+        configured_clients: configured_clients
+            .iter()
+            .map(|entry| entry.to_string())
+            .collect(),
+    };
+    write_json_file(
+        &team_bootstrap_receipt_path(home_dir),
+        &serde_json::to_value(&receipt)?,
+    )?;
+    Ok(summary)
 }
 
 fn read_json_file(path: &std::path::Path) -> serde_json::Value {
@@ -914,6 +1018,33 @@ fn is_claude_installed(home_dir: &std::path::Path) -> bool {
 
 fn is_codex_installed(home_dir: &std::path::Path) -> bool {
     codex_home_dir(home_dir).exists() || command_exists("codex")
+}
+
+fn is_cursor_installed(home_dir: &std::path::Path) -> bool {
+    cursor_dir(home_dir).exists() || command_exists("cursor") || command_exists("cursor-agent")
+}
+
+fn cursor_mcp_matches(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config: &std::path::Path,
+) -> bool {
+    let value = read_json_file(&cursor_mcp_path(home_dir));
+    value
+        .get("mcpServers")
+        .and_then(|entry| entry.get("memoryoss"))
+        .map(|entry| json_mcp_matches(entry, binary, config))
+        == Some(true)
+}
+
+fn cursor_rules_match(home_dir: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(cursor_rule_path(home_dir)) else {
+        return false;
+    };
+    text.contains(MEMORYOSS_CURSOR_RULE_BEGIN)
+        && text.contains(MEMORYOSS_CURSOR_RULE_END)
+        && text.contains("memoryoss_recall")
+        && text.contains("memoryoss_store")
 }
 
 fn json_mcp_matches(
@@ -1180,6 +1311,63 @@ fn configure_codex_integration(
     Ok(())
 }
 
+fn configure_cursor_integration(
+    home_dir: &std::path::Path,
+    binary: &std::path::Path,
+    config_path: &std::path::Path,
+) -> anyhow::Result<()> {
+    let mcp_path = cursor_mcp_path(home_dir);
+    let mut config = read_json_file(&mcp_path);
+    config["mcpServers"]["memoryoss"] = claude_user_mcp_value(binary, config_path);
+    write_json_file(&mcp_path, &config)?;
+    write_text_file(&cursor_rule_path(home_dir), MEMORYOSS_CURSOR_RULE, 0o644)?;
+    Ok(())
+}
+
+fn remove_cursor_integration(home_dir: &std::path::Path) -> anyhow::Result<()> {
+    let mcp_path = cursor_mcp_path(home_dir);
+    if mcp_path.exists() {
+        let mut config = read_json_file(&mcp_path);
+        if let Some(mcp_servers) = config
+            .get_mut("mcpServers")
+            .and_then(serde_json::Value::as_object_mut)
+        {
+            mcp_servers.remove("memoryoss");
+        }
+        write_json_file(&mcp_path, &config)?;
+    }
+    let rule_path = cursor_rule_path(home_dir);
+    if rule_path.exists() {
+        std::fs::remove_file(&rule_path)?;
+    }
+    Ok(())
+}
+
+fn profile_configures_claude(profile: crate::config::SetupProfile, detected_claude: bool) -> bool {
+    matches!(profile, crate::config::SetupProfile::Claude)
+        || matches!(profile, crate::config::SetupProfile::TeamNode) && detected_claude
+        || matches!(profile, crate::config::SetupProfile::Auto) && detected_claude
+}
+
+fn profile_configures_codex(profile: crate::config::SetupProfile, detected_codex: bool) -> bool {
+    matches!(profile, crate::config::SetupProfile::Codex)
+        || matches!(profile, crate::config::SetupProfile::TeamNode) && detected_codex
+        || matches!(profile, crate::config::SetupProfile::Auto) && detected_codex
+}
+
+fn profile_configures_cursor(profile: crate::config::SetupProfile, detected_cursor: bool) -> bool {
+    matches!(profile, crate::config::SetupProfile::Cursor)
+        || matches!(profile, crate::config::SetupProfile::TeamNode) && detected_cursor
+        || matches!(profile, crate::config::SetupProfile::Auto) && detected_cursor
+}
+
+fn profile_enables_shell_proxy_exports(profile: crate::config::SetupProfile) -> bool {
+    !matches!(
+        profile,
+        crate::config::SetupProfile::Cursor | crate::config::SetupProfile::TeamNode
+    )
+}
+
 fn decay_namespaces(
     config: &config::Config,
     stored_namespaces: impl IntoIterator<Item = String>,
@@ -1387,6 +1575,12 @@ fn render_status_report(
         output,
         "- group commit: batch={} flush={}ms",
         config.limits.group_commit_batch_size, config.limits.group_commit_flush_ms
+    );
+    let _ = writeln!(
+        output,
+        "- embeddings: model={} dimension={}",
+        config.embeddings.model,
+        config.embeddings.model.expected_dimension()
     );
 
     let _ = writeln!(output);
@@ -2376,6 +2570,8 @@ struct ReaderTrustView {
     status: String,
     verified: bool,
     reason: String,
+    origin: Option<String>,
+    catalog_id: Option<String>,
     replacement_identity: Option<String>,
 }
 
@@ -2564,6 +2760,11 @@ fn build_reader_open_view(
                                 .to_string(),
                             verified: decision.verified,
                             reason: decision.reason,
+                            origin: decision
+                                .origin
+                                .and_then(|origin| serde_json::to_value(origin).ok())
+                                .and_then(|value| value.as_str().map(str::to_string)),
+                            catalog_id: decision.catalog_id,
                             replacement_identity: decision.replacement_identity,
                         }
                     }
@@ -2572,6 +2773,8 @@ fn build_reader_open_view(
                         verified: false,
                         reason: "trust config unavailable; provide --config to verify signatures"
                             .to_string(),
+                        origin: None,
+                        catalog_id: None,
                         replacement_identity: None,
                     },
                 })
@@ -2846,6 +3049,12 @@ fn render_reader_open_text(view: &ReaderOpenView) -> String {
             "Trust:      status={} verified={} reason={}",
             trust.status, trust.verified, trust.reason
         );
+        if let Some(origin) = &trust.origin {
+            let _ = writeln!(output, "Origin:     {}", origin);
+        }
+        if let Some(catalog_id) = &trust.catalog_id {
+            let _ = writeln!(output, "Catalog:    {}", catalog_id);
+        }
         if let Some(replacement) = &trust.replacement_identity {
             let _ = writeln!(output, "Replacement: {}", replacement);
         }
@@ -2942,10 +3151,12 @@ fn render_reader_open_html(view: &ReaderOpenView) -> String {
         .as_ref()
         .map(|trust| {
             format!(
-                "<tr><th>Trust</th><td>status={} verified={} reason={} replacement={}</td></tr>",
+                "<tr><th>Trust</th><td>status={} verified={} reason={} origin={} catalog={} replacement={}</td></tr>",
                 escape_reader_html(&trust.status),
                 trust.verified,
                 escape_reader_html(&trust.reason),
+                escape_reader_html(trust.origin.as_deref().unwrap_or("none")),
+                escape_reader_html(trust.catalog_id.as_deref().unwrap_or("none")),
                 escape_reader_html(trust.replacement_identity.as_deref().unwrap_or("none"))
             )
         })
@@ -3208,6 +3419,16 @@ fn render_memory_bundle_validation(
             "Trust:      status={} verified={} reason={}",
             status, trust.verified, trust.reason
         );
+        if let Some(origin) = &trust.origin {
+            let rendered = serde_json::to_value(origin)
+                .ok()
+                .and_then(|value| value.as_str().map(str::to_string))
+                .unwrap_or_else(|| "unknown".to_string());
+            let _ = writeln!(output, "Origin:     {}", rendered);
+        }
+        if let Some(catalog_id) = &trust.catalog_id {
+            let _ = writeln!(output, "Catalog:    {}", catalog_id);
+        }
         if let Some(replacement) = &trust.replacement_identity {
             let _ = writeln!(output, "Replacement: {}", replacement);
         }
@@ -3386,14 +3607,104 @@ fn run_conformance_normalize(
     Ok(())
 }
 
-fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()> {
+fn run_doctor(config: &config::Config, config_path: &Path, repair: bool) -> anyhow::Result<()> {
     let mut issues = 0usize;
     println!("Running doctor for {}", config_path.display());
     println!("[ok] config: loaded and validated");
     let home_dir = home_dir_path();
+    let detected_claude = is_claude_installed(&home_dir);
+    let detected_codex = is_codex_installed(&home_dir);
+    let detected_cursor = is_cursor_installed(&home_dir);
+    let setup_profile = config.setup.profile;
+    let expect_claude = profile_configures_claude(setup_profile, detected_claude);
+    let expect_codex = profile_configures_codex(setup_profile, detected_codex);
+    let expect_cursor = profile_configures_cursor(setup_profile, detected_cursor);
     let config_path_abs =
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
     let memoryoss_bin = preferred_runtime_binary();
+    println!("[ok] setup profile: {}", setup_profile);
+    println!(
+        "[ok] embeddings: model={} dimension={}",
+        config.embeddings.model,
+        config.embeddings.model.expected_dimension()
+    );
+    if repair {
+        println!(
+            "[ok] repair mode: managed client/team drift will be repaired before final checks"
+        );
+    }
+
+    let mut configured_clients = Vec::new();
+    if expect_claude {
+        configured_clients.push("claude");
+    }
+    if expect_codex {
+        configured_clients.push("codex");
+    }
+    if expect_cursor {
+        configured_clients.push("cursor");
+    }
+
+    if repair {
+        let bind_host = config.server.host.as_str();
+        let port = config.server.port.to_string();
+        if expect_claude
+            && (!claude_user_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
+                || !claude_legacy_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
+                || !claude_hooks_match(&home_dir))
+        {
+            match configure_claude_integration(
+                &home_dir,
+                &memoryoss_bin,
+                &config_path_abs,
+                bind_host,
+                &port,
+            ) {
+                Ok(()) => println!("[repair] claude integration refreshed"),
+                Err(err) => eprintln!("[repair] failed to refresh claude integration: {err}"),
+            }
+        }
+        if expect_codex
+            && (!codex_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
+                || !codex_policy_matches(&home_dir))
+        {
+            match configure_codex_integration(&home_dir, &memoryoss_bin, &config_path_abs) {
+                Ok(()) => println!("[repair] codex integration refreshed"),
+                Err(err) => eprintln!("[repair] failed to refresh codex integration: {err}"),
+            }
+        }
+        if expect_cursor
+            && (!cursor_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
+                || !cursor_rules_match(&home_dir))
+        {
+            match configure_cursor_integration(&home_dir, &memoryoss_bin, &config_path_abs) {
+                Ok(()) => println!("[repair] cursor integration refreshed"),
+                Err(err) => eprintln!("[repair] failed to refresh cursor integration: {err}"),
+            }
+        }
+        if let Some(manifest_path) = config
+            .setup
+            .team_manifest_path
+            .as_deref()
+            .map(std::path::PathBuf::from)
+        {
+            let manifest = read_team_bootstrap_manifest(&manifest_path)?;
+            let summary = apply_team_bootstrap_manifest(
+                &manifest,
+                &manifest_path,
+                config,
+                &home_dir,
+                setup_profile,
+                &configured_clients,
+            )?;
+            println!(
+                "[repair] team trust catalog refreshed: {} identities={} revocations={}",
+                summary.catalog.catalog_id,
+                summary.imported_identities,
+                summary.imported_revocations
+            );
+        }
+    }
 
     let admin_keys = config
         .auth
@@ -3490,7 +3801,30 @@ fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()>
         );
     }
 
-    if is_claude_installed(&home_dir) {
+    if let Some(team_catalog_id) = config.setup.team_catalog_id.as_deref() {
+        let registry =
+            crate::security::trust::PortableTrustRegistry::open(&config.storage.data_dir)?;
+        let snapshot = registry.snapshot();
+        if snapshot
+            .catalogs
+            .iter()
+            .any(|catalog| catalog.catalog_id == team_catalog_id)
+        {
+            println!(
+                "[ok] team trust catalog: {} imported into {}",
+                team_catalog_id,
+                config.storage.data_dir.display()
+            );
+        } else {
+            println!(
+                "[error] team trust catalog: missing imported catalog {}",
+                team_catalog_id
+            );
+            issues += 1;
+        }
+    }
+
+    if expect_claude {
         if claude_user_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
             && claude_legacy_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs)
         {
@@ -3520,11 +3854,13 @@ fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()>
             );
             issues += 1;
         }
+    } else if detected_claude {
+        println!("[ok] claude integration: present but not selected by setup profile");
     } else {
         println!("[ok] claude integration: not detected");
     }
 
-    if is_codex_installed(&home_dir) {
+    if expect_codex {
         if codex_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs) {
             println!(
                 "[ok] codex mcp: config points to {}",
@@ -3550,8 +3886,42 @@ fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()>
             );
             issues += 1;
         }
+    } else if detected_codex {
+        println!("[ok] codex integration: present but not selected by setup profile");
     } else {
         println!("[ok] codex integration: not detected");
+    }
+
+    if expect_cursor {
+        if cursor_mcp_matches(&home_dir, &memoryoss_bin, &config_path_abs) {
+            println!(
+                "[ok] cursor mcp: config points to {}",
+                config_path_abs.display()
+            );
+        } else {
+            println!(
+                "[error] cursor mcp: missing or stale {} (run `memoryoss setup --profile cursor`)",
+                cursor_mcp_path(&home_dir).display()
+            );
+            issues += 1;
+        }
+
+        if cursor_rules_match(&home_dir) {
+            println!(
+                "[ok] cursor rules: managed runtime rule present at {}",
+                cursor_rule_path(&home_dir).display()
+            );
+        } else {
+            println!(
+                "[error] cursor rules: missing or stale {} (run `memoryoss setup --profile cursor`)",
+                cursor_rule_path(&home_dir).display()
+            );
+            issues += 1;
+        }
+    } else if detected_cursor {
+        println!("[ok] cursor integration: present but not selected by setup profile");
+    } else {
+        println!("[ok] cursor integration: not detected");
     }
 
     if issues > 0 {
@@ -3563,7 +3933,11 @@ fn run_doctor(config: &config::Config, config_path: &Path) -> anyhow::Result<()>
     Ok(())
 }
 
-async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
+async fn run_setup_wizard(
+    config_path: &std::path::Path,
+    profile: crate::config::SetupProfile,
+    team_manifest: Option<&std::path::Path>,
+) -> anyhow::Result<()> {
     println!();
     println!("╔════════════════════════════════════════════════════╗");
     println!("║  memoryOSS — Setup                                ║");
@@ -3605,6 +3979,29 @@ async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
             .output()
             .map(|o| o.status.success())
             .unwrap_or(false);
+
+    let has_cursor = std::env::var("HOME")
+        .ok()
+        .map(|h| std::path::Path::new(&h).join(".cursor").exists())
+        .unwrap_or(false)
+        || std::process::Command::new("which")
+            .arg("cursor")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false)
+        || std::process::Command::new("which")
+            .arg("cursor-agent")
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+
+    let configure_claude = profile_configures_claude(profile, has_claude_code);
+    let configure_codex = profile_configures_codex(profile, has_codex);
+    let configure_cursor = profile_configures_cursor(profile, has_cursor);
+    let team_manifest_data = match team_manifest {
+        Some(path) => Some(read_team_bootstrap_manifest(path)?),
+        None => None,
+    };
 
     let home_dir = std::env::var("HOME").unwrap_or_default();
     let env_openai = std::env::var("OPENAI_API_KEY")
@@ -3667,6 +4064,7 @@ async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
     let codex_has_both = has_codex && codex_has_oauth && has_any_openai_key;
 
     // Show what was found first
+    println!("  Selected profile: {}", profile);
     println!("  Detected:");
     if has_claude_code {
         if claude_has_oauth && claude_has_api_key {
@@ -3691,29 +4089,88 @@ async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
             println!("    ✓ Codex CLI");
         }
     }
+    if has_cursor {
+        println!("    ✓ Cursor");
+    }
     if has_any_openai_key && !has_codex {
         println!("    ✓ OPENAI_API_KEY (configured)");
     }
     if claude_has_api_key && !has_claude_code {
         println!("    ✓ ANTHROPIC_API_KEY (configured)");
     }
-    if !has_claude_code && !has_codex && env_openai.is_none() && env_anthropic.is_none() {
+    if matches!(profile, crate::config::SetupProfile::Auto)
+        && !has_claude_code
+        && !has_codex
+        && !has_cursor
+        && env_openai.is_none()
+        && env_anthropic.is_none()
+    {
         println!("    (no AI tools found — will configure for manual use)");
+    }
+    if !matches!(profile, crate::config::SetupProfile::Auto)
+        && !has_claude_code
+        && !has_codex
+        && !has_cursor
+    {
+        println!(
+            "    (explicit profile selected — setup will write the chosen client surfaces even if the tool is not yet installed)"
+        );
+    }
+    println!();
+    println!("  Profile targets:");
+    println!(
+        "    - Claude: {}",
+        if configure_claude {
+            "configure"
+        } else {
+            "skip"
+        }
+    );
+    println!(
+        "    - Codex: {}",
+        if configure_codex { "configure" } else { "skip" }
+    );
+    println!(
+        "    - Cursor: {}",
+        if configure_cursor {
+            "configure"
+        } else {
+            "skip"
+        }
+    );
+    println!(
+        "    - Shell proxy exports: {}",
+        if profile_enables_shell_proxy_exports(profile) {
+            "enabled when auth is proxy-safe"
+        } else {
+            "disabled for this profile"
+        }
+    );
+    if let Some(manifest) = &team_manifest_data {
+        println!(
+            "    - Team bootstrap: {} ({}) via {}",
+            manifest.team_label,
+            manifest.catalog.catalog_id,
+            team_manifest
+                .map(|path| path.display().to_string())
+                .unwrap_or_else(|| "inline".to_string())
+        );
     }
 
     // Then ask auth choices where both methods are available
-    let claude_uses_api_key = if has_claude_code && claude_has_oauth && claude_has_api_key {
-        println!();
-        println!("  Auth method for Claude Code:");
-        println!("    1) Subscription (OAuth) — no extra cost (recommended)");
-        println!("    2) API key — pay per token");
-        let auth_choice = prompt_choice("  Choose: ", &["oauth", "apikey"], 0);
-        auth_choice == 1
-    } else {
-        claude_has_api_key && !claude_has_oauth
-    };
+    let claude_uses_api_key =
+        if configure_claude && has_claude_code && claude_has_oauth && claude_has_api_key {
+            println!();
+            println!("  Auth method for Claude Code:");
+            println!("    1) Subscription (OAuth) — no extra cost (recommended)");
+            println!("    2) API key — pay per token");
+            let auth_choice = prompt_choice("  Choose: ", &["oauth", "apikey"], 0);
+            auth_choice == 1
+        } else {
+            configure_claude && claude_has_api_key && !claude_has_oauth
+        };
 
-    let codex_uses_api_key = if codex_has_both {
+    let codex_uses_api_key = if configure_codex && codex_has_both {
         println!();
         println!("  Auth method for Codex CLI:");
         println!("    1) Subscription (OAuth) — no extra cost (recommended)");
@@ -3721,10 +4178,10 @@ async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
         let auth_choice = prompt_choice("  Choose: ", &["oauth", "apikey"], 0);
         auth_choice == 1
     } else {
-        has_any_openai_key && !codex_has_oauth
+        configure_codex && has_any_openai_key && !codex_has_oauth
     };
     println!();
-    if has_codex && codex_has_oauth && !codex_uses_api_key {
+    if configure_codex && has_codex && codex_has_oauth && !codex_uses_api_key {
         println!(
             "  Note: Codex OAuth uses MCP by default. Proxy mode for Codex requires an OpenAI API key."
         );
@@ -3817,6 +4274,23 @@ async fn run_setup_wizard(config_path: &std::path::Path) -> anyhow::Result<()> {
     };
 
     // --- Generate config: pure passthrough, no keys needed ---
+    let mut setup_lines = vec![format!("profile = \"{}\"", profile)];
+    if let Some(manifest) = &team_manifest_data {
+        setup_lines.push(format!("team_id = {:?}", manifest.team_id));
+        setup_lines.push(format!("team_label = {:?}", manifest.team_label));
+        setup_lines.push(format!(
+            "team_catalog_id = {:?}",
+            manifest.catalog.catalog_id
+        ));
+        if let Some(path) = team_manifest {
+            setup_lines.push(format!(
+                "team_manifest_path = {:?}",
+                path.display().to_string()
+            ));
+        }
+    }
+    let setup_section = setup_lines.join("\n");
+
     let config_toml = format!(
         r#"# memoryOSS — auto-generated by setup
 # {timestamp}
@@ -3864,6 +4338,9 @@ extract_provider = "{extract_provider}"
 proxy_key = "{api_key}"
 namespace = "default"
 
+[setup]
+{setup_section}
+
 [logging]
 level = "info"
 json = false
@@ -3883,6 +4360,7 @@ max_clusters = 25
         audit_hmac_secret = audit_hmac_secret,
         extract_model = extract_model,
         extract_provider = extract_provider,
+        setup_section = setup_section,
         core_port = core_port,
         consolidation_enabled = consolidation_enabled,
         consolidation_interval_minutes = consolidation_interval_minutes,
@@ -3956,8 +4434,14 @@ max_clusters = 25
             })
             .collect();
 
-        let claude_proxy_safe = claude_has_api_key && (!claude_has_oauth || claude_uses_api_key);
-        let codex_proxy_safe = has_any_openai_key && (!codex_has_oauth || codex_uses_api_key);
+        let claude_proxy_safe = profile_enables_shell_proxy_exports(profile)
+            && claude_has_api_key
+            && (!claude_has_oauth || claude_uses_api_key)
+            && (matches!(profile, crate::config::SetupProfile::Auto) || configure_claude);
+        let codex_proxy_safe = profile_enables_shell_proxy_exports(profile)
+            && has_any_openai_key
+            && (!codex_has_oauth || codex_uses_api_key)
+            && (matches!(profile, crate::config::SetupProfile::Auto) || configure_codex);
 
         let mut proxy_exports = Vec::new();
         if codex_proxy_safe {
@@ -4011,7 +4495,7 @@ max_clusters = 25
         std::fs::canonicalize(config_path).unwrap_or_else(|_| config_path.to_path_buf());
     let memoryoss_bin = preferred_runtime_binary();
 
-    if has_claude_code {
+    if configure_claude {
         match configure_claude_integration(
             &home_dir_path(),
             &memoryoss_bin,
@@ -4027,13 +4511,65 @@ max_clusters = 25
         }
     }
 
-    if has_codex {
+    if configure_codex {
         match configure_codex_integration(&home_dir_path(), &memoryoss_bin, &config_path_abs) {
             Ok(()) => {
                 println!("  ✓ Codex MCP configured");
                 println!("  ✓ Codex policy fallback configured in ~/AGENTS.md");
             }
             Err(e) => eprintln!("  ✗ Failed to configure Codex integration: {e}"),
+        }
+    }
+
+    if configure_cursor {
+        match configure_cursor_integration(&home_dir_path(), &memoryoss_bin, &config_path_abs) {
+            Ok(()) => {
+                println!("  ✓ Cursor MCP configured");
+                println!("  ✓ Cursor config written to ~/.cursor/mcp.json");
+                println!("  ✓ Cursor runtime rule written to ~/.cursor/rules/memoryoss.mdc");
+            }
+            Err(e) => eprintln!("  ✗ Failed to configure Cursor integration: {e}"),
+        }
+    } else if !matches!(profile, crate::config::SetupProfile::Auto) && has_cursor {
+        match remove_cursor_integration(&home_dir_path()) {
+            Ok(()) => println!("  ✓ Cursor opt-out removed managed MCP and rule surfaces"),
+            Err(e) => eprintln!("  ✗ Failed to prune Cursor integration: {e}"),
+        }
+    }
+
+    if let (Some(manifest), Some(manifest_path)) = (&team_manifest_data, team_manifest) {
+        let generated_config = crate::config::Config::load(config_path)?;
+        let mut configured_clients = Vec::new();
+        if configure_claude {
+            configured_clients.push("claude");
+        }
+        if configure_codex {
+            configured_clients.push("codex");
+        }
+        if configure_cursor {
+            configured_clients.push("cursor");
+        }
+        match apply_team_bootstrap_manifest(
+            manifest,
+            manifest_path,
+            &generated_config,
+            &home_dir_path(),
+            profile,
+            &configured_clients,
+        ) {
+            Ok(summary) => {
+                println!(
+                    "  ✓ Team trust catalog imported: {} (identities={} revocations={})",
+                    summary.catalog.catalog_id,
+                    summary.imported_identities,
+                    summary.imported_revocations
+                );
+                println!(
+                    "  ✓ Team bootstrap receipt written to {}",
+                    team_bootstrap_receipt_path(&home_dir_path()).display()
+                );
+            }
+            Err(err) => eprintln!("  ✗ Failed to apply team bootstrap manifest: {err}"),
         }
     }
 
@@ -4054,8 +4590,13 @@ max_clusters = 25
     } else {
         false
     };
+    let skip_start = std::env::var("MEMORYOSS_SKIP_START")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
 
-    if !started {
+    if skip_start {
+        println!("  ✓ memoryOSS server start skipped by MEMORYOSS_SKIP_START");
+    } else if !started {
         // Fork a background process
         let child = std::process::Command::new(&binary)
             .arg("-c")
@@ -4092,7 +4633,8 @@ max_clusters = 25
 
     println!();
     println!(
-        "  Setup done. Start Claude or Codex as usual — memory is enforced via MCP and client-side guardrails."
+        "  Setup done. Active profile: {}. Start your selected client(s) as usual — memory is enforced via MCP and client-side guardrails where configured.",
+        profile
     );
     println!();
 
@@ -4276,6 +4818,43 @@ mod tests {
     }
 
     #[test]
+    fn cursor_rule_match_requires_managed_markers() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        write_text_file(&cursor_rule_path(home), MEMORYOSS_CURSOR_RULE, 0o644).unwrap();
+        assert!(cursor_rules_match(home));
+
+        write_text_file(
+            &cursor_rule_path(home),
+            "# custom rule without memoryOSS markers\n",
+            0o644,
+        )
+        .unwrap();
+        assert!(!cursor_rules_match(home));
+    }
+
+    #[test]
+    fn remove_cursor_integration_prunes_managed_surfaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let home = tmp.path();
+        let binary = std::path::Path::new("/usr/local/bin/memoryoss");
+        let config = std::path::Path::new("/tmp/memoryoss.toml");
+        configure_cursor_integration(home, binary, config).unwrap();
+        assert!(cursor_mcp_matches(home, binary, config));
+        assert!(cursor_rules_match(home));
+
+        remove_cursor_integration(home).unwrap();
+        let config_json = read_json_file(&cursor_mcp_path(home));
+        assert!(
+            config_json
+                .get("mcpServers")
+                .and_then(|entry| entry.get("memoryoss"))
+                .is_none()
+        );
+        assert!(!cursor_rule_path(home).exists());
+    }
+
+    #[test]
     fn decay_namespace_set_includes_stored_namespaces_not_in_config() {
         let mut config = config::Config::default();
         config.auth.api_keys.push(config::ApiKeyEntry {
@@ -4378,7 +4957,7 @@ async fn main() -> anyhow::Result<()> {
     let operator_command = matches!(
         &command,
         Commands::Status { .. }
-            | Commands::Doctor
+            | Commands::Doctor { .. }
             | Commands::Recent { .. }
             | Commands::Hud { .. }
             | Commands::Passport { .. }
@@ -4395,14 +4974,14 @@ async fn main() -> anyhow::Result<()> {
     }
 
     // Auto-run setup wizard if no config exists and no explicit command given
-    if !cli.config.exists() && !matches!(&command, Commands::Setup) {
+    if !cli.config.exists() && !matches!(&command, Commands::Setup { .. }) {
         println!();
         println!(
             "  No config found at '{}'. Starting setup wizard...",
             cli.config.display()
         );
         println!();
-        run_setup_wizard(&cli.config).await?;
+        run_setup_wizard(&cli.config, crate::config::SetupProfile::Auto, None).await?;
         return Ok(());
     }
 
@@ -4485,8 +5064,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Status { namespace } => {
             run_status(&config, &cli.config, namespace.as_deref())?;
         }
-        Commands::Doctor => {
-            run_doctor(&config, &cli.config)?;
+        Commands::Doctor { repair } => {
+            run_doctor(&config, &cli.config, repair)?;
         }
         Commands::Recent { namespace, limit } => {
             run_recent(&config, namespace.as_deref(), limit)?;
@@ -5000,8 +5579,11 @@ async fn main() -> anyhow::Result<()> {
                 after_days,
             );
         }
-        Commands::Setup => {
-            run_setup_wizard(&cli.config).await?;
+        Commands::Setup {
+            profile,
+            team_manifest,
+        } => {
+            run_setup_wizard(&cli.config, profile, team_manifest.as_deref()).await?;
             return Ok(());
         }
         Commands::MigrateEmbeddings {
@@ -5010,28 +5592,8 @@ async fn main() -> anyhow::Result<()> {
             namespace,
             dry_run,
         } => {
-            use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
-
-            // Map model name string to fastembed enum
-            let emb_model = match model.as_str() {
-                "all-minilm-l6-v2" | "AllMiniLML6V2" => EmbeddingModel::AllMiniLML6V2,
-                "bge-small-en-v1.5" | "BGESmallENV15" => EmbeddingModel::BGESmallENV15,
-                "bge-base-en-v1.5" | "BGEBaseENV15" => EmbeddingModel::BGEBaseENV15,
-                "bge-large-en-v1.5" | "BGELargeENV15" => EmbeddingModel::BGELargeENV15,
-                other => anyhow::bail!(
-                    "unsupported model: {other}. Supported: all-minilm-l6-v2, bge-small-en-v1.5, bge-base-en-v1.5, bge-large-en-v1.5"
-                ),
-            };
-
             println!("Loading model: {model} ...");
-            let mut opts = InitOptions::default();
-            opts.model_name = emb_model;
-            opts.show_download_progress = true;
-            let text_model = TextEmbedding::try_new(opts)?;
-
-            // Detect dimension
-            let test = text_model.embed(vec!["test"], None)?;
-            let dim = test.first().map(|v| v.len()).unwrap_or(0);
+            let (text_model, dim) = crate::embedding::load_text_embedding(model, true)?;
             println!("Model ready: {dim}-dim");
 
             std::fs::create_dir_all(&config.storage.data_dir)?;

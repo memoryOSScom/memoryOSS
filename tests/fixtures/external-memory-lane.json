@@ -1,0 +1,72 @@
+{
+  "lane_id": "open_memory_recall_lane",
+  "label": "Open Memory Recall Lane",
+  "namespace": "external_eval",
+  "description": "Public fixture lane with published memories, queries, and explicit thresholds. This is an openly rerunnable comparison lane, not a claim of official LongMemEval or LoCoMo parity.",
+  "thresholds": {
+    "positive_injection_hit_rate_min": 1.0,
+    "wrong_injection_rate_max": 0.0,
+    "abstain_precision_min": 1.0,
+    "abstain_recall_min": 1.0,
+    "proxy_latency_ms_p95_max": 1500.0
+  },
+  "memories": [
+    {
+      "content": "Claude proxy endpoint is /proxy/anthropic/v1/messages and Claude proxy mode should export ANTHROPIC_BASE_URL.",
+      "tags": ["open-lane", "proxy", "anthropic", "endpoint"]
+    },
+    {
+      "content": "OpenAI chat proxy requests go to /proxy/v1/chat/completions and use OPENAI_BASE_URL.",
+      "tags": ["open-lane", "proxy", "openai", "endpoint"]
+    },
+    {
+      "content": "If the auth setup changes from OAuth to API key or back, tell users to rerun memoryoss setup.",
+      "tags": ["open-lane", "auth", "setup"]
+    },
+    {
+      "content": "For this repo, name feature branches feat/<ticket>-<slug>.",
+      "tags": ["open-lane", "git", "branches"]
+    },
+    {
+      "content": "Never show raw memory entries unless the user explicitly asks; short summaries or counts are enough.",
+      "tags": ["open-lane", "display", "preference"]
+    }
+  ],
+  "cases": [
+    {
+      "id": "OV01",
+      "expected_action": "inject",
+      "query": "which endpoint handles Anthropic messages through the proxy?",
+      "expected_anchor": "/proxy/anthropic/v1/messages",
+      "identifier_case": true
+    },
+    {
+      "id": "OV02",
+      "expected_action": "inject",
+      "query": "what should users do after an auth mode change?",
+      "expected_anchor": "rerun memoryoss setup"
+    },
+    {
+      "id": "OV03",
+      "expected_action": "inject",
+      "query": "how should feature branches be named here?",
+      "expected_anchor": "feat/<ticket>-<slug>"
+    },
+    {
+      "id": "OV04",
+      "expected_action": "inject",
+      "query": "what is the display preference for raw memory entries?",
+      "expected_anchor": "short summaries or counts are enough"
+    },
+    {
+      "id": "OV05",
+      "expected_action": "abstain",
+      "query": "what is the capital of France?"
+    },
+    {
+      "id": "OV06",
+      "expected_action": "abstain",
+      "query": "explain quantum entanglement in one paragraph"
+    }
+  ]
+}

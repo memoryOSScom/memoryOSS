@@ -560,6 +560,7 @@ This section is synchronized to the current repository state as of 2026-03-15.
 - `P10` is complete
 - `P11` is complete
 - `P12` is complete
+- `P13` is complete
 
 Completed block summary:
 
@@ -569,20 +570,17 @@ Completed block summary:
 
 ### Current planning gap
 
-The roadmap no longer has an unfinished `P10`/`P11`/`P12` execution queue. The next build block is not another tail task inside `P12`; it is a new post-`P12` program that turns the shipped runtime into a default-installed utility.
+The roadmap no longer has an unfinished `P10`/`P11`/`P12`/`P13` execution queue. The runtime build and the first distribution-default block are complete.
 
-Working title:
+The next gap is no longer "what core/runtime or rollout feature is missing?" It is deciding what deserves a first post-`P13` program, based on real adoption pressure rather than roadmap inertia.
 
-- `P13` distribution and ecosystem default
+The obvious candidate areas are:
 
-Likely scope:
-
-- first-class distribution channels and installer surfaces for Claude, Codex, Cursor, and local teams
-- trusted bundle and signer discovery beyond one local machine
-- zero-friction team onboarding and rollout paths
-- public proof and adoption surfaces that show why memoryOSS should stay installed
-- native package channels and directory-ready MCP packaging instead of archive-first distribution only
-- neutral governance for the runtime contract, bundle format, signer registry, and third-party interop
+- external benchmark publication beyond repo-native proof lanes
+- packaging/distribution expansion into additional native channels
+- broader ecosystem and marketplace adoption
+- managed/enterprise key-provider depth beyond the current honest support surface
+- ongoing compatibility/governance stewardship as third-party runtimes appear
 
 ## Kill-Switch Rules
 
@@ -739,34 +737,42 @@ Exit gate:
 
 ### Wave R2 - Distribution and Ecosystem Default
 
-Purpose:
-Turn the finished runtime into an obvious default install across supported clients and teams.
+Status:
+Completed.
 
-Candidate tasks:
+What shipped:
 
-- release channels and installer surfaces that match the supported client matrix
-- shared signer and trust-root discovery beyond a single local machine
-- team rollout and onboarding paths that do not require operator handholding
-- public docs and proof surfaces that keep repo and install story in lockstep
+- client install profiles for Claude, Codex, Cursor, and team-node
+- first-class Cursor runtime onboarding and drift repair
+- release-built MCP packaging and marketplace metadata validation
+- signer discovery, portable trust catalogs, and revocation propagation
+- team rollout/bootstrap surfaces with deterministic repair
+- release-surface synchronization gates
+- an explicit external/open comparison lane with thresholds in the benchmark/report path
+- runtime-configurable embeddings plus multilingual calibration visibility
+- honest managed-key-provider support with hermetic Vault coverage and fail-closed AWS KMS surface
+- neutral runtime governance metadata for contract, bundle, signer-registry, and third-party interop
 
 ## First Build Step
 
-From the current state, the next task should be:
+From the current state, there is no pre-defined `P14` build step yet.
 
-- define `P13` as an explicit post-`P12` distribution and ecosystem-default phase
+The next deliberate step should be:
 
-Immediate follow-on after that:
+- choose a post-`P13` program from observed adoption pain, not from unfinished core-roadmap momentum
 
-- first-class distribution channels and client onboarding
-- trust-root and signer discovery across machines and teams
-- release-artifact synchronization as release discipline
-- native package and installer channels that match the supported client matrix
-- neutral runtime governance and ecosystem registry policy
+Likely candidates:
+
+- publish stronger external validation and comparison surfaces
+- widen native package-channel coverage
+- harden enterprise/managed-key support where real users demand it
+- formalize ecosystem governance if third-party runtimes and catalogs begin to accumulate
 
 Reason:
 
 - The runtime build itself is complete.
-- The next bottleneck is no longer core capability; it is distribution, onboarding, and ecosystem-default adoption.
+- The first ecosystem-default block is complete.
+- The next bottleneck is evidence-backed adoption and stewardship, not another missing foundational subsystem.
 
 ## Origin Map
 

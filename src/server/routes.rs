@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use axum::{
     Json,
-    extract::State,
+    extract::{Query, State},
     http::{StatusCode, request::Parts},
     response::{IntoResponse, Response},
     routing::{delete, get, patch, post},
@@ -45,8 +45,8 @@ use crate::security::auth::{Claims, create_jwt, extract_bearer_token, find_api_k
 use crate::security::rbac;
 use crate::security::trust::{
     PortableArtifactSignature, PortableIdentityKind, PortableSignatureChainLink,
-    PortableTrustDecision, PortableTrustRegistry, SyncPeerDescriptor, TrustScorer,
-    sign_portable_subject, sign_portable_subject_at, verify_portable_subject,
+    PortableTrustCatalog, PortableTrustDecision, PortableTrustRegistry, SyncPeerDescriptor,
+    TrustScorer, sign_portable_subject, sign_portable_subject_at, verify_portable_subject,
 };
 use crate::server::middleware::apply_security_headers;
 use crate::server::rate_limit::RateLimiter;
@@ -961,6 +961,10 @@ pub fn router(state: AppState) -> axum::Router {
         .route("/v1/admin/keys", get(list_keys))
         .route("/v1/admin/trust-stats", get(trust_stats))
         .route("/v1/admin/trust/fabric", get(trust_fabric_view))
+        .route("/v1/admin/trust/catalog/export", get(trust_catalog_export))
+        .route("/v1/admin/trust/catalog/import", post(trust_catalog_import))
+        .route("/v1/admin/trust/pin", post(trust_pin))
+        .route("/v1/admin/trust/unpin", post(trust_unpin))
         .route("/v1/admin/trust/register", post(trust_register))
         .route("/v1/admin/trust/revoke", post(trust_revoke))
         .route("/v1/admin/trust/restore", post(trust_restore))
@@ -4622,6 +4626,19 @@ struct TrustRegisterRequest {
 }
 
 #[derive(Debug, Deserialize)]
+struct TrustCatalogExportQuery {
+    #[serde(default)]
+    catalog_id: Option<String>,
+    #[serde(default)]
+    label: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustCatalogImportRequest {
+    catalog: PortableTrustCatalog,
+}
+
+#[derive(Debug, Deserialize)]
 struct TrustRevokeRequest {
     id: String,
     reason: String,
@@ -4631,6 +4648,11 @@ struct TrustRevokeRequest {
 
 #[derive(Debug, Deserialize)]
 struct TrustRestoreRequest {
+    id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct TrustPinRequest {
     id: String,
 }
 
@@ -5917,11 +5939,64 @@ async fn trust_fabric_view(
             "authors": authors,
             "devices": devices,
             "sync_peers": sync_peers,
+            "catalogs": snapshot.catalogs.len(),
+            "pins": snapshot.pins.len(),
         },
         "identities": snapshot.identities,
         "revocations": snapshot.revocations,
+        "catalogs": snapshot.catalogs,
+        "pins": snapshot.pins,
     }))
     .into_response())
+}
+
+/// GET /v1/admin/trust/catalog/export — export the current trust fabric as a portable catalog.
+async fn trust_catalog_export(
+    State(state): State<AppState>,
+    parts: Parts,
+    Query(query): Query<TrustCatalogExportQuery>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden(
+            "admin required for trust catalog export",
+        ));
+    }
+
+    let catalog = state
+        .portable_trust
+        .export_catalog(
+            query
+                .catalog_id
+                .as_deref()
+                .unwrap_or("portable-trust-catalog"),
+            query
+                .label
+                .as_deref()
+                .unwrap_or("Portable trust catalog export"),
+        )
+        .map_err(AppError::Internal)?;
+    Ok(Json(json!({ "catalog": catalog })).into_response())
+}
+
+/// POST /v1/admin/trust/catalog/import — merge a shared trust catalog into the local registry.
+async fn trust_catalog_import(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustCatalogImportRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden(
+            "admin required for trust catalog import",
+        ));
+    }
+
+    let summary = state
+        .portable_trust
+        .import_catalog(req.catalog)
+        .map_err(|err| AppError::BadRequest(err.to_string()))?;
+    Ok(Json(json!({ "import": summary })).into_response())
 }
 
 /// POST /v1/admin/trust/register — register a portable trust identity.
@@ -5947,6 +6022,42 @@ async fn trust_register(
         .ensure_identity(id, req.kind, label)
         .map_err(AppError::Internal)?;
     Ok(Json(json!({ "identity": identity })).into_response())
+}
+
+/// POST /v1/admin/trust/pin — locally pin one trust identity so verification reports it as an explicit local trust root.
+async fn trust_pin(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustPinRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust pin"));
+    }
+
+    let pin = state
+        .portable_trust
+        .pin_identity(req.id.trim())
+        .map_err(|err| AppError::BadRequest(err.to_string()))?;
+    Ok(Json(json!({ "pin": pin })).into_response())
+}
+
+/// POST /v1/admin/trust/unpin — remove a local trust pin without deleting the identity.
+async fn trust_unpin(
+    State(state): State<AppState>,
+    parts: Parts,
+    Json(req): Json<TrustPinRequest>,
+) -> Result<Response, AppError> {
+    let claims = require_auth(&state.config, &parts)?;
+    if !rbac::can_admin(claims.role) {
+        return Err(AppError::Forbidden("admin required for trust unpin"));
+    }
+
+    let removed = state
+        .portable_trust
+        .unpin_identity(req.id.trim())
+        .map_err(AppError::Internal)?;
+    Ok(Json(json!({ "removed": removed, "id": req.id.trim() })).into_response())
 }
 
 /// POST /v1/admin/trust/revoke — revoke a portable trust identity and attach replacement metadata.

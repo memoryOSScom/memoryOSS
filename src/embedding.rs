@@ -92,31 +92,38 @@ impl EmbeddingCache {
 
 pub struct EmbeddingEngine {
     model: Arc<Mutex<TextEmbedding>>,
+    model_id: crate::config::EmbeddingModelId,
     dimension: usize,
     cache: EmbeddingCache,
 }
 
 impl EmbeddingEngine {
-    pub fn new() -> anyhow::Result<Self> {
-        Self::with_cache_config(300, 10_000)
+    pub fn new(config: &crate::config::EmbeddingsConfig) -> anyhow::Result<Self> {
+        Self::with_cache_config(config, 300, 10_000)
     }
 
-    pub fn with_cache_config(ttl_secs: u64, max_size: usize) -> anyhow::Result<Self> {
-        let mut opts = InitOptions::default();
-        opts.model_name = EmbeddingModel::AllMiniLML6V2;
-        opts.show_download_progress = true;
-        let model = TextEmbedding::try_new(opts)?;
-
-        // Detect dimension from a test embedding
-        let test = model.embed(vec!["test"], None)?;
-        let dimension = test.first().map(|v| v.len()).unwrap_or(384);
-        tracing::info!("Embedding engine ready: {dimension}-dim (AllMiniLML6V2)");
+    pub fn with_cache_config(
+        config: &crate::config::EmbeddingsConfig,
+        ttl_secs: u64,
+        max_size: usize,
+    ) -> anyhow::Result<Self> {
+        let (model, dimension) = load_text_embedding(config.model, true)?;
+        tracing::info!(
+            "Embedding engine ready: {}-dim ({})",
+            dimension,
+            config.model
+        );
 
         Ok(Self {
             model: Arc::new(Mutex::new(model)),
+            model_id: config.model,
             dimension,
             cache: EmbeddingCache::new(ttl_secs, max_size),
         })
+    }
+
+    pub fn model_id(&self) -> crate::config::EmbeddingModelId {
+        self.model_id
     }
 
     pub fn dimension(&self) -> usize {
@@ -168,6 +175,42 @@ impl EmbeddingEngine {
     }
 }
 
+pub(crate) fn load_text_embedding(
+    model_id: crate::config::EmbeddingModelId,
+    show_download_progress: bool,
+) -> anyhow::Result<(TextEmbedding, usize)> {
+    let mut opts = InitOptions::default();
+    opts.model_name = model_id.fastembed_model();
+    opts.show_download_progress = show_download_progress;
+    let model = TextEmbedding::try_new(opts)?;
+
+    let test = model.embed(vec!["test"], None)?;
+    let dimension = test
+        .first()
+        .map(|vector| vector.len())
+        .unwrap_or(model_id.expected_dimension());
+    if dimension != model_id.expected_dimension() {
+        anyhow::bail!(
+            "embedding model {} reported dimension {} but registry expects {}",
+            model_id,
+            dimension,
+            model_id.expected_dimension()
+        );
+    }
+    Ok((model, dimension))
+}
+
+impl crate::config::EmbeddingModelId {
+    pub(crate) fn fastembed_model(self) -> EmbeddingModel {
+        match self {
+            Self::AllMiniLML6V2 => EmbeddingModel::AllMiniLML6V2,
+            Self::BgeSmallEnV15 => EmbeddingModel::BGESmallENV15,
+            Self::BgeBaseEnV15 => EmbeddingModel::BGEBaseENV15,
+            Self::BgeLargeEnV15 => EmbeddingModel::BGELargeENV15,
+        }
+    }
+}
+
 /// Mock embedding engine for dev mode — random vectors, instant startup
 pub struct MockEmbeddingEngine {
     dimension: usize,
@@ -190,5 +233,18 @@ impl MockEmbeddingEngine {
             .map(|_| rng.r#gen::<f32>() * 2.0 - 1.0)
             .collect();
         Ok(vec)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn embedding_model_registry_exposes_supported_runtime_models() {
+        let supported = crate::config::EmbeddingModelId::supported();
+        assert_eq!(supported.len(), 4);
+        assert_eq!(supported[0].to_string(), "all-minilm-l6-v2");
+        assert_eq!(supported[1].expected_dimension(), 384);
+        assert_eq!(supported[2].expected_dimension(), 768);
+        assert_eq!(supported[3].expected_dimension(), 1024);
     }
 }

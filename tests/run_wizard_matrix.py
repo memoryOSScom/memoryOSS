@@ -106,6 +106,33 @@ def write_stale_codex_config(home: Path) -> None:
     )
 
 
+def write_stale_cursor_integration(home: Path) -> None:
+    cursor_dir = home / ".cursor"
+    cursor_dir.mkdir(parents=True, exist_ok=True)
+    (cursor_dir / "mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "memoryoss": {
+                        "type": "stdio",
+                        "command": "/usr/local/bin/memoryoss",
+                        "args": ["-c", "/tmp/stale-cursor/memoryoss.toml", "mcp-server"],
+                        "env": {},
+                    }
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    rules_dir = cursor_dir / "rules"
+    rules_dir.mkdir(parents=True, exist_ok=True)
+    (rules_dir / "memoryoss.mdc").write_text(
+        "# stale cursor rule\n- no memoryoss markers here\n",
+        encoding="utf-8",
+    )
+
+
 def write_claude_oauth_creds(home: Path) -> None:
     claude_dir = home / ".claude"
     claude_dir.mkdir(parents=True, exist_ok=True)
@@ -118,7 +145,31 @@ def write_claude_oauth_creds(home: Path) -> None:
     (claude_dir / ".credentials.json").write_text(json.dumps(creds), encoding="utf-8")
 
 
-def make_which_stub(bin_dir: Path, *, has_claude: bool, has_codex: bool) -> None:
+def write_team_manifest(tmp: Path) -> Path:
+    manifest_path = tmp / "team-bootstrap.json"
+    manifest = {
+        "team_id": "team-alpha",
+        "team_label": "Team Alpha",
+        "catalog": {
+            "catalog_id": "team-alpha-defaults",
+            "label": "Team Alpha Defaults",
+            "exported_at": iso_now(),
+            "identities": [
+                {
+                    "id": "device:team-alpha-signer",
+                    "kind": "device",
+                    "label": "Team Alpha Signer",
+                    "registered_at": iso_now(),
+                }
+            ],
+            "revocations": [],
+        },
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    return manifest_path
+
+
+def make_which_stub(bin_dir: Path, *, has_claude: bool, has_codex: bool, has_cursor: bool) -> None:
     stub_path = bin_dir / "which"
     stub_path.write_text(
         f"""#!/usr/bin/env bash
@@ -128,6 +179,9 @@ case "${{1:-}}" in
     ;;
   codex)
     {'exit 0' if has_codex else 'exit 1'}
+    ;;
+  cursor|cursor-agent)
+    {'exit 0' if has_cursor else 'exit 1'}
     ;;
 esac
 exec /usr/bin/which "$@"
@@ -222,12 +276,16 @@ def run_setup_once(
     name: str,
     has_claude: bool,
     has_codex: bool,
+    has_cursor: bool,
     openai_key: bool,
     anthropic_key: bool,
+    profile: str = "auto",
     choose_claude_api_key: bool = False,
     choose_codex_api_key: bool = False,
     idempotency: bool = False,
     stale_codex_mcp: bool = False,
+    stale_cursor_integration: bool = False,
+    team_manifest: bool = False,
 ) -> dict:
     if not wait_for_port_available(PORT):
         raise RuntimeError(f"port {PORT} is already in use; wizard matrix requires it to be free")
@@ -243,12 +301,20 @@ def run_setup_once(
     log_path = tmp / "setup.log"
     bin_dir = tmp / "bin"
     bin_dir.mkdir(parents=True, exist_ok=True)
+    team_manifest_path = write_team_manifest(tmp) if team_manifest else None
 
     if has_claude:
         write_claude_oauth_creds(home)
-    make_which_stub(bin_dir, has_claude=has_claude, has_codex=has_codex)
+    make_which_stub(
+        bin_dir,
+        has_claude=has_claude,
+        has_codex=has_codex,
+        has_cursor=has_cursor,
+    )
     if has_codex:
         write_codex_oauth_auth(home)
+    if has_cursor:
+        (home / ".cursor").mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
     env["HOME"] = str(home)
@@ -272,11 +338,16 @@ def run_setup_once(
     env["MEMORYOSS_DISABLE_SYSTEMD"] = "1"
     if stale_codex_mcp:
         write_stale_codex_config(home)
+    if stale_cursor_integration:
+        write_stale_cursor_integration(home)
 
     def launch(log_target: Path):
         handle = log_target.open("wb")
+        args = [str(binary), "--config", str(config_path), "setup", "--profile", profile]
+        if team_manifest_path is not None:
+            args.extend(["--team-manifest", str(team_manifest_path)])
         process = subprocess.Popen(
-            [str(binary), "--config", str(config_path), "setup"],
+            args,
             cwd=ROOT_DIR,
             env=env,
             stdin=subprocess.PIPE,
@@ -316,6 +387,10 @@ def run_setup_once(
     bashrc_path = home / ".bashrc"
     bashrc_text = bashrc_path.read_text(encoding="utf-8") if bashrc_path.exists() else ""
     log_text = log_path.read_text(encoding="utf-8", errors="replace")
+    cursor_mcp_path = home / ".cursor" / "mcp.json"
+    cursor_rule_path = home / ".cursor" / "rules" / "memoryoss.mdc"
+    team_receipt_path = home / ".memoryoss" / "team-bootstrap.json"
+    team_trust_path = home / ".memoryoss" / "data" / "trust-fabric.json"
 
     expect_extraction = openai_key or anthropic_key
     expect_openai_base = openai_key and (not has_codex or choose_codex_api_key)
@@ -343,6 +418,14 @@ def run_setup_once(
             assert_result(
                 "Extraction model matches provider",
                 f'extract_model = "{expect_extract_model}"' in config_text,
+            ),
+            assert_result(
+                "Selected setup profile persisted",
+                f'profile = "{profile.replace("-", "_")}"' in config_text,
+            ),
+            assert_result(
+                "Team bootstrap metadata matches scenario",
+                ("team_id = " in config_text) == team_manifest,
             ),
             assert_result("Ready banner printed", "Setup done" in log_text),
             assert_result(
@@ -451,6 +534,53 @@ def run_setup_once(
             ]
         )
 
+    expect_claude = profile == "claude" or (profile in {"auto", "team-node"} and has_claude)
+    expect_codex = profile == "codex" or (profile in {"auto", "team-node"} and has_codex)
+    expect_cursor = profile == "cursor" or (profile in {"auto", "team-node"} and has_cursor)
+    cursor_mcp_text = cursor_mcp_path.read_text(encoding="utf-8") if cursor_mcp_path.exists() else ""
+    cursor_rule_text = cursor_rule_path.read_text(encoding="utf-8") if cursor_rule_path.exists() else ""
+    assertions.extend(
+        [
+            assert_result(
+                "Cursor MCP surface matches selected profile",
+                ('"memoryoss"' in cursor_mcp_text) == expect_cursor,
+            ),
+            assert_result(
+                "Cursor runtime rule matches selected profile",
+                ("MEMORYOSS_CURSOR_RULE_BEGIN" in cursor_rule_text) == expect_cursor,
+            ),
+        ]
+    )
+
+    if team_manifest:
+        receipt = read_json(team_receipt_path)
+        trust_text = team_trust_path.read_text(encoding="utf-8") if team_trust_path.exists() else ""
+        expected_clients = []
+        if expect_claude:
+            expected_clients.append("claude")
+        if expect_codex:
+            expected_clients.append("codex")
+        if expect_cursor:
+            expected_clients.append("cursor")
+        assertions.extend(
+            [
+                assert_result(
+                    "Team manifest path persisted",
+                    f'team_manifest_path = "{team_manifest_path}"' in config_text,
+                ),
+                assert_result("Team bootstrap receipt written", team_receipt_path.exists()),
+                assert_result(
+                    "Team bootstrap receipt preserves configured clients",
+                    receipt.get("configured_clients") == expected_clients,
+                ),
+                assert_result(
+                    "Team trust catalog imported into local trust fabric",
+                    '"catalog_id": "team-alpha-defaults"' in trust_text
+                    and '"device:team-alpha-signer"' in trust_text,
+                ),
+            ]
+        )
+
     if idempotency:
         second_log = tmp / "setup-second.log"
         process2, handle2 = launch(second_log)
@@ -481,6 +611,8 @@ def run_setup_once(
         "signals": {
             "claude": has_claude,
             "codex": has_codex,
+            "cursor": has_cursor,
+            "profile": profile,
             "openai_key": openai_key,
             "anthropic_key": anthropic_key,
         },
@@ -495,19 +627,23 @@ def run_setup_once(
 def main() -> None:
     started = time.time()
     scenarios = [
-        ("No tools at all", False, False, False, False, False, False, False, False),
-        ("Claude OAuth only", True, False, False, False, False, False, False, False),
-        ("Codex OAuth only", False, True, False, False, False, False, False, False),
-        ("Both OAuth without keys", True, True, False, False, False, False, False, False),
-        ("Claude OAuth + OpenAI key", True, False, True, False, False, False, False, False),
-        ("Claude OAuth + Anthropic key (default OAuth)", True, False, False, True, False, False, False, False),
-        ("Claude OAuth + Anthropic key (force API key)", True, False, False, True, True, False, False, False),
-        ("Both OAuth + OpenAI key (default OAuth)", True, True, True, False, False, False, False, False),
-        ("Both OAuth + OpenAI key (force Codex API key)", True, True, True, False, False, True, False, False),
-        ("Codex OAuth + OpenAI key (default OAuth)", False, True, True, False, False, False, False, False),
-        ("Codex OAuth + OpenAI key (force API key)", False, True, True, False, False, True, False, False),
-        ("Idempotency double run", True, False, False, False, False, False, True, False),
-        ("Codex stale MCP config is repaired", False, True, False, False, False, False, False, True),
+        ("No tools at all", False, False, False, False, False, "auto", False, False, False, False, False, False),
+        ("Claude OAuth only", True, False, False, False, False, "auto", False, False, False, False, False, False),
+        ("Codex OAuth only", False, True, False, False, False, "auto", False, False, False, False, False, False),
+        ("Both OAuth without keys", True, True, False, False, False, "auto", False, False, False, False, False, False),
+        ("Claude OAuth + OpenAI key", True, False, False, True, False, "auto", False, False, False, False, False, False),
+        ("Claude OAuth + Anthropic key (default OAuth)", True, False, False, False, True, "auto", False, False, False, False, False, False),
+        ("Claude OAuth + Anthropic key (force API key)", True, False, False, False, True, "auto", True, False, False, False, False, False),
+        ("Both OAuth + OpenAI key (default OAuth)", True, True, False, True, False, "auto", False, False, False, False, False, False),
+        ("Both OAuth + OpenAI key (force Codex API key)", True, True, False, True, False, "auto", False, True, False, False, False, False),
+        ("Codex OAuth + OpenAI key (default OAuth)", False, True, False, True, False, "auto", False, False, False, False, False, False),
+        ("Codex OAuth + OpenAI key (force API key)", False, True, False, True, False, "auto", False, True, False, False, False, False),
+        ("Cursor explicit profile", False, False, True, False, False, "cursor", False, False, False, False, False, False),
+        ("Cursor stale integration is repaired", False, False, True, False, False, "cursor", False, False, False, True, False, False),
+        ("Cursor opt-out via Codex profile removes Cursor surfaces", False, True, True, False, False, "codex", False, False, False, False, False, False),
+        ("Idempotency double run", True, False, False, False, False, "auto", False, False, True, False, False, False),
+        ("Codex stale MCP config is repaired", False, True, False, False, False, "auto", False, False, False, False, True, False),
+        ("Team node bootstrap with rerun", True, True, True, False, False, "team-node", False, False, True, False, False, True),
     ]
 
     results = [
@@ -515,23 +651,31 @@ def main() -> None:
             name=name,
             has_claude=has_claude,
             has_codex=has_codex,
+            has_cursor=has_cursor,
             openai_key=openai_key,
             anthropic_key=anthropic_key,
+            profile=profile,
             choose_claude_api_key=choose_claude_api_key,
             choose_codex_api_key=choose_codex_api_key,
             idempotency=idempotency,
             stale_codex_mcp=stale_codex_mcp,
+            stale_cursor_integration=stale_cursor_integration,
+            team_manifest=team_manifest,
         )
         for (
             name,
             has_claude,
             has_codex,
+            has_cursor,
             openai_key,
             anthropic_key,
+            profile,
             choose_claude_api_key,
             choose_codex_api_key,
             idempotency,
+            stale_cursor_integration,
             stale_codex_mcp,
+            team_manifest,
         ) in scenarios
     ]
 

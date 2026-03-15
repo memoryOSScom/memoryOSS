@@ -45,6 +45,36 @@ fn preferred_runtime_binary_for_home(home_dir: &std::path::Path) -> std::path::P
     current
 }
 
+fn write_team_bootstrap_manifest(path: &std::path::Path) {
+    std::fs::write(
+        path,
+        serde_json::to_string_pretty(&serde_json::json!({
+            "team_id": "team-alpha",
+            "team_label": "Team Alpha",
+            "catalog": {
+                "catalog_id": "team-alpha-defaults",
+                "label": "Team Alpha Defaults",
+                "exported_at": chrono::Utc::now().to_rfc3339(),
+                "identities": [
+                    {
+                        "id": "device:team-alpha-signer",
+                        "kind": "device",
+                        "label": "Team Alpha Signer",
+                        "registered_at": chrono::Utc::now().to_rfc3339()
+                    }
+                ],
+                "revocations": []
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+}
+
+fn read_json_value(path: &std::path::Path) -> serde_json::Value {
+    serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap()
+}
+
 fn test_config_with_sections(
     port: u16,
     data_dir: &str,
@@ -728,7 +758,10 @@ async fn test_store_recall_update_forget() {
     let data_dir = tmp_dir.path().join("data");
     std::fs::create_dir_all(&data_dir).unwrap();
 
-    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let config_content = format!(
+        "{}\n[embeddings]\nmodel = \"bge-base-en-v1.5\"\n",
+        test_config(port, data_dir.to_str().unwrap())
+    );
     let config_path = tmp_dir.path().join("test.toml");
     std::fs::write(&config_path, &config_content).unwrap();
 
@@ -3920,6 +3953,36 @@ async fn test_mcp_http_roundtrip() {
         tool_names.contains(&"memoryoss_forget"),
         "missing forget tool"
     );
+    let live_has_marketplace_annotations = tools.iter().any(|tool| {
+        tool.get("title").is_some()
+            || tool
+                .get("annotations")
+                .and_then(serde_json::Value::as_object)
+                .is_some()
+    });
+    if !live_has_marketplace_annotations {
+        let server_manifest: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string("server.json").unwrap()).unwrap();
+        let manifest_tools = server_manifest["_meta"]["io.github.memoryOSScom/anthropic-local-mcp"]
+            ["toolAnnotations"]
+            .as_array()
+            .expect("server manifest missing MCP tool annotations");
+        for name in &tool_names {
+            let manifest_entry = manifest_tools
+                .iter()
+                .find(|entry| entry["name"].as_str() == Some(*name))
+                .expect("missing fallback tool annotation entry");
+            assert!(
+                manifest_entry["title"].as_str().is_some(),
+                "fallback manifest must carry tool titles"
+            );
+            let annotations = manifest_entry["annotations"]
+                .as_object()
+                .expect("fallback manifest must carry annotations");
+            assert!(annotations.contains_key("readOnlyHint"));
+            assert!(annotations.contains_key("destructiveHint"));
+        }
+    }
 
     // 3. Store a memory via MCP
     let store_resp = jsonrpc_request(
@@ -7560,7 +7623,8 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     std::fs::create_dir_all(&data_dir).unwrap();
     std::fs::create_dir_all(&home_dir).unwrap();
 
-    let config_content = test_config(port, data_dir.to_str().unwrap());
+    let mut config_content = test_config(port, data_dir.to_str().unwrap());
+    config_content.push_str("\n[embeddings]\nmodel = \"bge-base-en-v1.5\"\n");
     let config_path = tmp_dir.path().join("doctor-healthy.toml");
     std::fs::write(&config_path, &config_content).unwrap();
     let config_abs = config_path.canonicalize().unwrap();
@@ -7648,6 +7712,28 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
         "<!-- MEMORYOSS_POLICY_BEGIN -->\n## memoryOSS Mandatory\n- Call `memoryoss_recall` at session start and before substantial work.\n- Call `memoryoss_store` or `memoryoss_update` before stopping after important confirmed learning.\n- Do not start non-memoryOSS tool work before recall.\n- If memoryOSS is unavailable or unconfigured, stop and repair that first.\n<!-- MEMORYOSS_POLICY_END -->\n",
     )
     .unwrap();
+    let cursor_dir = home_dir.join(".cursor");
+    std::fs::create_dir_all(cursor_dir.join("rules")).unwrap();
+    std::fs::write(
+        cursor_dir.join("mcp.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "memoryoss": {
+                    "type": "stdio",
+                    "command": binary.to_string_lossy(),
+                    "args": ["-c", config_abs.to_string_lossy(), "mcp-server"],
+                    "env": {}
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        cursor_dir.join("rules/memoryoss.mdc"),
+        "---\ndescription: memoryOSS runtime discipline\nglobs:\n  - \"**/*\"\nalwaysApply: true\n---\n\n<!-- MEMORYOSS_CURSOR_RULE_BEGIN -->\n# memoryOSS runtime discipline\n\n- Call `memoryoss_recall` at session start and before substantial work.\n- Call `memoryoss_store` or `memoryoss_update` before finishing after important confirmed learning.\n- If memoryOSS is unavailable or unconfigured, stop and repair the MCP config before continuing.\n<!-- MEMORYOSS_CURSOR_RULE_END -->\n",
+    )
+    .unwrap();
 
     let status = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args(["--config", config_path.to_str().unwrap(), "status"])
@@ -7666,6 +7752,10 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     assert!(status_stdout.contains("Namespaces:"));
     assert!(status_stdout.contains("Workers:"));
     assert!(status_stdout.contains("Index:"));
+    assert!(
+        status_stdout.contains("embeddings: model=bge-base-en-v1.5 dimension=768"),
+        "status output missing embedding line: {status_stdout}"
+    );
     assert!(
         status_stdout.contains("test [empty]"),
         "status should show configured namespace health"
@@ -7686,11 +7776,17 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     );
     let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
     assert!(doctor_stdout.contains("Doctor OK"));
+    assert!(
+        doctor_stdout.contains("[ok] embeddings: model=bge-base-en-v1.5 dimension=768"),
+        "doctor output missing embedding line: {doctor_stdout}"
+    );
     assert!(doctor_stdout.contains("[ok] auth: 1 admin key(s) configured"));
     assert!(doctor_stdout.contains("[ok] claude mcp:"));
     assert!(doctor_stdout.contains("[ok] claude hooks:"));
     assert!(doctor_stdout.contains("[ok] codex mcp:"));
     assert!(doctor_stdout.contains("[ok] codex policy:"));
+    assert!(doctor_stdout.contains("[ok] cursor mcp:"));
+    assert!(doctor_stdout.contains("[ok] cursor rules:"));
 
     let broken_dir = tempfile::tempdir().expect("failed to create broken temp dir");
     let broken_data_dir = broken_dir.path().join("data");
@@ -7744,6 +7840,27 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
         "# no memory policy\n",
     )
     .unwrap();
+    std::fs::create_dir_all(broken_integration_home.join(".cursor/rules")).unwrap();
+    std::fs::write(
+        broken_integration_home.join(".cursor/mcp.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "memoryoss": {
+                    "type": "stdio",
+                    "command": "/usr/local/bin/memoryoss",
+                    "args": ["-c", "/tmp/stale-cursor.toml", "mcp-server"],
+                    "env": {}
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        broken_integration_home.join(".cursor/rules/memoryoss.mdc"),
+        "# stale cursor rule\n- missing managed markers\n",
+    )
+    .unwrap();
 
     let broken_integration_doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
         .args(["--config", config_path.to_str().unwrap(), "doctor"])
@@ -7763,6 +7880,229 @@ async fn test_cli_status_and_doctor_cover_healthy_and_broken_diagnosis_cases() {
     assert!(broken_integration_stdout.contains("[error] claude hooks:"));
     assert!(broken_integration_stdout.contains("[error] codex mcp:"));
     assert!(broken_integration_stdout.contains("[error] codex policy:"));
+    assert!(broken_integration_stdout.contains("[error] cursor mcp:"));
+    assert!(broken_integration_stdout.contains("[error] cursor rules:"));
+}
+
+#[tokio::test]
+async fn test_team_node_bootstrap_and_doctor_repair_handle_drift_and_removed_clients() {
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let home_dir = tmp_dir.path().join("home");
+    let codex_home = home_dir.join(".codex");
+    std::fs::create_dir_all(home_dir.join(".claude")).unwrap();
+    std::fs::create_dir_all(&codex_home).unwrap();
+    std::fs::create_dir_all(home_dir.join(".cursor")).unwrap();
+
+    let config_path = tmp_dir.path().join("team-node.toml");
+    let manifest_path = tmp_dir.path().join("team-bootstrap.json");
+    write_team_bootstrap_manifest(&manifest_path);
+
+    let setup = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "setup",
+            "--profile",
+            "team-node",
+            "--team-manifest",
+            manifest_path.to_str().unwrap(),
+        ])
+        .env("HOME", &home_dir)
+        .env("CODEX_HOME", &codex_home)
+        .env("MEMORYOSS_SKIP_START", "1")
+        .env("MEMORYOSS_DISABLE_SYSTEMD", "1")
+        .output()
+        .await
+        .expect("failed to run team-node setup");
+    assert!(
+        setup.status.success(),
+        "team-node setup failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&setup.stdout),
+        String::from_utf8_lossy(&setup.stderr)
+    );
+
+    let config_text = std::fs::read_to_string(&config_path).unwrap();
+    assert!(config_text.contains("profile = \"team_node\""));
+    assert!(config_text.contains("team_id = \"team-alpha\""));
+    assert!(config_text.contains("team_catalog_id = \"team-alpha-defaults\""));
+    assert!(config_text.contains(&format!(
+        "team_manifest_path = \"{}\"",
+        manifest_path.display()
+    )));
+
+    let trust_path = home_dir.join(".memoryoss/data/trust-fabric.json");
+    let receipt_path = home_dir.join(".memoryoss/team-bootstrap.json");
+    assert!(trust_path.exists());
+    assert!(receipt_path.exists());
+    let receipt = read_json_value(&receipt_path);
+    assert_eq!(
+        receipt["configured_clients"].as_array().unwrap(),
+        &vec![
+            serde_json::json!("claude"),
+            serde_json::json!("codex"),
+            serde_json::json!("cursor"),
+        ]
+    );
+    let trust_text = std::fs::read_to_string(&trust_path).unwrap();
+    assert!(trust_text.contains("team-alpha-defaults"));
+    assert!(trust_text.contains("device:team-alpha-signer"));
+
+    let config_abs = config_path.canonicalize().unwrap();
+    std::fs::write(
+        home_dir.join(".claude.json"),
+        serde_json::to_string_pretty(&serde_json::json!({ "mcpServers": {} })).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        home_dir.join(".claude/settings.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "memoryoss": {
+                    "command": "/usr/local/bin/memoryoss",
+                    "args": ["-c", "/tmp/stale-team.toml", "mcp-server"]
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        home_dir.join(".claude/settings.local.json"),
+        serde_json::to_string_pretty(&serde_json::json!({ "hooks": {} })).unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        codex_home.join("config.toml"),
+        "[mcp_servers.memoryoss]\ncommand = \"/usr/local/bin/memoryoss\"\nargs = [\"-c\", \"/tmp/stale-team.toml\", \"mcp-server\"]\n",
+    )
+    .unwrap();
+    std::fs::write(
+        home_dir.join("AGENTS.md"),
+        "# keep-local-opt-in\n\n<!-- MEMORYOSS_POLICY_BEGIN -->\n# stale\n<!-- MEMORYOSS_POLICY_END -->\n",
+    )
+    .unwrap();
+    std::fs::create_dir_all(home_dir.join(".cursor/rules")).unwrap();
+    std::fs::write(
+        home_dir.join(".cursor/mcp.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "mcpServers": {
+                "memoryoss": {
+                    "type": "stdio",
+                    "command": "/usr/local/bin/memoryoss",
+                    "args": ["-c", "/tmp/stale-team.toml", "mcp-server"],
+                    "env": {}
+                }
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    std::fs::write(
+        home_dir.join(".cursor/rules/memoryoss.mdc"),
+        "# stale cursor rule\n",
+    )
+    .unwrap();
+    std::fs::remove_file(&trust_path).unwrap();
+
+    let doctor_fail = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", config_path.to_str().unwrap(), "doctor"])
+        .env("HOME", &home_dir)
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .await
+        .expect("failed to run doctor on drifted team-node");
+    assert!(
+        !doctor_fail.status.success(),
+        "doctor should fail on drifted team-node setup: stdout={} stderr={}",
+        String::from_utf8_lossy(&doctor_fail.stdout),
+        String::from_utf8_lossy(&doctor_fail.stderr)
+    );
+    let doctor_fail_stdout = String::from_utf8_lossy(&doctor_fail.stdout);
+    assert!(
+        doctor_fail_stdout
+            .contains("[error] team trust catalog: missing imported catalog team-alpha-defaults")
+    );
+    assert!(doctor_fail_stdout.contains("[error] claude mcp:"));
+    assert!(doctor_fail_stdout.contains("[error] claude hooks:"));
+    assert!(doctor_fail_stdout.contains("[error] codex mcp:"));
+    assert!(doctor_fail_stdout.contains("[error] codex policy:"));
+    assert!(doctor_fail_stdout.contains("[error] cursor mcp:"));
+    assert!(doctor_fail_stdout.contains("[error] cursor rules:"));
+
+    let doctor_repair = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+            "--repair",
+        ])
+        .env("HOME", &home_dir)
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .await
+        .expect("failed to run repairing doctor");
+    assert!(
+        doctor_repair.status.success(),
+        "doctor --repair should fix team drift: stdout={} stderr={}",
+        String::from_utf8_lossy(&doctor_repair.stdout),
+        String::from_utf8_lossy(&doctor_repair.stderr)
+    );
+    let doctor_repair_stdout = String::from_utf8_lossy(&doctor_repair.stdout);
+    assert!(doctor_repair_stdout.contains("[repair] claude integration refreshed"));
+    assert!(doctor_repair_stdout.contains("[repair] codex integration refreshed"));
+    assert!(doctor_repair_stdout.contains("[repair] cursor integration refreshed"));
+    assert!(
+        doctor_repair_stdout.contains("[repair] team trust catalog refreshed: team-alpha-defaults")
+    );
+    assert!(doctor_repair_stdout.contains("Doctor OK"));
+
+    let claude_user = read_json_value(&home_dir.join(".claude.json"));
+    let claude_args = claude_user["mcpServers"]["memoryoss"]["args"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|value| value.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        claude_args,
+        vec!["-c", config_abs.to_str().unwrap(), "mcp-server"]
+    );
+    let agents_text = std::fs::read_to_string(home_dir.join("AGENTS.md")).unwrap();
+    assert!(agents_text.contains("# keep-local-opt-in"));
+    assert!(agents_text.contains("MEMORYOSS_POLICY_BEGIN"));
+    let cursor_rule_text =
+        std::fs::read_to_string(home_dir.join(".cursor/rules/memoryoss.mdc")).unwrap();
+    assert!(cursor_rule_text.contains("MEMORYOSS_CURSOR_RULE_BEGIN"));
+    let repaired_trust_text = std::fs::read_to_string(&trust_path).unwrap();
+    assert!(repaired_trust_text.contains("team-alpha-defaults"));
+
+    std::fs::remove_dir_all(home_dir.join(".cursor")).unwrap();
+    let doctor_after_cursor_removal = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            config_path.to_str().unwrap(),
+            "doctor",
+            "--repair",
+        ])
+        .env("HOME", &home_dir)
+        .env("CODEX_HOME", &codex_home)
+        .output()
+        .await
+        .expect("failed to run doctor after cursor removal");
+    assert!(
+        doctor_after_cursor_removal.status.success(),
+        "doctor should tolerate removed clients on team-node: stdout={} stderr={}",
+        String::from_utf8_lossy(&doctor_after_cursor_removal.stdout),
+        String::from_utf8_lossy(&doctor_after_cursor_removal.stderr)
+    );
+    let removal_stdout = String::from_utf8_lossy(&doctor_after_cursor_removal.stdout);
+    assert!(removal_stdout.contains("[ok] cursor integration: not detected"));
+    assert!(!home_dir.join(".cursor").exists());
+    let updated_receipt = read_json_value(&receipt_path);
+    assert_eq!(
+        updated_receipt["configured_clients"].as_array().unwrap(),
+        &vec![serde_json::json!("claude"), serde_json::json!("codex")]
+    );
 }
 
 #[tokio::test]
@@ -8893,6 +9233,378 @@ async fn test_trust_fabric_sign_verify_revoke_restore_for_bundle_passport_and_sy
 }
 
 #[tokio::test]
+async fn test_trust_catalog_import_pin_and_revocation_propagation_across_reader() {
+    let source_port = free_port();
+    let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");
+    let source_data_dir = source_tmp.path().join("data");
+    std::fs::create_dir_all(&source_data_dir).unwrap();
+    let source_config_path = source_tmp.path().join("source-trust.toml");
+    std::fs::write(
+        &source_config_path,
+        test_config_http(source_port, source_data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let target_port = free_port();
+    let target_tmp = tempfile::tempdir().expect("failed to create target temp dir");
+    let target_data_dir = target_tmp.path().join("data");
+    std::fs::create_dir_all(&target_data_dir).unwrap();
+    let target_config_path = target_tmp.path().join("target-trust.toml");
+    std::fs::write(
+        &target_config_path,
+        test_config_http(target_port, target_data_dir.to_str().unwrap()),
+    )
+    .unwrap();
+
+    let mut source_child = start_server(source_config_path.to_str().unwrap()).await;
+    let mut target_child = start_server(target_config_path.to_str().unwrap()).await;
+    let client = reqwest::Client::builder().build().unwrap();
+    let source_base = format!("http://127.0.0.1:{source_port}");
+    let target_base = format!("http://127.0.0.1:{target_port}");
+
+    let store = client
+        .post(format!("{source_base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Rollback policy: preserve the last known-good artifact before promotion.",
+            "tags": ["release", "rollback"]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store.status(), 200);
+
+    for identity in [
+        serde_json::json!({
+            "id": "device:source-runtime",
+            "kind": "device",
+            "label": "Source runtime"
+        }),
+        serde_json::json!({
+            "id": "device:backup-runtime",
+            "kind": "device",
+            "label": "Backup runtime"
+        }),
+    ] {
+        let register = client
+            .post(format!("{source_base}/v1/admin/trust/register"))
+            .header("Authorization", "Bearer test-key-integration")
+            .json(&identity)
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(register.status(), 200);
+    }
+
+    let bundle_resp = client
+        .get(format!(
+            "{source_base}/v1/bundles/export?kind=passport&namespace=test&scope=project"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(bundle_resp.status(), 200);
+    let bundle: serde_json::Value = bundle_resp.json().await.unwrap();
+    let source_sign = client
+        .post(format!("{source_base}/v1/admin/trust/sign"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "bundle",
+            "identity": "device:source-runtime",
+            "artifact": bundle
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(source_sign.status(), 200);
+    let source_sign_body: serde_json::Value = source_sign.json().await.unwrap();
+    let bundle = source_sign_body["artifact"].clone();
+    assert_eq!(
+        bundle["signature"]["signer"].as_str(),
+        Some("device:source-runtime")
+    );
+
+    let unknown_validate = client
+        .post(format!("{target_base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": bundle.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(unknown_validate.status(), 200);
+    let unknown_validate_body: serde_json::Value = unknown_validate.json().await.unwrap();
+    assert_eq!(
+        unknown_validate_body["trust"]["status"].as_str(),
+        Some("unknown_identity")
+    );
+    assert_eq!(
+        unknown_validate_body["trust"]["origin"].as_str(),
+        Some("unknown_signer")
+    );
+
+    let catalog_export = client
+        .get(format!(
+            "{source_base}/v1/admin/trust/catalog/export?catalog_id=team-alpha&label=Team%20Alpha"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(catalog_export.status(), 200);
+    let catalog_export_body: serde_json::Value = catalog_export.json().await.unwrap();
+    let catalog = catalog_export_body["catalog"].clone();
+
+    let catalog_import = client
+        .post(format!("{target_base}/v1/admin/trust/catalog/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "catalog": catalog.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(catalog_import.status(), 200);
+    let catalog_import_body: serde_json::Value = catalog_import.json().await.unwrap();
+    assert_eq!(
+        catalog_import_body["import"]["catalog"]["catalog_id"].as_str(),
+        Some("team-alpha")
+    );
+
+    let imported_validate = client
+        .post(format!("{target_base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": bundle.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(imported_validate.status(), 200);
+    let imported_validate_body: serde_json::Value = imported_validate.json().await.unwrap();
+    assert_eq!(
+        imported_validate_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+    assert_eq!(
+        imported_validate_body["trust"]["origin"].as_str(),
+        Some("imported_catalog")
+    );
+    assert_eq!(
+        imported_validate_body["trust"]["catalog_id"].as_str(),
+        Some("team-alpha")
+    );
+
+    let bundle_path = target_tmp.path().join("shared-bundle.json");
+    std::fs::write(&bundle_path, serde_json::to_vec_pretty(&bundle).unwrap()).unwrap();
+    let reader_imported = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            target_config_path.to_str().unwrap(),
+            "reader",
+            "open",
+            bundle_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader open for imported catalog");
+    assert!(
+        reader_imported.status.success(),
+        "reader open failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&reader_imported.stdout),
+        String::from_utf8_lossy(&reader_imported.stderr)
+    );
+    let reader_imported_body: serde_json::Value =
+        serde_json::from_slice(&reader_imported.stdout).unwrap();
+    assert_eq!(
+        reader_imported_body["trust"]["origin"].as_str(),
+        Some("imported_catalog")
+    );
+
+    let pin_resp = client
+        .post(format!("{target_base}/v1/admin/trust/pin"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "id": "device:source-runtime" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(pin_resp.status(), 200);
+
+    let reader_pinned = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args([
+            "--config",
+            target_config_path.to_str().unwrap(),
+            "reader",
+            "open",
+            bundle_path.to_str().unwrap(),
+            "--format",
+            "json",
+        ])
+        .output()
+        .await
+        .expect("failed to run reader open for pinned catalog");
+    assert!(reader_pinned.status.success());
+    let reader_pinned_body: serde_json::Value =
+        serde_json::from_slice(&reader_pinned.stdout).unwrap();
+    assert_eq!(
+        reader_pinned_body["trust"]["origin"].as_str(),
+        Some("local_pin")
+    );
+
+    let revoke_runtime = client
+        .post(format!("{source_base}/v1/admin/trust/revoke"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "id": "device:source-runtime",
+            "reason": "runtime compromise",
+            "replacement_identity": "device:backup-runtime"
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoke_runtime.status(), 200);
+
+    let stale_validate = client
+        .post(format!("{target_base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": bundle.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(stale_validate.status(), 200);
+    let stale_validate_body: serde_json::Value = stale_validate.json().await.unwrap();
+    assert_eq!(
+        stale_validate_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    let revoked_catalog_export = client
+        .get(format!(
+            "{source_base}/v1/admin/trust/catalog/export?catalog_id=team-alpha&label=Team%20Alpha"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked_catalog_export.status(), 200);
+    let revoked_catalog_body: serde_json::Value = revoked_catalog_export.json().await.unwrap();
+    let revoked_import = client
+        .post(format!("{target_base}/v1/admin/trust/catalog/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "catalog": revoked_catalog_body["catalog"].clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked_import.status(), 200);
+
+    let revoked_validate = client
+        .post(format!("{target_base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": bundle.clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(revoked_validate.status(), 200);
+    let revoked_validate_body: serde_json::Value = revoked_validate.json().await.unwrap();
+    assert_eq!(
+        revoked_validate_body["trust"]["status"].as_str(),
+        Some("revoked")
+    );
+    assert_eq!(
+        revoked_validate_body["trust"]["replacement_identity"].as_str(),
+        Some("device:backup-runtime")
+    );
+
+    let backup_sign = client
+        .post(format!("{source_base}/v1/admin/trust/sign"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "bundle",
+            "identity": "device:backup-runtime",
+            "artifact": bundle.clone()
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(backup_sign.status(), 200);
+    let backup_sign_body: serde_json::Value = backup_sign.json().await.unwrap();
+    let backup_bundle = backup_sign_body["artifact"].clone();
+    let backup_validate = client
+        .post(format!("{target_base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": backup_bundle }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(backup_validate.status(), 200);
+    let backup_validate_body: serde_json::Value = backup_validate.json().await.unwrap();
+    assert_eq!(
+        backup_validate_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+    assert_eq!(
+        backup_validate_body["trust"]["origin"].as_str(),
+        Some("imported_catalog")
+    );
+
+    let restore_runtime = client
+        .post(format!("{source_base}/v1/admin/trust/restore"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "id": "device:source-runtime" }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restore_runtime.status(), 200);
+
+    let restored_catalog_export = client
+        .get(format!(
+            "{source_base}/v1/admin/trust/catalog/export?catalog_id=team-alpha&label=Team%20Alpha"
+        ))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restored_catalog_export.status(), 200);
+    let restored_catalog_body: serde_json::Value = restored_catalog_export.json().await.unwrap();
+    let restored_import = client
+        .post(format!("{target_base}/v1/admin/trust/catalog/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "catalog": restored_catalog_body["catalog"].clone() }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restored_import.status(), 200);
+
+    let restored_validate = client
+        .post(format!("{target_base}/v1/bundles/validate"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({ "bundle": bundle }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(restored_validate.status(), 200);
+    let restored_validate_body: serde_json::Value = restored_validate.json().await.unwrap();
+    assert_eq!(
+        restored_validate_body["trust"]["status"].as_str(),
+        Some("trusted")
+    );
+
+    let fabric = client
+        .get(format!("{target_base}/v1/admin/trust/fabric"))
+        .header("Authorization", "Bearer test-key-integration")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(fabric.status(), 200);
+    let fabric_body: serde_json::Value = fabric.json().await.unwrap();
+    assert_eq!(fabric_body["summary"]["catalogs"].as_u64(), Some(1));
+    assert_eq!(fabric_body["summary"]["pins"].as_u64(), Some(1));
+
+    source_child.kill().await.ok();
+    source_child.wait().await.ok();
+    target_child.kill().await.ok();
+    target_child.wait().await.ok();
+}
+
+#[tokio::test]
 async fn test_cli_reader_rejects_malformed_artifacts_and_escapes_html_preview() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     let fixture_path = root.join("conformance/fixtures/passport-bundle.json");
@@ -9336,6 +10048,150 @@ alwaysApply: false
 
     child.kill().await.ok();
     child.wait().await.ok();
+}
+
+#[tokio::test]
+async fn test_cursor_runtime_flow_reaches_codex_proxy_without_artifact_handoff() {
+    let (upstream_port, upstream_state, upstream_handle) = start_dummy_upstream().await;
+
+    let port = free_port();
+    let tmp = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp.path().join("data");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    let auth_entries = r#"
+[[auth.api_keys]]
+key = "test-key-integration"
+role = "admin"
+namespace = "test"
+"#;
+    let extra_sections = format!(
+        r#"
+[proxy]
+enabled = true
+passthrough_auth = false
+upstream_url = "http://127.0.0.1:{upstream_port}/v1"
+upstream_api_key = "upstream-openai-key"
+default_memory_mode = "full"
+extraction_enabled = false
+
+[[proxy.key_mapping]]
+proxy_key = "test-key-proxy"
+namespace = "test"
+"#
+    );
+    let config = test_config_with_sections(
+        port,
+        data_dir.to_str().unwrap(),
+        auth_entries,
+        &extra_sections,
+    );
+    let config_path = tmp.path().join("cursor-runtime-proxy.toml");
+    std::fs::write(&config_path, config).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let client = test_client();
+    let base = format!("https://127.0.0.1:{port}");
+    let cursor_rules = r#"---
+description: Review rules
+alwaysApply: true
+---
+
+- Never merge auth changes without security review
+- Prefer rg over grep when tracing auth or session flows
+"#;
+
+    let import = client
+        .post(format!("{base}/v1/adapters/import"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "kind": "cursor_rules",
+            "source_label": ".cursor/rules/auth-review.mdc",
+            "content": cursor_rules
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(import.status(), 200);
+    let import_body: serde_json::Value = import.json().await.unwrap();
+    assert_eq!(import_body["imported"].as_u64(), Some(2));
+
+    let query = "What review rules should I follow before merge?";
+    let explain = client
+        .post(format!("{base}/v1/admin/query-explain"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "query": query
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(explain.status(), 200);
+    let explain_body: serde_json::Value = explain.json().await.unwrap();
+    assert_eq!(
+        explain_body["retrieval_gate"]["decision"].as_str(),
+        Some("inject")
+    );
+    assert!(
+        explain_body["final_results"]
+            .as_array()
+            .map(|items| {
+                items.iter().any(|item| {
+                    item["memory"]["content"]
+                        .as_str()
+                        .unwrap_or("")
+                        .contains("Never merge auth changes without security review")
+                })
+            })
+            .unwrap_or(false),
+        "cursor-derived review rules should be immediately recallable"
+    );
+
+    let proxy_resp = client
+        .post(format!("{base}/proxy/v1/chat/completions"))
+        .header("Authorization", "Bearer test-key-proxy")
+        .json(&serde_json::json!({
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": query}]
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(proxy_resp.status(), 200);
+    assert_eq!(
+        proxy_resp
+            .headers()
+            .get("x-memory-gate-decision")
+            .and_then(|v| v.to_str().ok()),
+        Some("inject")
+    );
+    assert!(
+        proxy_resp
+            .headers()
+            .get("x-memory-injected-count")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0)
+            >= 1
+    );
+
+    let requests = upstream_state.requests.lock().unwrap().clone();
+    let upstream_req = requests
+        .iter()
+        .find(|req| {
+            req["path"].as_str() == Some("/v1/chat/completions")
+                && req["body"]["messages"][0]["role"].as_str() == Some("system")
+        })
+        .expect("missing upstream chat request with injected system prompt");
+    let system_content = upstream_req["body"]["messages"][0]["content"]
+        .as_str()
+        .expect("system content missing");
+    assert!(
+        system_content.contains("Never merge auth changes without security review"),
+        "cursor-origin memory should reach Codex/OpenAI proxy injection without an intermediate artifact export"
+    );
+
+    child.kill().await.ok();
+    upstream_handle.abort();
 }
 
 #[tokio::test]
