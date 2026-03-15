@@ -581,6 +581,8 @@ Likely scope:
 - trusted bundle and signer discovery beyond one local machine
 - zero-friction team onboarding and rollout paths
 - public proof and adoption surfaces that show why memoryOSS should stay installed
+- native package channels and directory-ready MCP packaging instead of archive-first distribution only
+- neutral governance for the runtime contract, bundle format, signer registry, and third-party interop
 
 ## Kill-Switch Rules
 
@@ -745,7 +747,7 @@ Candidate tasks:
 - release channels and installer surfaces that match the supported client matrix
 - shared signer and trust-root discovery beyond a single local machine
 - team rollout and onboarding paths that do not require operator handholding
-- public website and proof surfaces that keep repo, docs, and live install story in lockstep
+- public docs and proof surfaces that keep repo and install story in lockstep
 
 ## First Build Step
 
@@ -757,7 +759,9 @@ Immediate follow-on after that:
 
 - first-class distribution channels and client onboarding
 - trust-root and signer discovery across machines and teams
-- live website and release-surface synchronization as release discipline
+- release-artifact synchronization as release discipline
+- native package and installer channels that match the supported client matrix
+- neutral runtime governance and ecosystem registry policy
 
 Reason:
 

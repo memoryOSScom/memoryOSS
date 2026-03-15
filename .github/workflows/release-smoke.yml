@@ -133,6 +133,20 @@ jobs:
             --channel smoke `
             --output-json dist/update-plane-smoke-report.json
 
+      - name: Run setup profile smoke (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          python tests/run_setup_profile_smoke.py \
+            --binary "${{ steps.extract_unix.outputs.binary_path }}"
+
+      - name: Run setup profile smoke (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          python tests/run_setup_profile_smoke.py `
+            --binary "${{ steps.extract_windows.outputs.binary_path }}"
+
       - name: Upload update plane smoke report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

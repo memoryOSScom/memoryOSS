@@ -7,7 +7,6 @@ cd "$ROOT_DIR"
 REPORT_DIR="${RUN_ALL_REPORT_DIR:-$ROOT_DIR/tests/.last-run}"
 REPORT_JSON="${RUN_ALL_REPORT_JSON:-$ROOT_DIR/tests/report.json}"
 REPORT_MD="${RUN_ALL_REPORT_MD:-$ROOT_DIR/tests/report.md}"
-WEBSITE_REPORT_JSON="${RUN_ALL_WEBSITE_REPORT_JSON:-$ROOT_DIR/website/tests-report.json}"
 WIZARD_MATRIX_JSON="${RUN_ALL_WIZARD_MATRIX_JSON:-$ROOT_DIR/tests/wizard-matrix.json}"
 BENCHMARK_JSON="${RUN_ALL_BENCHMARK_JSON:-$ROOT_DIR/tests/benchmark-report.json}"
 CALIBRATION_JSON="${RUN_ALL_CALIBRATION_JSON:-$ROOT_DIR/tests/calibration-report.json}"
@@ -17,6 +16,7 @@ LONG_MEMORY_JSON="${RUN_ALL_LONG_MEMORY_JSON:-$ROOT_DIR/tests/long-memory-regres
 TOKEN_SAVINGS_JSON="${RUN_ALL_TOKEN_SAVINGS_JSON:-$ROOT_DIR/tests/token-savings-report.json}"
 UNIVERSAL_LOOP_JSON="${RUN_ALL_UNIVERSAL_LOOP_JSON:-$ROOT_DIR/tests/universal-memory-loop-report.json}"
 UPDATE_PLANE_JSON="${RUN_ALL_UPDATE_PLANE_JSON:-$ROOT_DIR/tests/update-plane-report.json}"
+CONFORMANCE_JSON="${RUN_ALL_CONFORMANCE_JSON:-$REPORT_DIR/conformance-report.json}"
 mkdir -p "$REPORT_DIR"
 
 # Generate report even on early failure (Codex Befund 4)
@@ -28,7 +28,6 @@ generate_report() {
     --steps "$REPORT_DIR/steps.tsv" \
     --output-json "$REPORT_JSON" \
     --output-md "$REPORT_MD" \
-    --website-json "$WEBSITE_REPORT_JSON" \
     --wizard-json "$WIZARD_MATRIX_JSON" \
     --benchmark-json "$BENCHMARK_JSON" \
     --calibration-json "$CALIBRATION_JSON" \
@@ -266,14 +265,14 @@ run_step "cargo test" cargo_test cargo test
 run_step "cargo build" cargo_build cargo build
 run_step "setup wizard smoke test" wizard_smoke wizard_smoke_test
 run_step "setup wizard matrix" wizard_matrix env WIZARD_MATRIX_OUTPUT_JSON="$WIZARD_MATRIX_JSON" bash "$ROOT_DIR/tests/run_wizard_matrix.sh"
-run_step "20k benchmark" benchmark env BENCHMARK_OUTPUT_JSON="$BENCHMARK_JSON" bash "$ROOT_DIR/tests/run_benchmarks.sh"
+run_step "20k benchmark + open comparison lane" benchmark env BENCHMARK_OUTPUT_JSON="$BENCHMARK_JSON" bash "$ROOT_DIR/tests/run_benchmarks.sh"
 run_step "scoring calibration" calibration env CALIBRATION_OUTPUT_JSON="$CALIBRATION_JSON" bash "$ROOT_DIR/tests/run_calibration.sh"
 run_step "extraction quality evaluation" extraction_eval run_extraction_eval_step
 run_step "coverage gaps" coverage_gaps env COVERAGE_GAPS_OUTPUT_JSON="$COVERAGE_GAPS_JSON" bash "$ROOT_DIR/tests/run_coverage_gaps.sh"
 run_step "report artifact regression" report_artifact_regression python3 "$ROOT_DIR/tests/run_report_regression.py"
 run_step "zero-friction update plane" update_plane env UPDATE_PLANE_OUTPUT_JSON="$UPDATE_PLANE_JSON" python3 "$ROOT_DIR/tests/run_update_plane_smoke.py"
 run_step "TypeScript SDK build/test" typescript_sdk typescript_sdk_checks
-run_step "runtime conformance kit" conformance_kit env CONFORMANCE_OUTPUT_JSON="$ROOT_DIR/tests/conformance-report.json" python3 "$ROOT_DIR/tests/run_conformance_kit.py"
+run_step "runtime conformance kit" conformance_kit env CONFORMANCE_OUTPUT_JSON="$CONFORMANCE_JSON" python3 "$ROOT_DIR/tests/run_conformance_kit.py"
 run_step "compatibility and LTS" compatibility_lts cargo test --test integration lts_compatibility -- --nocapture
 run_step "everyday utility loop" universal_memory_loop env UNIVERSAL_LOOP_OUTPUT_JSON="$UNIVERSAL_LOOP_JSON" python3 "$ROOT_DIR/tests/run_universal_memory_loop.py"
 run_step "cargo audit (offline if available)" cargo_audit dependency_audit
@@ -285,7 +284,6 @@ python3 "$ROOT_DIR/tests/generate_report.py" \
   --steps "$REPORT_DIR/steps.tsv" \
   --output-json "$REPORT_JSON" \
   --output-md "$REPORT_MD" \
-  --website-json "$WEBSITE_REPORT_JSON" \
   --wizard-json "$WIZARD_MATRIX_JSON" \
   --benchmark-json "$BENCHMARK_JSON" \
   --calibration-json "$CALIBRATION_JSON" \

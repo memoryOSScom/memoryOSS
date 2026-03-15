@@ -587,6 +587,34 @@ def build_sections(
                     "items": items,
                 }
             )
+        external_validation = current_benchmark_report.get("external_validation_eval")
+        if external_validation:
+            fixture = external_validation.get("fixture", {})
+            items = [
+                item(
+                    "Open comparison fixture",
+                    "pass",
+                    (
+                        f"{fixture.get('dataset_size', 0)} public cases in namespace "
+                        f"{fixture.get('namespace', 'external_eval')}"
+                        f"{artifact_suffix(current_benchmark_report, benchmark_step)}"
+                    ),
+                )
+            ]
+            items.extend(external_validation.get("items", []))
+            items.extend(
+                retrieval_injection_lane_items(
+                    "Open lane",
+                    external_validation.get("summary", {}),
+                )
+            )
+            sections.append(
+                {
+                    "title": "Open Comparison Validation Lane",
+                    "count": len(items),
+                    "items": items,
+                }
+            )
     elif benchmark_step:
         sections.append(artifact_fallback_section("20k Scaling Benchmark", benchmark_step, benchmark_report))
 
@@ -1104,7 +1132,6 @@ def main():
     parser.add_argument("--steps", required=True)
     parser.add_argument("--output-json", required=True)
     parser.add_argument("--output-md", required=True)
-    parser.add_argument("--website-json", required=True)
     parser.add_argument("--wizard-json")
     parser.add_argument("--benchmark-json")
     parser.add_argument("--calibration-json")
@@ -1144,10 +1171,6 @@ def main():
     output_json = Path(args.output_json)
     output_json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
     write_markdown(report, Path(args.output_md))
-
-    website_json = Path(args.website_json)
-    website_json.parent.mkdir(parents=True, exist_ok=True)
-    website_json.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
 
 
 if __name__ == "__main__":

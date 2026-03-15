@@ -664,8 +664,8 @@ stateDiagram-v2
 
 This was the main missing connection found during the state-machine audit:
 - `run_all.sh` already executed `update_plane` and `compatibility_lts`
-- but the generated report/website path did not surface either one as report sections or summary metrics
-- that link is now wired through `tests/generate_report.py` into `website/tests-report.json`
+- but the generated report path did not surface either one as report sections or summary metrics
+- that link is now wired through `tests/generate_report.py` into the generated report artifacts
 
 ```mermaid
 stateDiagram-v2
@@ -686,13 +686,10 @@ stateDiagram-v2
     CoverageArtifact --> GenerateReport
 
     GenerateReport --> ReportJson: tests/report.json
-    GenerateReport --> WebsiteJson: website/tests-report.json
     GenerateReport --> MarkdownReport: tests/report.md
 
-    ReportJson --> WebsiteCards
-    WebsiteJson --> WebsiteSummary
-    WebsiteSummary --> VisibleUpdatePlaneSection
-    WebsiteSummary --> VisibleCompatibilityLtsSection
+    ReportJson --> VisibleUpdatePlaneSection
+    ReportJson --> VisibleCompatibilityLtsSection
 
     VisibleUpdatePlaneSection --> [*]
     VisibleCompatibilityLtsSection --> [*]
@@ -703,6 +700,6 @@ stateDiagram-v2
 State-machine audit result on the current codebase:
 
 - No confirmed dead runtime path was found in the governed memory, portability, trust, or release/update planes.
-- One real missing connection existed in the reporting plane: `update_plane` and `compatibility_lts` were executed but not surfaced into generated report sections or website summary metrics.
+- One real missing connection existed in the reporting plane: `update_plane` and `compatibility_lts` were executed but not surfaced into generated report sections or summary metrics.
 - The report summary status is now also driven by real step failures instead of staying implicitly green when the runner exits through the failure trap.
-- Those missing report-plane connections are now fixed in `tests/run_all.sh`, `tests/generate_report.py`, and `website/tests.js`.
+- Those missing report-plane connections are now fixed in `tests/run_all.sh` and `tests/generate_report.py`.

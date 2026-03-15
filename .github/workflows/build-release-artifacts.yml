@@ -111,3 +111,18 @@ jobs:
             ${{ matrix.archive_name }}
             ${{ matrix.sha_name }}
           retention-days: ${{ inputs.artifact_retention_days }}
+
+  mcp-package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Build MCP metadata package
+        run: python3 scripts/build_mcp_package.py --output-dir mcp-package
+
+      - name: Upload MCP metadata package
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: memoryoss-mcp-package
+          path: mcp-package/memoryoss-mcp-*.json
+          retention-days: ${{ inputs.artifact_retention_days }}

@@ -28,6 +28,7 @@ jobs:
       - run: cargo fmt --check
       - run: cargo clippy -- -D warnings
       - run: cargo test
+      - run: python3 tests/run_mcp_packaging_regression.py
 
   typescript-sdk:
     name: TypeScript SDK
@@ -50,7 +51,6 @@ jobs:
     env:
       BENCHMARK_MEMORY_COUNT: "1000"
       CALIBRATION_QUERY_COUNT: "1000"
-      RUN_ALL_WEBSITE_REPORT_JSON: tests/.last-run/website-tests-report.json
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: dtolnay/rust-toolchain@efa25f7f19611383d5b0ccf2d1c8914531636bf9
