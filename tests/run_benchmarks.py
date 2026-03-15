@@ -81,6 +81,12 @@ PROBE_ADMIN_KEY = "probe-admin-key"
 PROBE_PROXY_KEY = "probe-proxy-key"
 EXTERNAL_VALIDATION_ADMIN_KEY = "external-admin-key"
 EXTERNAL_VALIDATION_PROXY_KEY = "external-proxy-key"
+EXTERNAL_VALIDATION_STABILIZE_TIMEOUT_S = float(
+    os.environ.get("BENCHMARK_EXTERNAL_VALIDATION_STABILIZE_TIMEOUT_S", "20.0")
+)
+EXTERNAL_VALIDATION_STABILIZE_INTERVAL_S = float(
+    os.environ.get("BENCHMARK_EXTERNAL_VALIDATION_STABILIZE_INTERVAL_S", "1.0")
+)
 
 MULTILINGUAL_CALIBRATION_CASES = [
     {
@@ -934,67 +940,84 @@ def run_external_validation_lane(
     fixture = load_external_validation_fixture()
     store_memories(base_url, auth_header, fixture["memories"])
     wait_for_indexer_sync(base_url, auth_header, timeout=120.0)
-    lane = run_retrieval_injection_lane(
-        base_url,
-        auth_header,
-        proxy_key,
-        upstream_server,
-        lane_name=fixture["lane_id"],
-        fixture_cases=fixture["cases"],
-        namespace=fixture["namespace"],
-    )
+    deadline = time.time() + EXTERNAL_VALIDATION_STABILIZE_TIMEOUT_S
+    attempt = 0
+    result = None
+    while True:
+        attempt += 1
+        upstream_server.captured_requests.clear()
+        lane = run_retrieval_injection_lane(
+            base_url,
+            auth_header,
+            proxy_key,
+            upstream_server,
+            lane_name=fixture["lane_id"],
+            fixture_cases=fixture["cases"],
+            namespace=fixture["namespace"],
+        )
 
-    summary = lane["summary"]
-    thresholds = fixture["thresholds"]
-    checks = [
-        (
-            "positive injection hit rate",
-            summary["positive_injection_hit_rate"] >= thresholds["positive_injection_hit_rate_min"],
-            f"{summary['positive_injection_hit_rate']:.4f} >= {thresholds['positive_injection_hit_rate_min']:.4f}",
-        ),
-        (
-            "wrong injection rate",
-            summary["wrong_injection_rate"] <= thresholds["wrong_injection_rate_max"],
-            f"{summary['wrong_injection_rate']:.4f} <= {thresholds['wrong_injection_rate_max']:.4f}",
-        ),
-        (
-            "abstain precision",
-            summary["abstain_precision"] >= thresholds["abstain_precision_min"],
-            f"{summary['abstain_precision']:.4f} >= {thresholds['abstain_precision_min']:.4f}",
-        ),
-        (
-            "abstain recall",
-            summary["abstain_recall"] >= thresholds["abstain_recall_min"],
-            f"{summary['abstain_recall']:.4f} >= {thresholds['abstain_recall_min']:.4f}",
-        ),
-        (
-            "proxy latency p95",
-            summary["proxy_latency_ms_p95"] <= thresholds["proxy_latency_ms_p95_max"],
-            f"{summary['proxy_latency_ms_p95']:.2f} ms <= {thresholds['proxy_latency_ms_p95_max']:.2f} ms",
-        ),
-    ]
-    failures = [name for name, passed, _ in checks if not passed]
-    return {
-        "fixture": {
-            "lane_id": fixture["lane_id"],
-            "label": fixture["label"],
-            "description": fixture["description"],
-            "namespace": fixture["namespace"],
-            "dataset_size": len(fixture["cases"]),
-        },
-        "thresholds": thresholds,
-        "summary": summary,
-        "cases": lane["cases"],
-        "items": [
-            {
-                "name": f"Open lane threshold: {name}",
-                "status": "pass" if passed else "fail",
-                "note": note,
-            }
-            for name, passed, note in checks
-        ],
-        "failed_thresholds": failures,
-    }
+        summary = lane["summary"]
+        thresholds = fixture["thresholds"]
+        checks = [
+            (
+                "positive injection hit rate",
+                summary["positive_injection_hit_rate"]
+                >= thresholds["positive_injection_hit_rate_min"],
+                f"{summary['positive_injection_hit_rate']:.4f} >= {thresholds['positive_injection_hit_rate_min']:.4f}",
+            ),
+            (
+                "wrong injection rate",
+                summary["wrong_injection_rate"] <= thresholds["wrong_injection_rate_max"],
+                f"{summary['wrong_injection_rate']:.4f} <= {thresholds['wrong_injection_rate_max']:.4f}",
+            ),
+            (
+                "abstain precision",
+                summary["abstain_precision"] >= thresholds["abstain_precision_min"],
+                f"{summary['abstain_precision']:.4f} >= {thresholds['abstain_precision_min']:.4f}",
+            ),
+            (
+                "abstain recall",
+                summary["abstain_recall"] >= thresholds["abstain_recall_min"],
+                f"{summary['abstain_recall']:.4f} >= {thresholds['abstain_recall_min']:.4f}",
+            ),
+            (
+                "proxy latency p95",
+                summary["proxy_latency_ms_p95"] <= thresholds["proxy_latency_ms_p95_max"],
+                f"{summary['proxy_latency_ms_p95']:.2f} ms <= {thresholds['proxy_latency_ms_p95_max']:.2f} ms",
+            ),
+        ]
+        failures = [name for name, passed, _ in checks if not passed]
+        result = {
+            "fixture": {
+                "lane_id": fixture["lane_id"],
+                "label": fixture["label"],
+                "description": fixture["description"],
+                "namespace": fixture["namespace"],
+                "dataset_size": len(fixture["cases"]),
+            },
+            "thresholds": thresholds,
+            "summary": summary,
+            "cases": lane["cases"],
+            "items": [
+                {
+                    "name": f"Open lane threshold: {name}",
+                    "status": "pass" if passed else "fail",
+                    "note": note,
+                }
+                for name, passed, note in checks
+            ],
+            "failed_thresholds": failures,
+            "stabilization_attempts": attempt,
+        }
+        if not failures or time.time() >= deadline:
+            return result
+        print(
+            "[benchmark] open lane not stable yet; retrying after index sync "
+            f"(attempt {attempt}, failed={', '.join(failures)})",
+            flush=True,
+        )
+        wait_for_indexer_sync(base_url, auth_header, timeout=30.0)
+        time.sleep(EXTERNAL_VALIDATION_STABILIZE_INTERVAL_S)
 
 
 def run_multilingual_calibration_lane(
