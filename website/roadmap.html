@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>memoryOSS Roadmap</title>
+<meta name="description" content="Public roadmap for memoryOSS. What is shipped, what comes next after P12, and which bets stay deliberately later.">
+<link rel="icon" type="image/png" href="favicon-32.png?v=3" sizes="32x32">
+<link rel="icon" href="favicon.ico?v=3" sizes="any">
+<link rel="apple-touch-icon" href="apple-touch-icon.png?v=3">
+<style>
+@font-face {
+  font-family: 'Inter';
+  font-style: normal;
+  font-weight: 400 800;
+  font-display: swap;
+  src: url(fonts/inter-latin.woff2) format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: url(fonts/jetbrains-mono-latin.woff2) format('woff2');
+}
+:root {
+  --white: #fff; --gray-50: #fafafa; --gray-100: #f5f5f7; --gray-200: #e8e8ed;
+  --gray-300: #d2d2d7; --gray-500: #86868b; --gray-600: #6e6e73; --gray-700: #48484a; --gray-900: #1d1d1f;
+  --blue: #0071e3; --green: #30d158; --orange: #ff9f0a; --r-full: 980px; --r-md: 14px; --max-w: 920px;
+}
+*, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: 'Inter', -apple-system, system-ui, sans-serif; background: var(--white); color: var(--gray-900); line-height: 1.6; -webkit-font-smoothing: antialiased; }
+a { text-decoration: none; color: var(--blue); }
+a:hover { text-decoration: underline; }
+.w { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; }
+nav { position: fixed; top: 0; left: 0; right: 0; z-index: 100; height: 44px; background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); border-bottom: 0.5px solid var(--gray-200); }
+.nav-inner { max-width: var(--max-w); margin: 0 auto; padding: 0 24px; height: 100%; display: flex; align-items: center; justify-content: space-between; }
+.nav-wm { font-size: 15px; font-weight: 700; color: var(--gray-900); display: flex; align-items: center; gap: 6px; }
+.nav-beta { font-size: 10px; font-weight: 600; color: var(--blue); background: rgba(0,113,227,0.08); padding: 2px 7px; border-radius: var(--r-full); letter-spacing: 0.04em; }
+.nav-links { display: flex; gap: 20px; align-items: center; }
+.nav-links a { font-size: 12px; color: var(--gray-500); }
+.nav-links a:hover { color: var(--gray-900); text-decoration: none; }
+.nav-cta { background: var(--blue); color: #fff !important; padding: 4px 12px; border-radius: var(--r-full); font-weight: 500; }
+.hero { padding: 84px 0 32px; border-bottom: 1px solid var(--gray-200); }
+.over { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--blue); margin-bottom: 8px; }
+.hero h1 { font-size: clamp(28px, 5vw, 40px); font-weight: 800; letter-spacing: -0.03em; line-height: 1.1; margin-bottom: 14px; }
+.hero p { font-size: 16px; color: var(--gray-600); max-width: 720px; }
+.proofline { margin-top: 12px; font-size: 12px !important; font-weight: 600; letter-spacing: 0.01em; color: var(--gray-500) !important; }
+.section { padding: 36px 0; }
+.intro { max-width: 780px; }
+.intro p { font-size: 15px; color: var(--gray-700); margin-bottom: 12px; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+.col { border: 1px solid var(--gray-200); border-radius: var(--r-md); padding: 20px; background: var(--white); }
+.col h2 { font-size: 18px; font-weight: 700; margin-bottom: 10px; }
+.pill { display: inline-block; font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: var(--r-full); margin-bottom: 12px; letter-spacing: 0.05em; text-transform: uppercase; }
+.pill-now { background: rgba(48,209,88,0.12); color: #1f7a35; }
+.pill-next { background: rgba(0,113,227,0.08); color: var(--blue); }
+.pill-later { background: rgba(255,159,10,0.12); color: #a45b00; }
+.col ul { list-style: none; padding: 0; margin: 0; }
+.col li { font-size: 14px; color: var(--gray-700); padding: 10px 0; border-top: 1px solid var(--gray-100); }
+.col li:first-child { border-top: none; }
+.col li b { color: var(--gray-900); }
+.note { margin-top: 22px; padding: 18px 20px; border-radius: var(--r-md); border: 1px solid var(--gray-200); background: var(--gray-50); }
+.note h3 { font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+.note p, .note li { font-size: 14px; color: var(--gray-700); }
+.note ul { margin: 8px 0 0 18px; }
+footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width: 920px; margin: 0 auto; display: flex; justify-content: space-between; align-items: center; font-size: 11px; color: var(--gray-500); }
+.foot-links { display: flex; gap: 14px; flex-wrap: wrap; }
+.foot-links a { color: var(--gray-500); }
+.foot-links a:hover { color: var(--gray-900); text-decoration: none; }
+.trademark { max-width: 920px; margin: 0 auto; padding: 0 24px 12px; font-size: 10px; color: #aeaeb2; text-align: center; }
+@media (max-width: 768px) {
+  .nav-links a:not(.nav-cta) { display: none; }
+  .grid { grid-template-columns: 1fr; }
+  footer { flex-direction: column; gap: 8px; text-align: center; }
+}
+</style>
+</head>
+<body>
+
+<nav><div class="nav-inner">
+  <a href="/" class="nav-wm">memoryOSS <span class="nav-beta">beta</span></a>
+  <div class="nav-links">
+    <a href="/#why">Why</a>
+    <a href="/#how">Setup</a>
+    <a href="/#arch">Architecture</a>
+    <a href="https://github.com/memoryOSScom/memoryOSS" class="nav-cta">GitHub</a>
+  </div>
+</div></nav>
+
+<div class="hero"><div class="w">
+  <div class="over">Roadmap</div>
+  <h1>The runtime core is shipped. The next block is default-install utility.</h1>
+  <p>memoryOSS has finished the `P10` to `P12` runtime build: operator control, adaptive recall, portability, reader, trust fabric, update plane, compatibility discipline, and public utility proof are all in the product now.</p>
+  <p class="proofline">Public beta • P10/P11/P12 complete • 20k retention benchmark • 3 everyday utility loops • signed rollback smoke • Claude/Codex compatibility matrix</p>
+</div></div>
+
+<div class="section"><div class="w intro">
+  <p>This page is intentionally short. It is not a release contract. It is the public answer to one question: what is already real, what is next, and what is deliberately not the current bottleneck.</p>
+  <p>The biggest remaining challenge is no longer inventing another memory primitive. It is making the finished runtime the obvious default install across supported clients, machines, and teams.</p>
+</div></div>
+
+<div class="section"><div class="w">
+  <div class="grid">
+    <div class="col">
+      <span class="pill pill-now">Now — shipped</span>
+      <h2>What is already real</h2>
+      <ul>
+        <li><b>Portable runtime contract</b> with conformance fixtures, reader, dry-run import, replay preview, and artifact validation.</li>
+        <li><b>Utility-grade controls</b> with HUD, review queue, policy firewall, trust and revocation, rollback, and compatibility/LTS checks.</li>
+        <li><b>Public proof loops</b> for retention, long-memory regression, extraction quality, token-efficiency, update rollback, and everyday utility.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <span class="pill pill-next">Next — post-P12</span>
+      <h2>What comes next</h2>
+      <ul>
+        <li><b>Distribution channels</b> that make the supported Claude, Codex, Cursor, and local-team install paths boring and first-class.</li>
+        <li><b>Ecosystem default surfaces</b> for signer discovery, trust roots, bundle discovery, and zero-friction onboarding across machines.</li>
+        <li><b>Live proof alignment</b> so website, release artifacts, docs, and onboarding story stay synchronized instead of drifting between deploys.</li>
+      </ul>
+    </div>
+    <div class="col">
+      <span class="pill pill-later">Later — only with signal</span>
+      <h2>What stays later</h2>
+      <ul>
+        <li><b>Deeper research lanes</b> like recursive recall, richer primitive algebra, and coprocessor expansion stay secondary unless they improve real utility.</li>
+        <li><b>Broader ambient capture</b> only grows further if governance, review, and noise control stay boring under real use.</li>
+        <li><b>Hosted/cloud expansion</b> remains downstream of proving the local-first product should be installed everywhere first.</li>
+      </ul>
+    </div>
+  </div>
+
+  <div class="note">
+    <h3>What changed</h3>
+    <p>The old public roadmap was stale. It still described `P12` as unfinished even though the shipped build now includes team governance, universal reader, trust fabric, rollback/update plane, compatibility/LTS, and the public everyday-utility loop.</p>
+    <ul>
+      <li>The roadmap now treats `P10` through `P12` as complete.</li>
+      <li>The next real block is distribution and ecosystem-default adoption, not another cleanup task hidden inside `P12`.</li>
+      <li>The public benchmark page remains the authoritative proof surface for what the current build actually does.</li>
+    </ul>
+  </div>
+</div></div>
+
+<footer>
+  <span>memoryOSS &mdash; AGPL-3.0</span>
+  <div class="foot-links">
+    <a href="https://x.com/memoryOSS" aria-label="X / Twitter"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" style="vertical-align:-2px"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg></a>
+    <a href="https://github.com/memoryOSScom/memoryOSS">GitHub</a>
+    <a href="tests.html">Tests</a>
+    <a href="roadmap.html">Roadmap</a>
+    <a href="whitepaper.html">Whitepaper</a>
+    <a href="impressum.html">Legal Notice</a>
+    <a href="datenschutz.html">Privacy Policy</a>
+  </div>
+</footer>
+<div class="trademark">Claude is a trademark of Anthropic. Codex and GPT are trademarks of OpenAI. All other trademarks belong to their respective owners. memoryOSS is not affiliated with or endorsed by any of them.</div>
+
+</body>
+</html>

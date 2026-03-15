@@ -277,7 +277,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
     <div class="step">
       <div class="step-n">3</div>
       <h3>Use</h3>
-      <p>Start Claude or Codex as usual. Memory works automatically.</p>
+      <p>Start Claude or Codex as usual. Setup writes MCP, Claude guard hooks, and the Codex policy fallback.</p>
       <code>claude<br>codex<br>cursor</code>
     </div>
   </div>
@@ -286,7 +286,7 @@ footer { padding: 16px 24px; border-top: 0.5px solid var(--gray-200); max-width:
     <a href="https://github.com/memoryOSScom/memoryOSS/releases/latest" class="btn btn-p">Latest Release</a>
     <a href="https://github.com/memoryOSScom/memoryOSS#from-source" class="btn btn-g">From Source</a>
   </div>
-  <p style="margin:16px auto 0;max-width:620px;text-align:center;font-size:12px;color:#6e6e73">From source if you prefer: <code>cargo install --git https://github.com/memoryOSScom/memoryOSS.git</code></p>
+  <p style="margin:16px auto 0;max-width:620px;text-align:center;font-size:12px;color:#6e6e73">From source if you prefer building locally: <code>cargo install --git https://github.com/memoryOSScom/memoryOSS.git</code></p>
   <p style="margin:16px auto 0;max-width:620px;text-align:center;font-size:12px;color:#6e6e73">If your auth setup changes later — for example from OAuth to API key or back — run <code>memoryoss setup</code> again so the integration path can be updated safely.</p>
   <p style="margin:16px auto 0;max-width:620px;text-align:center;font-size:12px;color:#6e6e73">Manual proxy mode (optional) — use explicit <code>BASE_URL</code> exports if you want to point API-key clients at the proxy yourself. Codex OAuth stays MCP-first.</p>
   <div class="terminal">
