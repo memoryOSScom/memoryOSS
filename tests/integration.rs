@@ -8106,6 +8106,88 @@ async fn test_team_node_bootstrap_and_doctor_repair_handle_drift_and_removed_cli
 }
 
 #[tokio::test]
+async fn test_doctor_flags_embedding_model_drift_before_serve() {
+    let port = free_port();
+    let tmp_dir = tempfile::tempdir().expect("failed to create temp dir");
+    let data_dir = tmp_dir.path().join("data");
+    let home_dir = tmp_dir.path().join("home");
+    std::fs::create_dir_all(&data_dir).unwrap();
+    std::fs::create_dir_all(&home_dir).unwrap();
+
+    let config_path = tmp_dir.path().join("doctor-embedding-drift.toml");
+    std::fs::write(&config_path, test_config(port, data_dir.to_str().unwrap())).unwrap();
+
+    let mut child = start_server(config_path.to_str().unwrap()).await;
+    let base = format!("https://127.0.0.1:{port}");
+    let client = test_client();
+    let store_resp = client
+        .post(format!("{base}/v1/store"))
+        .header("Authorization", "Bearer test-key-integration")
+        .json(&serde_json::json!({
+            "content": "Embedding drift probe: rollback evidence belongs in the release review packet."
+        }))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(store_resp.status(), 200, "store failed for drift probe");
+    tokio::time::sleep(Duration::from_millis(300)).await;
+
+    child.kill().await.ok();
+    child.wait().await.ok();
+
+    let doctor_before_drift = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", config_path.to_str().unwrap(), "doctor"])
+        .env("HOME", &home_dir)
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("CODEX_HOME")
+        .output()
+        .await
+        .expect("failed to run doctor before embedding drift");
+    let doctor_before_stdout = String::from_utf8_lossy(&doctor_before_drift.stdout);
+    assert!(
+        doctor_before_stdout.contains(
+            "[ok] vector index: 1 embedded memory/memories will be rebuilt from redb on startup"
+        ),
+        "doctor output missing startup-derived vector note: {doctor_before_stdout}"
+    );
+    assert!(
+        !doctor_before_stdout.contains("[error] vector: missing on-disk vector index"),
+        "doctor should not fail on startup-derived vector state: {doctor_before_stdout}"
+    );
+
+    let mut drifted_config = test_config(port, data_dir.to_str().unwrap());
+    drifted_config.push_str("\n[embeddings]\nmodel = \"bge-base-en-v1.5\"\n");
+    std::fs::write(&config_path, drifted_config).unwrap();
+
+    let doctor = tokio::process::Command::new(env!("CARGO_BIN_EXE_memoryoss"))
+        .args(["--config", config_path.to_str().unwrap(), "doctor"])
+        .env("HOME", &home_dir)
+        .env("PATH", "/usr/bin:/bin")
+        .env_remove("CODEX_HOME")
+        .output()
+        .await
+        .expect("failed to run doctor after embedding drift");
+    assert!(
+        !doctor.status.success(),
+        "doctor should fail on embedding drift: stdout={} stderr={}",
+        String::from_utf8_lossy(&doctor.stdout),
+        String::from_utf8_lossy(&doctor.stderr)
+    );
+    let doctor_stdout = String::from_utf8_lossy(&doctor.stdout);
+    assert!(
+        doctor_stdout.contains(
+            "[error] embeddings: 1 stored embedding(s) do not match configured dimension 768"
+        ),
+        "doctor output missing embedding drift error: {doctor_stdout}"
+    );
+    assert!(
+        doctor_stdout.contains("memoryoss migrate-embeddings --model bge-base-en-v1.5"),
+        "doctor output missing migrate hint: {doctor_stdout}"
+    );
+    assert!(doctor_stdout.contains("Doctor FAILED"));
+}
+
+#[tokio::test]
 async fn test_passport_api_export_import_roundtrip_with_dry_run_preview() {
     let source_port = free_port();
     let source_tmp = tempfile::tempdir().expect("failed to create source temp dir");

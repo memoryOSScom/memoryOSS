@@ -695,11 +695,239 @@ stateDiagram-v2
     VisibleCompatibilityLtsSection --> [*]
 ```
 
-## 21. Current Audit Findings
+## 21. Setup Profiles, Team Bootstrap, and Doctor Repair
+
+This is the install and drift-repair machine for Claude, Codex, Cursor, and team-node workstations:
+- setup detects installed clients and selects only the profile-relevant managed surfaces
+- explicit non-Cursor profiles prune managed Cursor state instead of leaving stale files behind
+- `team-node` persists a bootstrap receipt so `doctor --repair` can replay the same trust/catalog rollout later
+
+```mermaid
+stateDiagram-v2
+    [*] --> SetupStart
+
+    SetupStart --> DetectClients
+    DetectClients --> ResolveProfile
+    ResolveProfile --> WriteConfig
+    WriteConfig --> ShellExports
+
+    ShellExports --> ConfigureClaude: profile includes Claude
+    ShellExports --> ConfigureCodex: profile includes Codex
+    ShellExports --> ConfigureCursor: profile includes Cursor
+    ShellExports --> PruneCursor: explicit non-Cursor profile on Cursor host
+    ShellExports --> TeamBootstrap: team manifest present
+    ShellExports --> SetupReady: no client surface selected
+
+    ConfigureClaude --> SetupReady
+    ConfigureCodex --> SetupReady
+    ConfigureCursor --> SetupReady
+    PruneCursor --> SetupReady
+    TeamBootstrap --> SetupReady
+
+    state "doctor --repair" as DoctorRepair {
+        [*] --> DoctorStart
+        DoctorStart --> DetectExpectedSurfaces
+        DetectExpectedSurfaces --> DriftFree
+        DetectExpectedSurfaces --> RepairClaude: Claude drift detected
+        DetectExpectedSurfaces --> RepairCodex: Codex drift detected
+        DetectExpectedSurfaces --> RepairCursor: Cursor drift detected
+        DetectExpectedSurfaces --> ReplayTeamBootstrap: stored team manifest present
+        RepairClaude --> Revalidate
+        RepairCodex --> Revalidate
+        RepairCursor --> Revalidate
+        ReplayTeamBootstrap --> Revalidate
+        DriftFree --> Revalidate
+        Revalidate --> DoctorOk
+        Revalidate --> DoctorFailed
+    }
+```
+
+Audit note:
+- no dead path was found between setup, persisted team bootstrap, and `doctor --repair`
+- setup and repair share the same managed-surface boundaries instead of drifting by client type
+
+## 22. Ambient Connector Ingest and Review Promotion
+
+Ambient connectors now feed the same governed review system as manual or imported memories:
+- manifest discovery tells callers where ingest and review live
+- dry-run preview stops before any write
+- real ingest goes through dedup, contradiction detection, store, index catch-up, and review queue refresh
+
+```mermaid
+stateDiagram-v2
+    [*] --> ConnectorManifest
+
+    ConnectorManifest --> PrepareSignal: /v1/connectors/ingest
+    PrepareSignal --> ValidateNamespaceTags
+    ValidateNamespaceTags --> PrepareCandidate
+    PrepareCandidate --> DryRunPreview: dry_run = true
+    PrepareCandidate --> HashDedup
+
+    HashDedup --> SemanticDedup
+    SemanticDedup --> EmbedCandidate
+    EmbedCandidate --> ContradictionDetection
+    ContradictionDetection --> StoreCandidate
+    StoreCandidate --> WaitIndexerCatchup
+    WaitIndexerCatchup --> RefreshReviewQueue
+    RefreshReviewQueue --> CandidateQueue
+
+    CandidateQueue --> Confirmed: review confirm
+    CandidateQueue --> Rejected: review reject
+    CandidateQueue --> Superseded: review supersede
+
+    DryRunPreview --> [*]
+    Confirmed --> ActiveMemory
+    Rejected --> ContestedMemory
+    Superseded --> StaleLineage
+    ActiveMemory --> [*]
+    ContestedMemory --> [*]
+    StaleLineage --> [*]
+```
+
+Audit note:
+- no missing connection was found between connector ingest and the normal review/governance path
+- connector writes invalidate intent cache and refresh review summaries on the same path as other staged imports
+
+## 23. Portable Trust Catalog Mutation Path
+
+Section 19 describes artifact trust outcomes. This machine covers the registry mutations that feed those outcomes:
+- catalog import merges shared identities/revocations into the local registry
+- local pin/unpin marks an identity as an explicit trust root without deleting it
+- revoke/restore flips trust state without mutating existing artifact bytes
+
+```mermaid
+stateDiagram-v2
+    [*] --> LocalRegistry
+
+    LocalRegistry --> ExportCatalog
+    LocalRegistry --> ImportCatalog
+    ImportCatalog --> ImportedIdentity
+    ImportedIdentity --> PinnedRoot: trust/pin
+    PinnedRoot --> ImportedIdentity: trust/unpin
+
+    ImportedIdentity --> RevokedIdentity: trust/revoke
+    PinnedRoot --> RevokedIdentity: trust/revoke
+    RevokedIdentity --> RestoredIdentity: trust/restore
+    RestoredIdentity --> ImportedIdentity
+
+    ImportedIdentity --> SignArtifact
+    PinnedRoot --> SignArtifact
+    SignArtifact --> VerifyTrusted
+    RevokedIdentity --> VerifyRevoked
+    ImportedIdentity --> VerifyUnknown: signer not present in target registry
+
+    ExportCatalog --> [*]
+    VerifyTrusted --> [*]
+    VerifyRevoked --> [*]
+    VerifyUnknown --> [*]
+```
+
+Audit note:
+- pin/unpin, revoke/restore, verify, and reader-open all consume the same registry state
+- no dead branch was found where catalog mutations stopped influencing verify/reader decisions
+
+## 24. Embedding Model Drift and Migration Path
+
+This was the real missing system-level connection found in the current audit:
+- `serve` rebuilds the vector index from stored embeddings using the configured runtime dimension
+- after a model change, stale stored embeddings can therefore fail the next `serve`
+- `doctor` now checks that stored embedding dimensions match the configured model before runtime startup
+
+```mermaid
+stateDiagram-v2
+    [*] --> ConfiguredModel
+
+    ConfiguredModel --> InspectStoredEmbeddings
+    InspectStoredEmbeddings --> DimensionsMatch
+    InspectStoredEmbeddings --> DimensionDrift
+
+    DimensionsMatch --> DoctorOk
+    DimensionsMatch --> ServeStartup
+    ServeStartup --> RebuildVectorIndex
+    RebuildVectorIndex --> RuntimeReady
+
+    DimensionDrift --> DoctorFail
+    DimensionDrift --> ServeFailBeforeReady
+    DoctorFail --> RunMigrateEmbeddings
+    RunMigrateEmbeddings --> RestartServer
+    RestartServer --> ServeStartup
+
+    RuntimeReady --> [*]
+    ServeFailBeforeReady --> [*]
+```
+
+Audit note:
+- this was not just documentation drift; it was a real missing diagnosis edge
+- `doctor` now surfaces the drift with an explicit `migrate-embeddings` hint instead of letting `serve` be the first hard failure
+
+## 25. Benchmark Stable Lane and Open Comparison Lane
+
+The benchmark runner now has an explicit stabilization edge between index catch-up and open-lane threshold evaluation:
+- stable lane proves the local regression and injection path
+- open comparison lane runs the published external fixtures
+- transient early misses after indexing no longer fail immediately; the runner retries through the stabilization path first
+
+```mermaid
+stateDiagram-v2
+    [*] --> SeedCorpus
+    SeedCorpus --> WaitForIndexerSync
+    WaitForIndexerSync --> StableLane
+    StableLane --> OpenComparisonLane
+
+    OpenComparisonLane --> ThresholdPass
+    OpenComparisonLane --> StabilizeAfterCatchup: failed thresholds after first probe
+    StabilizeAfterCatchup --> ThresholdPass
+    StabilizeAfterCatchup --> ThresholdFail
+
+    ThresholdPass --> PublishBenchmarkReport
+    ThresholdFail --> RunnerFail
+    PublishBenchmarkReport --> [*]
+    RunnerFail --> [*]
+```
+
+Audit note:
+- no dead path remains in the comparison lane; the failure edge is now reserved for genuine threshold misses after stabilization
+
+## 26. Derived Index Materialization
+
+This path was confirmed directly from the dry-run workspace trace:
+- `redb` is the source of truth
+- vector and FTS indexes are derived runtime state
+- absence of a persisted vector index is therefore not itself a broken path when the stored memories can rebuild it on the next `serve`
+
+```mermaid
+stateDiagram-v2
+    [*] --> StoredMemoriesInRedb
+
+    StoredMemoriesInRedb --> ServeStartup
+    ServeStartup --> OpenDerivedIndexes
+    OpenDerivedIndexes --> PersistedIndexesPresent
+    OpenDerivedIndexes --> PersistedIndexesMissing
+
+    PersistedIndexesPresent --> RebuildFromRedb
+    PersistedIndexesMissing --> RebuildFromRedb
+    RebuildFromRedb --> RuntimeReady
+
+    state "doctor" as DoctorDerived {
+        [*] --> InspectDiskArtifacts
+        InspectDiskArtifacts --> MaterializedOnDisk
+        InspectDiskArtifacts --> StartupDerivedOnly
+        MaterializedOnDisk --> DoctorOk
+        StartupDerivedOnly --> DoctorOk
+    }
+```
+
+Audit note:
+- the dry-run trace showed `vector_keys.json` without `vectors.usearch`
+- `doctor` now treats that as startup-derived state instead of a false hard failure
+
+## 27. Current Audit Findings
 
 State-machine audit result on the current codebase:
 
-- No confirmed dead runtime path was found in the governed memory, portability, trust, or release/update planes.
-- One real missing connection existed in the reporting plane: `update_plane` and `compatibility_lts` were executed but not surfaced into generated report sections or summary metrics.
-- The report summary status is now also driven by real step failures instead of staying implicitly green when the runner exits through the failure trap.
-- Those missing report-plane connections are now fixed in `tests/run_all.sh` and `tests/generate_report.py`.
+- No confirmed dead runtime path was found in the governed memory, portability, trust, setup/repair, connector, or release/update planes.
+- One real missing connection existed in the operator diagnosis plane: changing the configured embedding model could make the next `serve` fail before `doctor` warned about stale stored embedding dimensions.
+- A second diagnosis mismatch appeared in the dry-run trace: `doctor` treated missing on-disk vector artifacts as a failure even though startup rebuilds derived vector state from `redb`.
+- That diagnosis edge is now fixed in `src/main.rs`; `doctor` surfaces stored embedding/model drift and points to `memoryoss migrate-embeddings`.
+- The derived-index diagnosis is now also fixed in `src/main.rs`; startup-derived vector state is reported as healthy instead of dead.
+- Setup/doctor repair, ambient connector ingest, trust-catalog mutation, and benchmark stabilization were already connected in code, but were previously under-modeled in this document.

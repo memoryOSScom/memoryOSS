@@ -1408,6 +1408,16 @@ fn index_health_status(pending_outbox: usize) -> &'static str {
     }
 }
 
+fn derived_index_materialization_label(materialized: bool, derived_items: usize) -> &'static str {
+    if materialized {
+        "present"
+    } else if derived_items > 0 {
+        "startup-derived"
+    } else {
+        "not yet materialized"
+    }
+}
+
 #[derive(Debug)]
 struct LocalIndexHealth {
     checkpoint: u64,
@@ -1417,6 +1427,7 @@ struct LocalIndexHealth {
     vector_index_exists: bool,
     vector_mapping_exists: bool,
     embedded_memories: usize,
+    embedding_dimension_mismatches: usize,
 }
 
 fn open_operator_doc_engine(
@@ -1463,6 +1474,13 @@ fn snapshot_local_index_health(
         .flat_map(|(_, memories)| memories.iter())
         .filter(|memory| memory.embedding.is_some())
         .count();
+    let expected_embedding_dimension = config.embeddings.model.expected_dimension();
+    let embedding_dimension_mismatches = namespace_memories
+        .iter()
+        .flat_map(|(_, memories)| memories.iter())
+        .filter_map(|memory| memory.embedding.as_ref())
+        .filter(|embedding| embedding.len() != expected_embedding_dimension)
+        .count();
 
     #[cfg(target_os = "windows")]
     let vector_index_exists = true;
@@ -1482,6 +1500,7 @@ fn snapshot_local_index_health(
         vector_index_exists,
         vector_mapping_exists,
         embedded_memories,
+        embedding_dimension_mismatches,
     })
 }
 
@@ -1595,30 +1614,32 @@ fn render_status_report(
     );
     let _ = writeln!(
         output,
+        "- embedding_dimension_mismatches: {}",
+        index_health.embedding_dimension_mismatches
+    );
+    let _ = writeln!(
+        output,
         "- fts_dir: {}",
-        if index_health.fts_dir_exists {
-            "present"
-        } else {
-            "missing"
-        }
+        derived_index_materialization_label(
+            index_health.fts_dir_exists,
+            index_health.embedded_memories,
+        )
     );
     let _ = writeln!(
         output,
         "- vector_index: {}",
-        if index_health.vector_index_exists {
-            "present"
-        } else {
-            "missing"
-        }
+        derived_index_materialization_label(
+            index_health.vector_index_exists,
+            index_health.embedded_memories,
+        )
     );
     let _ = writeln!(
         output,
         "- vector_mappings: {}",
-        if index_health.vector_mapping_exists {
-            "present"
-        } else {
-            "missing"
-        }
+        derived_index_materialization_label(
+            index_health.vector_mapping_exists,
+            index_health.embedded_memories,
+        )
     );
 
     output
@@ -3772,10 +3793,9 @@ fn run_doctor(config: &config::Config, config_path: &Path, repair: bool) -> anyh
 
     if index_health.embedded_memories > 0 && !index_health.vector_index_exists {
         println!(
-            "[error] vector: missing on-disk vector index for {} embedded memory/memories",
+            "[ok] vector index: {} embedded memory/memories will be rebuilt from redb on startup",
             index_health.embedded_memories
         );
-        issues += 1;
     } else {
         println!(
             "[ok] vector index: {}",
@@ -3787,9 +3807,26 @@ fn run_doctor(config: &config::Config, config_path: &Path, repair: bool) -> anyh
         );
     }
 
-    if index_health.embedded_memories > 0 && !index_health.vector_mapping_exists {
-        println!("[error] vector: missing vector key mappings");
+    if index_health.embedding_dimension_mismatches > 0 {
+        println!(
+            "[error] embeddings: {} stored embedding(s) do not match configured dimension {} (run `memoryoss migrate-embeddings --model {}` and then `memoryoss serve`)",
+            index_health.embedding_dimension_mismatches,
+            config.embeddings.model.expected_dimension(),
+            config.embeddings.model
+        );
         issues += 1;
+    } else {
+        println!(
+            "[ok] embeddings: stored vectors match configured dimension {}",
+            config.embeddings.model.expected_dimension()
+        );
+    }
+
+    if index_health.embedded_memories > 0 && !index_health.vector_mapping_exists {
+        println!(
+            "[ok] vector mappings: {} embedded memory/memories will rebuild mappings from redb on startup",
+            index_health.embedded_memories
+        );
     } else {
         println!(
             "[ok] vector mappings: {}",
