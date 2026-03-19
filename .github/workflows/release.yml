@@ -25,6 +25,20 @@ jobs:
         with:
           merge-multiple: true
 
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          path: repo
+
+      - name: Prepare release notes
+        shell: bash
+        run: |
+          notes="repo/docs/releases/${GITHUB_REF_NAME}.md"
+          if [ ! -f "$notes" ]; then
+            echo "missing release notes file: $notes" >&2
+            exit 1
+          fi
+          cp "$notes" release-notes.md
+
       - name: Resolve release channel
         id: channel
         shell: bash

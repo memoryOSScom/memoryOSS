@@ -1,0 +1,21 @@
+# Smithery configuration for memoryOSS
+# https://smithery.ai/docs/build/project-config/smithery-yaml
+
+startCommand:
+  type: stdio
+  configSchema:
+    type: object
+    required:
+      - configPath
+    properties:
+      configPath:
+        type: string
+        default: /absolute/path/to/memoryoss.toml
+        description: >-
+          Absolute path to the memoryoss.toml configuration file.
+          Run 'memoryoss setup' to generate one, or copy memoryoss.toml.example.
+  commandFunction:
+    |-
+    (config) => ({ command: 'memoryoss', args: ['-c', config.configPath, 'mcp-server'] })
+  exampleConfig:
+    configPath: /absolute/path/to/memoryoss.toml

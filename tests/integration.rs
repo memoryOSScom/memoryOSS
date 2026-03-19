@@ -11004,7 +11004,7 @@ async fn test_lts_compatibility_matrix_supports_n_n1_n2_for_runtime_bundle_and_r
         serde_json::from_slice(&std::fs::read(&current_bundle_path).unwrap()).unwrap();
     let missing_config = tmp.path().join("missing-lts.toml");
 
-    for (window, published_in) in [("n", "v0.1.2"), ("n-1", "v0.1.1"), ("n-2", "v0.1.0")] {
+    for (window, published_in) in [("n", "v0.2.0"), ("n-1", "v0.1.1"), ("n-2", "v0.1.0")] {
         let runtime_variant =
             compatibility_fixture_snapshot(runtime_fixture.clone(), window, published_in);
         let runtime_variant_path = tmp.path().join(format!("runtime-{window}.json"));
@@ -11121,7 +11121,7 @@ async fn test_lts_compatibility_fixtures_support_n_n1_n2_import_and_replay_paths
     .unwrap();
     let missing_config = tmp.path().join("missing-reader.toml");
 
-    for (window, published_in) in [("n", "v0.1.2"), ("n-1", "v0.1.1"), ("n-2", "v0.1.0")] {
+    for (window, published_in) in [("n", "v0.2.0"), ("n-1", "v0.1.1"), ("n-2", "v0.1.0")] {
         let passport_variant =
             compatibility_fixture_snapshot(passport_fixture.clone(), window, published_in);
         let passport_path = tmp.path().join(format!("passport-{window}.json"));

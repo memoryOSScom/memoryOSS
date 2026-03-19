@@ -1,8 +1,13 @@
 # memoryOSS
 
+[![CI](https://github.com/memoryOSScom/memoryOSS/actions/workflows/ci.yml/badge.svg)](https://github.com/memoryOSScom/memoryOSS/actions/workflows/ci.yml)
+[![Latest Release](https://img.shields.io/github/v/release/memoryOSScom/memoryOSS)](https://github.com/memoryOSScom/memoryOSS/releases/latest)
+[![GitHub stars](https://img.shields.io/github/stars/memoryOSScom/memoryOSS?style=social)](https://github.com/memoryOSScom/memoryOSS/stargazers)
+[![License: AGPL-3.0](https://img.shields.io/badge/License-AGPL--3.0-blue.svg)](https://www.gnu.org/licenses/agpl-3.0)
+
 Persistent long-term memory for AI agents. memoryOSS runs as a local memory layer in front of the LLM API, with MCP always available for explicit memory tools. The runtime contract is versioned and machine-readable, so the product can be described precisely as a portable memory runtime instead of only a proxy.
 
-> **Public Beta (v0.1.1)** — memoryOSS is a public beta for evaluation and testing. Features, APIs, and configuration may change without notice. Do not use for critical or regulated workloads. Please keep your own backups. This notice does not limit any mandatory statutory rights.
+> **Public Beta (v0.2.0)** — memoryOSS is a public beta for evaluation and testing. Features, APIs, and configuration may change without notice. Do not use for critical or regulated workloads. Please keep your own backups. This notice does not limit any mandatory statutory rights.
 
 memoryOSS is for project context, preferences, prior fixes, and working history — not for replacing general world knowledge the model already has.
 
@@ -44,10 +49,11 @@ memoryoss setup --profile claude
 
 Windows has a PowerShell example in [Windows](#windows).
 
-If you prefer the install helper, it also accepts explicit setup profiles:
+If you prefer the install helper, it installs the latest release binary. Run setup explicitly afterwards:
 
 ```bash
-curl -fsSL https://memoryoss.com/install.sh | sh -s -- --profile codex
+curl -fsSL https://memoryoss.com/install.sh | sh
+memoryoss setup --profile codex
 ```
 
 Every published archive ships with a matching `.sha256` file, and the release workflows now attach a GitHub artifact attestation for the built archives before the GitHub Release is published. That is the signed install surface for the binary/update path today; memoryOSS is not claiming OS-native notarization or MSI/PKG installers yet.
@@ -749,7 +755,7 @@ The release pipeline now generates an Anthropic/local-MCP manifest artifact with
   "manifest_version": "0.3",
   "name": "memoryoss",
   "display_name": "memoryOSS",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Persistent memory for AI agents with local MCP tools.",
   "author": {
     "name": "memoryOSS Contributors"
