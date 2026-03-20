@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Website
+    url: https://memoryoss.com
+    about: Documentation and whitepaper
+  - name: Support
+    url: mailto:hello@memoryoss.com
+    about: Direct support

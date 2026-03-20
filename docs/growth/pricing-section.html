@@ -1,0 +1,81 @@
+<!-- ═══ PRICING ═══ -->
+<div class="sect sect-alt" id="pricing"><div class="w">
+  <div class="sect-head">
+    <div class="over">Pricing</div>
+    <h2>Run it yourself or let us run it for you.</h2>
+    <p>Same engine. Your choice of deployment.</p>
+  </div>
+
+  <style>
+    .pricing-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .pricing-card { padding: 28px 24px; border-radius: var(--r-md); border: 1px solid var(--gray-200); background: var(--white); display: flex; flex-direction: column; }
+    .pricing-card.featured { border-color: var(--blue); box-shadow: 0 0 0 1px var(--blue); }
+    .pricing-badge { display: inline-block; font-size: 10px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--blue); background: rgba(0,113,227,0.08); padding: 3px 10px; border-radius: var(--r-full); margin-bottom: 12px; align-self: flex-start; }
+    .pricing-name { font-size: 18px; font-weight: 700; margin-bottom: 4px; }
+    .pricing-price { font-size: 32px; font-weight: 800; letter-spacing: -0.03em; margin-bottom: 2px; }
+    .pricing-price span { font-size: 14px; font-weight: 500; color: var(--gray-500); }
+    .pricing-desc { font-size: 13px; color: var(--gray-500); margin-bottom: 18px; }
+    .pricing-list { list-style: none; padding: 0; margin: 0 0 24px; flex: 1; }
+    .pricing-list li { font-size: 13px; color: var(--gray-600); padding: 6px 0; border-top: 1px solid var(--gray-100); display: flex; align-items: baseline; gap: 8px; }
+    .pricing-list li:first-child { border-top: none; }
+    .pricing-check { color: var(--green); font-weight: 600; font-size: 14px; flex-shrink: 0; }
+    .pricing-cta { display: inline-flex; align-items: center; justify-content: center; padding: 10px 24px; border-radius: var(--r-full); font-size: 14px; font-weight: 500; border: none; cursor: pointer; text-align: center; width: 100%; }
+    .pricing-cta-primary { background: var(--blue); color: #fff; }
+    .pricing-cta-primary:hover { background: var(--blue-dark); }
+    .pricing-cta-disabled { background: var(--gray-100); color: var(--gray-500); cursor: default; pointer-events: none; }
+    .pricing-contact { text-align: center; margin-top: 24px; font-size: 13px; color: var(--gray-500); }
+    .pricing-contact a { color: var(--blue); font-weight: 500; }
+    .pricing-contact a:hover { text-decoration: underline; }
+    @media (max-width: 768px) {
+      .pricing-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+
+  <div class="pricing-grid">
+
+    <!-- Self-Hosted -->
+    <div class="pricing-card">
+      <div class="pricing-name">Self-Hosted</div>
+      <div class="pricing-price">Free</div>
+      <div class="pricing-desc">AGPL-3.0 open source</div>
+      <ul class="pricing-list">
+        <li><span class="pricing-check">&#10003;</span> Unlimited memories</li>
+        <li><span class="pricing-check">&#10003;</span> Full feature set</li>
+        <li><span class="pricing-check">&#10003;</span> Community support</li>
+      </ul>
+      <a href="https://github.com/memoryOSScom/memoryOSS" class="pricing-cta pricing-cta-primary">Get Started</a>
+    </div>
+
+    <!-- Hosted Pro -->
+    <div class="pricing-card featured">
+      <span class="pricing-badge">Most Popular</span>
+      <div class="pricing-name">Hosted Pro</div>
+      <div class="pricing-price">$15<span>/mo</span></div>
+      <div class="pricing-desc">Managed cloud instance</div>
+      <ul class="pricing-list">
+        <li><span class="pricing-check">&#10003;</span> Unlimited memories</li>
+        <li><span class="pricing-check">&#10003;</span> 5 namespaces</li>
+        <li><span class="pricing-check">&#10003;</span> Priority support</li>
+        <li><span class="pricing-check">&#10003;</span> 99.9% uptime SLA</li>
+      </ul>
+      <span class="pricing-cta pricing-cta-disabled">Coming Soon</span>
+    </div>
+
+    <!-- Hosted Team -->
+    <div class="pricing-card">
+      <div class="pricing-name">Hosted Team</div>
+      <div class="pricing-price">$49<span>/mo</span></div>
+      <div class="pricing-desc">Everything in Pro, plus</div>
+      <ul class="pricing-list">
+        <li><span class="pricing-check">&#10003;</span> Unlimited namespaces</li>
+        <li><span class="pricing-check">&#10003;</span> Team management dashboard</li>
+        <li><span class="pricing-check">&#10003;</span> SAML SSO</li>
+        <li><span class="pricing-check">&#10003;</span> Dedicated support</li>
+      </ul>
+      <span class="pricing-cta pricing-cta-disabled">Coming Soon</span>
+    </div>
+
+  </div>
+
+  <p class="pricing-contact">Need a commercial license? Contact <a href="mailto:hello@memoryoss.com">hello@memoryoss.com</a></p>
+</div></div>
