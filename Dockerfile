@@ -19,7 +19,8 @@ LABEL org.opencontainers.image.title="memoryOSS" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${VCS_REF}" \
       org.opencontainers.image.created="${BUILD_DATE}" \
-      org.opencontainers.image.licenses="AGPL-3.0-only"
+      org.opencontainers.image.licenses="AGPL-3.0-only" \
+      io.modelcontextprotocol.server.name="io.github.memoryOSScom/memoryoss"
 
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates libstdc++6 \
     && rm -rf /var/lib/apt/lists/*

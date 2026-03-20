@@ -931,3 +931,150 @@ State-machine audit result on the current codebase:
 - That diagnosis edge is now fixed in `src/main.rs`; `doctor` surfaces stored embedding/model drift and points to `memoryoss migrate-embeddings`.
 - The derived-index diagnosis is now also fixed in `src/main.rs`; startup-derived vector state is reported as healthy instead of dead.
 - Setup/doctor repair, ambient connector ingest, trust-catalog mutation, and benchmark stabilization were already connected in code, but were previously under-modeled in this document.
+
+## 28. Public Streamable HTTP MCP and Smithery External Deploy Path
+
+This is the currently shipped public directory path:
+- local memory core on `127.0.0.1:8000`
+- Node streamable HTTP bridge on `127.0.0.1:8012`
+- nginx exposes `https://memoryoss.com/mcp`
+- Smithery publishes that endpoint as `external_shttp`
+
+```mermaid
+stateDiagram-v2
+    [*] --> BuildBridgeBundle
+    BuildBridgeBundle --> SystemdStart
+    SystemdStart --> BridgeListening
+    BridgeListening --> LocalHealthOk: GET /health
+    BridgeListening --> LocalHealthFail: upstream unreachable
+
+    LocalHealthOk --> NginxProxy
+    NginxProxy --> PublicMcpHealth: GET /mcp/health
+    NginxProxy --> PublicInitialize: POST /mcp initialize
+    NginxProxy --> PublicToolsList: POST /mcp tools/list
+    NginxProxy --> PublicToolCall: POST /mcp tools/call
+
+    PublicToolCall --> MissingApiKey: no memoryoss-api-key / Bearer header
+    PublicToolCall --> InvalidApiKey: upstream 401
+    PublicToolCall --> UpstreamCrud: valid API key
+
+    UpstreamCrud --> RecallPath
+    UpstreamCrud --> StorePath
+    UpstreamCrud --> UpdatePath
+    UpstreamCrud --> ForgetPath
+
+    PublicInitialize --> SmitheryPublish
+    PublicToolsList --> SmitheryPublish
+    SmitheryPublish --> ExternalShttpRelease: release accepted
+    ExternalShttpRelease --> [*]
+
+    MissingApiKey --> [*]
+    InvalidApiKey --> [*]
+    LocalHealthFail --> [*]
+    RecallPath --> [*]
+    StorePath --> [*]
+    UpdatePath --> [*]
+    ForgetPath --> [*]
+```
+
+Audit note:
+- this path is now live and verified through `https://memoryoss.com/mcp`
+- the earlier suspected `memoryoss_update` dead path did not survive a controlled re-test and is not treated as a confirmed dead branch
+
+## 29. Install Surface Machine
+
+The documented install surface is four-way, but the branches converge into the same setup/runtime machine afterwards.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ChooseInstallSurface
+
+    ChooseInstallSurface --> ReleaseBinary: GitHub release archive
+    ChooseInstallSurface --> InstallHelper: curl install.sh
+    ChooseInstallSurface --> CargoSource: cargo install --git
+    ChooseInstallSurface --> ContainerPath: GHCR image
+
+    ReleaseBinary --> BinaryPresent
+    InstallHelper --> BinaryPresent
+    CargoSource --> BinaryPresent
+    ContainerPath --> ContainerConfigReady
+
+    BinaryPresent --> SetupWizard: memoryoss setup --profile <profile>
+    SetupWizard --> ManagedClientSurfaces
+    ManagedClientSurfaces --> ServeOrMcp
+
+    ContainerConfigReady --> ServeOnly
+    ServeOnly --> ProxyUsage
+
+    ServeOrMcp --> ProxyUsage
+    ServeOrMcp --> ExplicitMcpUsage
+
+    ProxyUsage --> DoctorRepair
+    ExplicitMcpUsage --> DoctorRepair
+    DoctorRepair --> [*]
+```
+
+Important convergence:
+- binary, helper, and source installs all converge into the same `setup -> managed client surfaces -> serve/mcp-server` runtime path
+- the container path is intentionally different: it skips the local desktop setup wizard and expects explicit config plus self-hosted usage
+
+## 30. Per-Request Memory Mode State Machine
+
+This is the real four-way runtime branch behind `X-Memory-Mode`.
+
+```mermaid
+stateDiagram-v2
+    [*] --> ProxyRequest
+    ProxyRequest --> ParseMemoryHeaders
+
+    ParseMemoryHeaders --> FullMode: full or invalid fallback
+    ParseMemoryHeaders --> ReadOnlyMode: readonly
+    ParseMemoryHeaders --> AfterMode: after + valid date
+    ParseMemoryHeaders --> OffMode: off / bypass
+
+    FullMode --> RecallAndInject
+    RecallAndInject --> UpstreamCall
+    UpstreamCall --> ExtractAndStore
+    ExtractAndStore --> [*]
+
+    ReadOnlyMode --> RecallAndInjectReadonly
+    RecallAndInjectReadonly --> UpstreamReadOnly
+    UpstreamReadOnly --> NoStore
+    NoStore --> [*]
+
+    AfterMode --> FilterRecallByDate
+    FilterRecallByDate --> InjectFilteredHits
+    FilterRecallByDate --> NoEligibleRecall
+    InjectFilteredHits --> UpstreamAfter
+    NoEligibleRecall --> UpstreamAfter
+    UpstreamAfter --> ExtractAndStoreAfter
+    ExtractAndStoreAfter --> [*]
+
+    OffMode --> DirectUpstream
+    DirectUpstream --> NoRecallNoStore
+    NoRecallNoStore --> [*]
+```
+
+Dry-run result on 2026-03-20 via [tests/run_state_machine_dryrun.py](/root/engraim/tests/run_state_machine_dryrun.py) and [state-machine-dryrun-report.json](/root/engraim/tests/state-machine-dryrun-report.json):
+- `full`: the proxy injected a `<memory_context>` system block, called the extraction upstream once, and persisted the extracted fact
+- `readonly`: the proxy injected a `<memory_context>` system block, but never called extraction and did not persist a new fact
+- `after` with a future cutoff: the proxy skipped recall injection, still called extraction once, and persisted the mode-specific fact
+- `off`: the proxy skipped recall injection, never called extraction, and did not persist a new fact
+
+This converts the four runtime branches from “documented behavior” into a repeatable system-level verification path.
+
+## 31. March 19 Addendum
+
+Controlled follow-up after the live sysaudit:
+
+- The previously suspected `memoryoss_update` dead path was re-tested directly against `/v1/update` and through the public MCP bridge and was **not reproducible** under a clean `store -> update -> recall -> forget` sequence.
+- The real confirmed production findings from that audit were different:
+  - nginx backup config in `sites-enabled` caused duplicate `server_name` warnings and was removed from the live include set
+  - the public HTTP bridge leaked `X-Powered-By: Express` and now disables that header
+  - the public MCP bridge and Smithery `external_shttp` deployment path are now modeled explicitly above instead of being left out of the state-machine coverage
+- A real missing connection was found and fixed in the proxy extraction plane: OpenAI extraction previously ignored custom OpenAI-compatible `proxy.upstream_url` values and silently fell back to the default OpenAI cloud endpoint. `resolve_extraction_endpoint()` now routes custom OpenAI bases to `{upstream_url}/chat/completions`, which unblocks deterministic local dry-runs and self-hosted OpenAI-compatible extraction backends.
+- The dry-run harness was tightened to verify what the system actually does today:
+  - prefer an explicit/current binary over an older installed binary
+  - detect recall injection by `<memory_context>` rather than raw seed text, because injection compacts memories into summaries/evidence
+  - verify stored extracted facts through `/v1/memories`, which sees quarantined `Candidate` memories immediately even when recall/index paths are still catching up
+  - treat fused extracted facts as valid when the expected mode-specific fact is present within the stored content

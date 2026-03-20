@@ -1,0 +1,18 @@
+[Unit]
+Description=memoryOSS Streamable HTTP MCP Bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/engraim
+Environment=MEMORYOSS_UPSTREAM_URL=http://127.0.0.1:8000
+Environment=MEMORYOSS_MCP_HTTP_HOST=127.0.0.1
+Environment=MEMORYOSS_MCP_HTTP_PORT=8012
+Environment=MEMORYOSS_MCP_ALLOWED_HOSTS=memoryoss.com,www.memoryoss.com,127.0.0.1,localhost
+ExecStart=/usr/bin/node /root/engraim/.smithery/http/server.cjs
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

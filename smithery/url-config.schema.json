@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "apiKey": {
+      "type": "string",
+      "title": "memoryOSS API Key",
+      "description": "Your memoryOSS API key. Smithery forwards it to the public bridge using the memoryoss-api-key header.",
+      "x-from": {
+        "header": "memoryoss-api-key"
+      }
+    }
+  },
+  "required": [
+    "apiKey"
+  ],
+  "additionalProperties": false
+}

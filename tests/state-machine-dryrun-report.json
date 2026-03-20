@@ -1,0 +1,95 @@
+{
+  "generated_at": "2026-03-20T08:08:45Z",
+  "binary": "/root/engraim/target/debug/memoryoss",
+  "config_path": "/tmp/memoryoss-state-machine-386emvq6/memoryoss.toml",
+  "log_path": "/tmp/memoryoss-state-machine-386emvq6/memoryoss.log",
+  "proxy_base_url": "http://127.0.0.1:51505",
+  "upstream_base_url": "http://127.0.0.1:37013/v1",
+  "results": [
+    {
+      "mode": "full",
+      "proxy_status": 200,
+      "injected_count": 1,
+      "expected_injected": true,
+      "upstream_saw_memory_context": true,
+      "extraction_call_seen": true,
+      "new_extraction_call_count": 1,
+      "expected_store": true,
+      "stored_extracted_fact": true,
+      "expected_fact": "State-machine dryrun extracted fact for DRYRUN_MODE_full on the local proxy harness.",
+      "recalled_contents": [
+        "dryrun seeded injection signal for proxy mode verification. This applies to the local state-machine dryrun harness for proxy recall verification.",
+        "State-machine dryrun extracted fact for DRYRUN_MODE_full on the local proxy harness."
+      ],
+      "upstream_payload_preview": "{\"messages\": [{\"content\": \"<memory_context>\\n<summary>dryrun seeded injection signal for proxy mode verification.</summary>\\n<evidence>This applies to the local state-machine dryrun harness for proxy recall verification</evidence>\\n</memory_context>\\n\", \"role\": \"system\"}, {\"content\": \"Please answer for DRYRUN_MODE_full. Use the phrase dryrun seeded injection signal for proxy mode verification if recall is active.\", \"role\": \"user\"}], \"model\": \"stub-model\"}",
+      "response_preview": "{\"id\": \"cmpl-stub-normal\", \"object\": \"chat.completion\", \"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"Assistant reply for DRYRUN_MODE_full. Remember the project rule for DRYRUN_MODE_full on the local proxy ha",
+      "passed": true
+    },
+    {
+      "mode": "readonly",
+      "proxy_status": 200,
+      "injected_count": 1,
+      "expected_injected": true,
+      "upstream_saw_memory_context": true,
+      "extraction_call_seen": false,
+      "new_extraction_call_count": 0,
+      "expected_store": false,
+      "stored_extracted_fact": false,
+      "expected_fact": "State-machine dryrun extracted fact for DRYRUN_MODE_readonly on the local proxy harness.",
+      "recalled_contents": [
+        "dryrun seeded injection signal for proxy mode verification. This applies to the local state-machine dryrun harness for proxy recall verification.",
+        "State-machine dryrun extracted fact for DRYRUN_MODE_full on the local proxy harness."
+      ],
+      "upstream_payload_preview": "{\"messages\": [{\"content\": \"<memory_context>\\n<summary>dryrun seeded injection signal for proxy mode verification.</summary>\\n<evidence>This applies to the local state-machine dryrun harness for proxy recall verification</evidence>\\n</memory_context>\\n\", \"role\": \"system\"}, {\"content\": \"Please answer for DRYRUN_MODE_readonly. Use the phrase dryrun seeded injection signal for proxy mode verification if recall is active.\", \"role\": \"user\"}], \"model\": \"stub-model\"}",
+      "response_preview": "{\"id\": \"cmpl-stub-normal\", \"object\": \"chat.completion\", \"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"Assistant reply for DRYRUN_MODE_readonly. Remember the project rule for DRYRUN_MODE_readonly on the local ",
+      "passed": true
+    },
+    {
+      "mode": "after",
+      "proxy_status": 200,
+      "injected_count": 0,
+      "expected_injected": false,
+      "upstream_saw_memory_context": false,
+      "extraction_call_seen": true,
+      "new_extraction_call_count": 1,
+      "expected_store": true,
+      "stored_extracted_fact": true,
+      "expected_fact": "State-machine dryrun extracted fact for DRYRUN_MODE_after on the local proxy harness.",
+      "recalled_contents": [
+        "dryrun seeded injection signal for proxy mode verification. This applies to the local state-machine dryrun harness for proxy recall verification.",
+        "State-machine dryrun extracted fact for DRYRUN_MODE_full on the local proxy harness. State-machine dryrun extracted fact for DRYRUN_MODE_after on the local proxy harness."
+      ],
+      "upstream_payload_preview": "{\"messages\": [{\"content\": \"Please answer for DRYRUN_MODE_after. Use the phrase dryrun seeded injection signal for proxy mode verification if recall is active.\", \"role\": \"user\"}], \"model\": \"stub-model\"}",
+      "response_preview": "{\"id\": \"cmpl-stub-normal\", \"object\": \"chat.completion\", \"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"Assistant reply for DRYRUN_MODE_after. Remember the project rule for DRYRUN_MODE_after on the local proxy ",
+      "passed": true
+    },
+    {
+      "mode": "off",
+      "proxy_status": 200,
+      "injected_count": 0,
+      "expected_injected": false,
+      "upstream_saw_memory_context": false,
+      "extraction_call_seen": false,
+      "new_extraction_call_count": 0,
+      "expected_store": false,
+      "stored_extracted_fact": false,
+      "expected_fact": "State-machine dryrun extracted fact for DRYRUN_MODE_off on the local proxy harness.",
+      "recalled_contents": [
+        "dryrun seeded injection signal for proxy mode verification. This applies to the local state-machine dryrun harness for proxy recall verification.",
+        "State-machine dryrun extracted fact for DRYRUN_MODE_full on the local proxy harness. State-machine dryrun extracted fact for DRYRUN_MODE_after on the local proxy harness."
+      ],
+      "upstream_payload_preview": "{\"messages\": [{\"content\": \"Please answer for DRYRUN_MODE_off. Use the phrase dryrun seeded injection signal for proxy mode verification if recall is active.\", \"role\": \"user\"}], \"model\": \"stub-model\"}",
+      "response_preview": "{\"id\": \"cmpl-stub-normal\", \"object\": \"chat.completion\", \"choices\": [{\"message\": {\"role\": \"assistant\", \"content\": \"Assistant reply for DRYRUN_MODE_off. Remember the project rule for DRYRUN_MODE_off on the local proxy harn",
+      "passed": true
+    }
+  ],
+  "summary": {
+    "total": 4,
+    "passed": 4,
+    "failed": 0
+  },
+  "log_tail": [
+    "2026-03-20T08:08:45.555967Z  INFO memoryoss::server::gateway: Hybrid gateway listening on http://127.0.0.1:51505 (TLS disabled)",
+    "2026-03-20T08:09:13.492933Z  INFO memoryoss::server::gateway: Received SIGTERM, shutting down hybrid gateway..."
+  ]
+}

@@ -18,6 +18,15 @@
       "mimeType": "image/png"
     }
   ],
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/memoryosscom/memoryoss:0.2.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ],
   "_meta": {
     "io.github.memoryOSScom/anthropic-local-mcp": {
       "submissionPath": "local-mcp-server",

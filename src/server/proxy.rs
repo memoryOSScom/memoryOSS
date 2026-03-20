@@ -148,13 +148,17 @@ struct PreparedExtraction {
     auth_scheme: Option<String>,
 }
 
-fn resolve_extraction_endpoint(proxy_config: &ProxyConfig) -> Option<&str> {
+fn resolve_extraction_endpoint(proxy_config: &ProxyConfig) -> Option<String> {
     match proxy_config.extract_provider.as_str() {
-        "claude" => proxy_config.anthropic_upstream_url.as_deref(),
+        "openai" => {
+            let base = proxy_config.upstream_url.trim_end_matches('/');
+            (base != "https://api.openai.com/v1").then(|| format!("{base}/chat/completions"))
+        }
+        "claude" => proxy_config.anthropic_upstream_url.clone(),
         "ollama" => proxy_config
             .upstream_url
             .starts_with("http://localhost:11434")
-            .then_some(proxy_config.upstream_url.as_str()),
+            .then(|| proxy_config.upstream_url.clone()),
         _ => None,
     }
 }
@@ -187,7 +191,7 @@ fn build_extraction_request(
             provider: proxy_config.extract_provider.clone(),
             model: proxy_config.extract_model.clone(),
             api_key: api_key.to_string(),
-            endpoint: resolve_extraction_endpoint(proxy_config).map(|s| s.to_string()),
+            endpoint: resolve_extraction_endpoint(proxy_config),
             auth_scheme: None,
         });
     }
@@ -2580,6 +2584,22 @@ mod tests {
                 .api_key,
             "sk-real-provider-key"
         );
+    }
+
+    #[test]
+    fn extraction_request_uses_custom_openai_upstream_for_local_compatible_servers() {
+        let cfg = ProxyConfig {
+            extract_provider: "openai".to_string(),
+            upstream_url: "http://127.0.0.1:4010/v1".to_string(),
+            upstream_api_key: Some("sk-local".to_string()),
+            ..Default::default()
+        };
+        let request = build_extraction_request(&cfg, None).unwrap();
+        assert_eq!(
+            request.endpoint.as_deref(),
+            Some("http://127.0.0.1:4010/v1/chat/completions")
+        );
+        assert_eq!(request.api_key, "sk-local");
     }
 
     #[test]
